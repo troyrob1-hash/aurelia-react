@@ -1,6 +1,8 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useAuthStore } from '@/store/authStore'
+import { db } from '@/lib/firebase'
+import { doc, onSnapshot } from 'firebase/firestore'
 import {
   LayoutDashboard, ShoppingCart, Package, TrendingUp,
   Trash2, FileText, PieChart, ArrowLeftRight, Users,
@@ -22,8 +24,22 @@ const NAV = [
 export default function AppShell() {
   const { user, signOut } = useAuthStore()
   const navigate = useNavigate()
-  const [menuOpen, setMenuOpen] = useState(false)
-  const [location, setLocation] = useState('All Locations')
+  const [menuOpen, setMenuOpen]   = useState(false)
+  const [location, setLocation]   = useState('all')
+  const [locations, setLocations] = useState([])
+
+  // Load locations from Firestore
+  useEffect(() => {
+    if (!user?.tenantId) return
+    const ref = doc(db, 'tenants', user.tenantId, 'legacy', 'inv_locs')
+    const unsub = onSnapshot(ref, snap => {
+      if (snap.exists()) {
+        const data = snap.data().value || {}
+        setLocations(Object.keys(data))
+      }
+    })
+    return unsub
+  }, [user?.tenantId])
 
   function handleSignOut() {
     signOut()
@@ -50,7 +66,10 @@ export default function AppShell() {
               onChange={e => setLocation(e.target.value)}
               className={styles.locationSelect}
             >
-              <option>All Locations</option>
+              <option value="all">All Locations</option>
+              {locations.map(loc => (
+                <option key={loc} value={loc}>{loc}</option>
+              ))}
             </select>
           </div>
           <div className={styles.liveBadge}>
