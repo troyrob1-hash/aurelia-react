@@ -1,8 +1,7 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { useState, useEffect } from 'react'
 import { useAuthStore } from '@/store/authStore'
-import { db } from '@/lib/firebase'
-import { doc, onSnapshot } from 'firebase/firestore'
+import { db, doc, onSnapshot } from '@/lib/firebase'
 import {
   LayoutDashboard, ShoppingCart, Package, TrendingUp,
   Trash2, FileText, PieChart, ArrowLeftRight, Users,
@@ -26,7 +25,7 @@ export default function AppShell() {
   const navigate = useNavigate()
   const [menuOpen, setMenuOpen]   = useState(false)
   const [location, setLocation]   = useState('all')
-  const [locations, setLocations] = useState([])
+  const [locations, setLocations] = useState({})
 
   // Load locations from Firestore
   useEffect(() => {
@@ -35,7 +34,17 @@ export default function AppShell() {
     const unsub = onSnapshot(ref, snap => {
       if (snap.exists()) {
         const data = snap.data().value || {}
-        setLocations(Object.keys(data))
+        // Group by region/director
+        const grouped = {}
+        Object.values(data).forEach(loc => {
+          const region = loc.director || 'Other'
+          if (!grouped[region]) grouped[region] = []
+          grouped[region].push(loc.name)
+        })
+        // Sort locations within each region
+        Object.keys(grouped).forEach(r => grouped[r].sort())
+        setLocations(grouped)
+        console.log('[AppShell] Loaded locations by region')
       }
     })
     return unsub
@@ -67,8 +76,12 @@ export default function AppShell() {
               className={styles.locationSelect}
             >
               <option value="all">All Locations</option>
-              {locations.map(loc => (
-                <option key={loc} value={loc}>{loc}</option>
+              {Object.entries(locations).map(([director, locs]) => (
+                <optgroup key={director} label={director}>
+                  {locs.map(loc => (
+                    <option key={loc} value={loc}>{loc.replace(/^CR_|^SO_/, '')}</option>
+                  ))}
+                </optgroup>
               ))}
             </select>
           </div>
