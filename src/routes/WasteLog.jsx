@@ -2,26 +2,40 @@ import { useState, useEffect, useMemo } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations } from '@/store/LocationContext'
 import { db } from '@/lib/firebase'
-import { collection, query, where, orderBy, getDocs, addDoc, deleteDoc, doc, serverTimestamp } from 'firebase/firestore'
-import { Plus, Trash2, Download } from 'lucide-react'
+import { collection, query, orderBy, getDocs, addDoc, deleteDoc, doc, serverTimestamp } from 'firebase/firestore'
 import styles from './WasteLog.module.css'
 
-const REASONS = ['Spoilage','Overproduction','Expired','Damaged','Prep Waste','Catering Surplus','Other']
-const GL_CODES = ['12000 - Inventory - Cafeteria','12002 - Inventory - Barista','12003 - Inventory - Catering']
+const CATS = {
+  landfill: { label:'Landfill',  color:'#7a4a2e', bg:'#f5ece6', icon:'🗑️', desc:'Non-recyclable waste' },
+  compost:  { label:'Compost',   color:'#4a7c3f', bg:'#eaf3e6', icon:'🌱', desc:'Food scraps & organics' },
+  recycle:  { label:'Recycling', color:'#2c5f8a', bg:'#e4eef7', icon:'♻️', desc:'Bottles, cans & paper' },
+  donate:   { label:'Donation',  color:'#8a6c2c', bg:'#f7f0e0', icon:'🤝', desc:'Surplus food donations' },
+}
+const STEP = 8
+const VIEWS = ['Dashboard','Log','Weekly','Partners']
 
 function locationId(name) { return name.replace(/[^a-zA-Z0-9]/g, '_') }
+function fmt(oz) { return oz >= 160 ? (oz/16).toFixed(1)+' lbs' : oz.toFixed(1)+' oz' }
+function fmtDate(ds) { const d = new Date(ds+'T12:00:00'); return d.toLocaleDateString('en-US',{month:'short',day:'numeric'}) }
+function totals(rows) {
+  const t = {landfill:0,compost:0,recycle:0,donate:0}
+  rows.forEach(r => t[r.cat] = +(t[r.cat] + (r.oz||0)).toFixed(1))
+  return t
+}
 
-const EMPTY_FORM = { date: new Date().toISOString().slice(0,10), item:'', units:'', unitCost:'', glCode:'', reason:'' }
+const EMPTY_QTY = {landfill:0,compost:0,recycle:0,donate:0}
 
 export default function WasteLog() {
   const { user }             = useAuthStore()
   const { selectedLocation } = useLocations()
   const [entries, setEntries] = useState([])
   const [loading, setLoading] = useState(false)
+  const [view, setView]       = useState('Dashboard')
+  const [showModal, setShowModal] = useState(false)
+  const [qty, setQty]         = useState({...EMPTY_QTY})
+  const [form, setForm]       = useState({ date: new Date().toISOString().slice(0,10), partner:'', notes:'' })
   const [saving, setSaving]   = useState(false)
-  const [showForm, setShowForm] = useState(false)
-  const [form, setForm]       = useState(EMPTY_FORM)
-  const [deleteId, setDeleteId] = useState(null)
+  const [partnerFilter, setPartnerFilter] = useState('all')
 
   const location = selectedLocation === 'all' ? null : selectedLocation
 
@@ -33,216 +47,386 @@ export default function WasteLog() {
   async function load() {
     setLoading(true)
     try {
-      const locId = locationId(location)
-      const ref   = collection(db, 'tenants','fooda','locations',locId,'waste')
-      const q     = query(ref, orderBy('date','desc'))
-      const snap  = await getDocs(q)
-      setEntries(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+      const ref  = collection(db,'tenants','fooda','locations',locationId(location),'waste')
+      const snap = await getDocs(query(ref, orderBy('date','desc')))
+      setEntries(snap.docs.map(d => ({ id:d.id, ...d.data() })))
     } catch(e) { console.error(e) }
     setLoading(false)
   }
 
-  async function handleSave(e) {
-    e.preventDefault()
-    if (!form.item.trim()) return
+  async function handleSave() {
+    const totalOz = Object.values(qty).reduce((s,v) => s+v, 0)
+    if (!form.partner || totalOz === 0) return
     setSaving(true)
     try {
-      const locId = locationId(location)
-      const total = (parseFloat(form.units)||0) * (parseFloat(form.unitCost)||0)
-      const entry = {
-        date:      form.date,
-        item:      form.item.trim(),
-        units:     parseFloat(form.units) || 0,
-        unitCost:  parseFloat(form.unitCost) || 0,
-        total,
-        glCode:    form.glCode,
-        reason:    form.reason,
-        location,
-        createdBy: user?.email || 'unknown',
-        createdAt: serverTimestamp(),
-      }
-      const ref  = collection(db,'tenants','fooda','locations',locId,'waste')
-      const docRef = await addDoc(ref, entry)
-      setEntries(prev => [{ id: docRef.id, ...entry, createdAt: new Date().toISOString() }, ...prev])
-      setForm(EMPTY_FORM)
-      setShowForm(false)
+      const ref = collection(db,'tenants','fooda','locations',locationId(location),'waste')
+      // Save one entry per category with oz > 0
+      const promises = Object.entries(qty).filter(([,v]) => v > 0).map(([cat,oz]) =>
+        addDoc(ref, {
+          date: form.date, partner: form.partner, notes: form.notes,
+          cat, oz, location, createdBy: user?.email||'unknown', createdAt: serverTimestamp()
+        })
+      )
+      const docs = await Promise.all(promises)
+      const newEntries = Object.entries(qty).filter(([,v]) => v>0).map(([cat,oz],i) => ({
+        id: docs[i].id, date: form.date, partner: form.partner, notes: form.notes,
+        cat, oz, location
+      }))
+      setEntries(prev => [...newEntries, ...prev])
+      setQty({...EMPTY_QTY})
+      setForm({ date: new Date().toISOString().slice(0,10), partner:'', notes:'' })
+      setShowModal(false)
     } catch(e) { console.error(e) }
     setSaving(false)
   }
 
   async function handleDelete(id) {
-    const locId = locationId(location)
-    await deleteDoc(doc(db,'tenants','fooda','locations',locId,'waste',id))
+    await deleteDoc(doc(db,'tenants','fooda','locations',locationId(location),'waste',id))
     setEntries(prev => prev.filter(e => e.id !== id))
-    setDeleteId(null)
   }
 
-  function exportCSV() {
-    const rows = [['Date','Item','Units','Unit Cost','Total','GL Code','Reason'],
-      ...entries.map(e => [e.date, e.item, e.units, e.unitCost, e.total.toFixed(2), e.glCode, e.reason])]
-    const csv  = rows.map(r => r.map(v=>`"${v??''}"`).join(',')).join('\n')
-    const blob = new Blob([csv],{type:'text/csv'})
-    const url  = URL.createObjectURL(blob)
-    Object.assign(document.createElement('a'),{href:url,download:`waste-${location}-${new Date().toISOString().slice(0,10)}.csv`}).click()
-    URL.revokeObjectURL(url)
+  function adjQty(cat, dir) {
+    setQty(prev => ({ ...prev, [cat]: Math.max(0, +(prev[cat] + dir*STEP).toFixed(1)) }))
   }
 
-  const totalWaste = useMemo(() => entries.reduce((s,e) => s+(e.total||0), 0), [entries])
-  const thisWeek   = useMemo(() => {
-    const now = new Date()
-    const weekAgo = new Date(now - 7*24*60*60*1000)
-    return entries.filter(e => new Date(e.date) >= weekAgo).reduce((s,e) => s+(e.total||0), 0)
-  }, [entries])
+  const filtered = useMemo(() => {
+    if (partnerFilter === 'all') return entries
+    return entries.filter(e => e.partner === partnerFilter)
+  }, [entries, partnerFilter])
+
+  const t = useMemo(() => totals(filtered), [filtered])
+  const total = Object.values(t).reduce((s,v) => s+v, 0)
+  const divPct = total > 0 ? Math.round((t.compost+t.recycle+t.donate)/total*100) : 0
+
+  const partners = useMemo(() => [...new Set(entries.map(e => e.partner))].filter(Boolean), [entries])
+
+  // Last 7 days for bar chart
+  const last7 = useMemo(() => {
+    const days = []
+    for (let i=6; i>=0; i--) {
+      const d = new Date(); d.setDate(d.getDate()-i)
+      days.push(d.toISOString().slice(0,10))
+    }
+    return days
+  }, [])
 
   if (!location) return (
     <div className={styles.empty}>
-      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#d1d5db" strokeWidth="1.5" strokeLinecap="round">
-        <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/>
-      </svg>
+      <div style={{fontSize:40}}>🌱</div>
       <p className={styles.emptyTitle}>Select a location</p>
-      <p className={styles.emptySub}>Choose a location from the dropdown to log waste</p>
+      <p className={styles.emptySub}>Choose a location from the dropdown to track waste</p>
     </div>
   )
 
   return (
-    <div className={styles.page}>
+    <div className={styles.wrap}>
+      {/* Header */}
       <div className={styles.header}>
-        <div>
-          <h1 className={styles.title}>Waste Log</h1>
-          <p className={styles.subtitle}>{location.replace(/^CR_|^SO_/,'')}</p>
-        </div>
-        <div className={styles.headerActions}>
-          <button className={styles.btnIcon} onClick={exportCSV}><Download size={15}/></button>
-          <button className={styles.btnPrimary} onClick={()=>setShowForm(v=>!v)}>
-            <Plus size={15}/> Log Waste
-          </button>
-        </div>
-      </div>
-
-      {/* KPIs */}
-      <div className={styles.kpiBar}>
-        <div className={styles.kpi}>
-          <div className={styles.kpiLabel}>Total Entries</div>
-          <div className={styles.kpiValue}>{entries.length}</div>
-        </div>
-        <div className={styles.kpi}>
-          <div className={styles.kpiLabel}>This Week</div>
-          <div className={styles.kpiValue} style={{color:'#dc2626'}}>${thisWeek.toFixed(2)}</div>
-        </div>
-        <div className={styles.kpi}>
-          <div className={styles.kpiLabel}>Total Waste Value</div>
-          <div className={styles.kpiValue} style={{color:'#dc2626'}}>${totalWaste.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+        <nav className={styles.nav}>
+          {VIEWS.map(v => (
+            <button key={v} className={`${styles.navBtn} ${view===v?styles.navActive:''}`} onClick={()=>setView(v)}>{v}</button>
+          ))}
+        </nav>
+        <div className={styles.headerRight}>
+          <select className={styles.filterSel} value={partnerFilter} onChange={e=>setPartnerFilter(e.target.value)}>
+            <option value="all">All Partners</option>
+            {partners.map(p => <option key={p} value={p}>{p}</option>)}
+          </select>
+          <button className={styles.addBtn} onClick={()=>setShowModal(true)}>+ Log Entry</button>
         </div>
       </div>
 
-      {/* Add form */}
-      {showForm && (
-        <div className={styles.formCard}>
-          <div className={styles.formTitle}>New Waste Entry</div>
-          <form onSubmit={handleSave} className={styles.form}>
-            <div className={styles.formGrid}>
-              <div className={styles.field}>
-                <label className={styles.label}>Date</label>
-                <input type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))} className={styles.input} required/>
+      {/* MODAL */}
+      {showModal && (
+        <div className={styles.overlay} onClick={e=>e.target===e.currentTarget&&setShowModal(false)}>
+          <div className={styles.modal}>
+            <div className={styles.modalTitle}>Log <em>food waste</em></div>
+            <div className={styles.modalSub}>Record what's going where — every ounce counts.</div>
+            <div className={styles.formRow}>
+              <div className={styles.formGroup}>
+                <label className={styles.formLabel}>Date</label>
+                <input className={styles.formInput} type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))}/>
               </div>
-              <div className={styles.field} style={{gridColumn:'span 2'}}>
-                <label className={styles.label}>Item Name</label>
-                <input type="text" value={form.item} onChange={e=>setForm(f=>({...f,item:e.target.value}))}
-                  placeholder="e.g. Chicken breast, Milk gallon" className={styles.input} required autoFocus/>
+              <div className={styles.formGroup}>
+                <label className={styles.formLabel}>Restaurant Partner</label>
+                <input className={styles.formInput} type="text" value={form.partner}
+                  onChange={e=>setForm(f=>({...f,partner:e.target.value}))} placeholder="e.g. Bonehead Grill"/>
               </div>
-              <div className={styles.field}>
-                <label className={styles.label}>Units / Qty</label>
-                <input type="number" min="0" step="0.1" value={form.units} onChange={e=>setForm(f=>({...f,units:e.target.value}))}
-                  placeholder="0" className={styles.input}/>
+            </div>
+            <div className={styles.formRowSingle}>
+              <div className={styles.formGroup}>
+                <label className={styles.formLabel}>Notes (optional)</label>
+                <input className={styles.formInput} type="text" value={form.notes}
+                  onChange={e=>setForm(f=>({...f,notes:e.target.value}))} placeholder="e.g. Lunch prep scraps, expired produce…"/>
               </div>
-              <div className={styles.field}>
-                <label className={styles.label}>Unit Cost ($)</label>
-                <input type="number" min="0" step="0.01" value={form.unitCost} onChange={e=>setForm(f=>({...f,unitCost:e.target.value}))}
-                  placeholder="0.00" className={styles.input}/>
-              </div>
-              <div className={styles.field}>
-                <label className={styles.label}>Total Value</label>
-                <div className={styles.totalDisplay}>
-                  ${((parseFloat(form.units)||0)*(parseFloat(form.unitCost)||0)).toFixed(2)}
-                </div>
-              </div>
-              <div className={styles.field}>
-                <label className={styles.label}>GL Code</label>
-                <select value={form.glCode} onChange={e=>setForm(f=>({...f,glCode:e.target.value}))} className={styles.input}>
-                  <option value="">Select...</option>
-                  {GL_CODES.map(g => <option key={g} value={g}>{g}</option>)}
-                </select>
-              </div>
-              <div className={styles.field}>
-                <label className={styles.label}>Reason</label>
-                <select value={form.reason} onChange={e=>setForm(f=>({...f,reason:e.target.value}))} className={styles.input}>
-                  <option value="">Select...</option>
-                  {REASONS.map(r => <option key={r} value={r}>{r}</option>)}
-                </select>
-              </div>
+            </div>
+            <hr className={styles.divider}/>
+            <div className={styles.qtyHeading}>How much waste?</div>
+            <div className={styles.qtySub}>Tap + / − to add ounces · each dot = 8 oz</div>
+            <div className={styles.qtyGrid}>
+              {Object.entries(CATS).map(([k,c]) => {
+                const v = qty[k]
+                const dots = Math.min(Math.round(v/STEP), 24)
+                return (
+                  <div key={k} className={styles.qtyCard} style={{borderColor: v>0?c.color:''}}>
+                    <div className={styles.qtyTop}>
+                      <div className={styles.qtyIcon} style={{background:c.bg}}>{c.icon}</div>
+                      <div><div className={styles.qtyName}>{c.label}</div><div className={styles.qtyDesc}>{c.desc}</div></div>
+                    </div>
+                    <div className={styles.qtyStepper}>
+                      <button className={styles.qtyBtn} onClick={()=>adjQty(k,-1)}>−</button>
+                      <input className={styles.qtyInput} type="number" min="0" step="0.1" value={v||''}
+                        onChange={e=>setQty(prev=>({...prev,[k]:Math.max(0,parseFloat(e.target.value)||0)}))}
+                        placeholder="0"/>
+                      <button className={styles.qtyBtn} onClick={()=>adjQty(k,1)}>+</button>
+                    </div>
+                    {v > 0 && <div className={styles.qtyLbs}>{v} oz · {(v/16).toFixed(2)} lbs</div>}
+                    <div className={styles.tallyDots}>
+                      {Array.from({length:dots}).map((_,i) => (
+                        <div key={i} className={styles.tDot} style={{background:c.color}} onClick={()=>adjQty(k,-1)}/>
+                      ))}
+                      {dots < 24 && <div className={styles.tPlus} style={{borderColor:c.color,color:c.color}} onClick={()=>adjQty(k,1)}>+</div>}
+                    </div>
+                  </div>
+                )
+              })}
             </div>
             <div className={styles.formActions}>
-              <button type="button" className={styles.btnCancel} onClick={()=>{setShowForm(false);setForm(EMPTY_FORM)}}>Cancel</button>
-              <button type="submit" className={styles.btnPrimary} disabled={saving}>{saving?'Saving...':'Save Entry'}</button>
+              <button className={styles.btnCancel} onClick={()=>setShowModal(false)}>Cancel</button>
+              <button className={styles.btnSave} onClick={handleSave} disabled={saving}>{saving?'Saving...':'Save Entry'}</button>
             </div>
-          </form>
+          </div>
         </div>
       )}
 
-      {/* Table */}
-      {loading ? (
-        <div className={styles.loading}>Loading waste log...</div>
-      ) : entries.length === 0 ? (
-        <div className={styles.loading}>No waste entries yet. Click "Log Waste" to add one.</div>
-      ) : (
-        <div className={styles.tableWrap}>
-          <table className={styles.table}>
-            <thead>
-              <tr className={styles.thead}>
-                <th className={styles.th}>#</th>
-                <th className={styles.th}>Date</th>
-                <th className={styles.th}>Item</th>
-                <th className={styles.thRight}>Units</th>
-                <th className={styles.thRight}>Unit Cost</th>
-                <th className={styles.thRight}>Total</th>
-                <th className={styles.th}>GL Code</th>
-                <th className={styles.th}>Reason</th>
-                <th className={styles.th}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {entries.map((entry, idx) => (
-                <tr key={entry.id} className={`${styles.row} ${idx%2===0?'':styles.rowAlt}`}>
-                  <td className={styles.tdNum}>{idx+1}</td>
-                  <td className={styles.td}>{entry.date}</td>
-                  <td className={styles.tdName}>{entry.item}</td>
-                  <td className={styles.tdRight}>{entry.units}</td>
-                  <td className={styles.tdRight}>${(entry.unitCost||0).toFixed(2)}</td>
-                  <td className={styles.tdRight} style={{color:'#dc2626',fontWeight:700}}>${(entry.total||0).toFixed(2)}</td>
-                  <td className={styles.td}><span className={styles.badge}>{entry.glCode?.replace('12000 - Inventory - ','').replace('12002 - Inventory - ','') || '—'}</span></td>
-                  <td className={styles.td}>{entry.reason || '—'}</td>
-                  <td className={styles.td}>
-                    {deleteId === entry.id ? (
-                      <div style={{display:'flex',gap:4}}>
-                        <button className={styles.btnConfirm} onClick={()=>handleDelete(entry.id)}>Confirm</button>
-                        <button className={styles.btnCancelSm} onClick={()=>setDeleteId(null)}>Cancel</button>
+      {loading ? <div className={styles.loading}>Loading...</div> : (
+
+        view === 'Dashboard' ? (
+          <div className={styles.page}>
+            <div className={styles.pageTitle}>Peel <em>Back</em> Waste</div>
+            <div className={styles.pageSub}>{location.replace(/^CR_|^SO_/,'')} · Last 14 days</div>
+
+            {/* KPI grid */}
+            <div className={styles.kpiGrid}>
+              {Object.entries(CATS).map(([k,c]) => {
+                const pct = total > 0 ? Math.round(t[k]/total*100) : 0
+                return (
+                  <div key={k} className={styles.kpiCard} style={{borderTopColor:c.color}}>
+                    <div className={styles.kpiLabel}>{c.icon} {c.label}</div>
+                    <div className={styles.kpiValue} style={{color:c.color}}>{fmt(t[k])}</div>
+                    <div className={styles.kpiPct} style={{color:c.color}}>{pct}% of total</div>
+                  </div>
+                )
+              })}
+            </div>
+
+            <div className={styles.mainGrid}>
+              {/* Stacked bar — last 7 days */}
+              <div className={styles.card}>
+                <div className={styles.cardTitle}>Daily breakdown <span>oz by category, last 7 days</span></div>
+                <div className={styles.simpleBarWrap}>
+                  {last7.map(ds => {
+                    const dayRows = filtered.filter(e => e.date === ds)
+                    const dt = totals(dayRows)
+                    const dayTotal = Object.values(dt).reduce((s,v)=>s+v,0)
+                    const d = new Date(ds+'T12:00:00')
+                    const dayLabel = ['Su','Mo','Tu','We','Th','Fr','Sa'][d.getDay()]
+                    return (
+                      <div key={ds} className={styles.barCol}>
+                        <div className={styles.stackBar}>
+                          {Object.entries(CATS).map(([k,c]) => (
+                            dt[k] > 0 && <div key={k} style={{height: `${dayTotal>0?(dt[k]/dayTotal*100):0}%`, background:c.color, borderRadius:2}} title={`${c.label}: ${dt[k]}oz`}/>
+                          ))}
+                        </div>
+                        <div className={styles.barLabel}>{dayLabel}</div>
+                        {dayTotal > 0 && <div className={styles.barVal}>{dayTotal}oz</div>}
                       </div>
-                    ) : (
-                      <button className={styles.btnDelete} onClick={()=>setDeleteId(entry.id)}>
-                        <Trash2 size={13}/>
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-              <tr className={styles.totalRow}>
-                <td colSpan={5} style={{textAlign:'right',padding:'10px 14px',fontWeight:700,color:'var(--text-secondary)'}}>TOTAL WASTE</td>
-                <td className={styles.tdRight} style={{color:'#dc2626',fontWeight:800,fontSize:15}}>${totalWaste.toFixed(2)}</td>
-                <td colSpan={3}></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+                    )
+                  })}
+                </div>
+                <div className={styles.chartLegend}>
+                  {Object.entries(CATS).map(([k,c]) => (
+                    <div key={k} className={styles.legendItem}><div className={styles.legendDot} style={{background:c.color}}/>{c.label}</div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Diversion */}
+              <div className={styles.card}>
+                <div className={styles.cardTitle}>Diversion split</div>
+                <div className={styles.donutLabels}>
+                  {Object.entries(CATS).map(([k,c]) => {
+                    const pct = total > 0 ? Math.round(t[k]/total*100) : 0
+                    return (
+                      <div key={k} className={styles.donutRow}>
+                        <div className={styles.donutSwatch} style={{background:c.color}}/>
+                        <span className={styles.donutName}>{c.label}</span>
+                        <span className={styles.donutVal}>{fmt(t[k])}</span>
+                        <span className={styles.donutPct}>{pct}%</span>
+                      </div>
+                    )
+                  })}
+                </div>
+                <hr className={styles.orangeRule}/>
+                <div className={styles.cardTitle} style={{marginBottom:8}}>Landfill diversion <span>{divPct}%</span></div>
+                <div className={styles.goalRow}>
+                  <span>Progress toward 70% goal</span>
+                  <span style={{fontWeight:700,color:divPct>=70?'#4a7c3f':divPct>=50?'#8a6c2c':'#E8593C'}}>{divPct}%</span>
+                </div>
+                <div className={styles.goalTrack}>
+                  <div className={styles.goalFill} style={{width:`${Math.min(divPct,100)}%`, background:divPct>=70?'#4a7c3f':divPct>=50?'#8a6c2c':'#E8593C'}}/>
+                </div>
+                <div className={styles.goalNote}>
+                  {divPct >= 70 ? '🎉 Goal reached! Great work diverting waste from landfill.' : `${70-divPct}% more to reach the 70% diversion goal.`}
+                </div>
+              </div>
+            </div>
+
+            {/* Recent entries */}
+            <div className={styles.bottomGrid}>
+              <div className={styles.card}>
+                <div className={styles.cardTitle}>Recent entries</div>
+                <table className={styles.logTable}>
+                  <thead><tr><th>Date</th><th>Partner</th><th>Category</th><th>Weight</th></tr></thead>
+                  <tbody>
+                    {[...filtered].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,6).map(r => (
+                      <tr key={r.id}>
+                        <td>{fmtDate(r.date)}</td>
+                        <td>{r.partner}</td>
+                        <td><span className={styles.badge} style={{background:CATS[r.cat]?.bg,color:CATS[r.cat]?.color}}>{CATS[r.cat]?.icon} {CATS[r.cat]?.label}</span></td>
+                        <td>{r.oz} oz</td>
+                      </tr>
+                    ))}
+                    {filtered.length === 0 && <tr><td colSpan={4} style={{textAlign:'center',color:'#999',padding:20}}>No entries yet</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+              <div className={styles.card}>
+                <div className={styles.cardTitle}>By restaurant partner</div>
+                {partners.slice(0,6).map(p => {
+                  const pRows = filtered.filter(e => e.partner === p)
+                  const pt = totals(pRows)
+                  const pTotal = Object.values(pt).reduce((s,v)=>s+v,0)
+                  return (
+                    <div key={p} className={styles.deptRow}>
+                      <div className={styles.deptHeader}>
+                        <span className={styles.deptName}>{p}</span>
+                        <span className={styles.deptStat}>{fmt(pTotal)}</span>
+                      </div>
+                      <div className={styles.stackedBar}>
+                        {Object.entries(CATS).map(([k,c]) => (
+                          pt[k] > 0 && <div key={k} className={styles.stackedSeg} style={{width:`${pTotal>0?(pt[k]/pTotal*100):0}%`,background:c.color+'bb'}}/>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })}
+                {partners.length === 0 && <p style={{color:'#999',fontSize:13}}>No entries yet</p>}
+              </div>
+            </div>
+          </div>
+        )
+
+        : view === 'Log' ? (
+          <div className={styles.page}>
+            <div className={styles.pageTitle}>Entry <em>Log</em></div>
+            <div className={styles.pageSub}>All recorded waste entries</div>
+            <div className={styles.card}>
+              <table className={styles.logTable}>
+                <thead><tr><th>Date</th><th>Partner</th><th>Category</th><th>Weight (oz)</th><th>Notes</th><th></th></tr></thead>
+                <tbody>
+                  {filtered.map(r => (
+                    <tr key={r.id}>
+                      <td>{fmtDate(r.date)}</td>
+                      <td>{r.partner}</td>
+                      <td><span className={styles.badge} style={{background:CATS[r.cat]?.bg,color:CATS[r.cat]?.color}}>{CATS[r.cat]?.icon} {CATS[r.cat]?.label}</span></td>
+                      <td>{r.oz}</td>
+                      <td style={{color:'#6b6560'}}>{r.notes||'—'}</td>
+                      <td><button className={styles.delBtn} onClick={()=>handleDelete(r.id)}>🗑</button></td>
+                    </tr>
+                  ))}
+                  {filtered.length === 0 && <tr><td colSpan={6} style={{textAlign:'center',color:'#999',padding:24}}>No entries yet</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )
+
+        : view === 'Weekly' ? (
+          <div className={styles.page}>
+            <div className={styles.pageTitle}>Weekly <em>Summary</em></div>
+            <div className={styles.pageSub}>Totals by week</div>
+            <div className={styles.card}>
+              {/* Group by week */}
+              {(() => {
+                const weeks = {}
+                filtered.forEach(e => {
+                  const d = new Date(e.date+'T12:00:00')
+                  const y = d.getFullYear()
+                  const wk = Math.ceil(((d - new Date(y,0,1))/86400000 + new Date(y,0,1).getDay()+1)/7)
+                  const key = `${y}-W${String(wk).padStart(2,'0')}`
+                  if (!weeks[key]) weeks[key] = []
+                  weeks[key].push(e)
+                })
+                return Object.entries(weeks).sort((a,b)=>b[0].localeCompare(a[0])).map(([wk,rows]) => {
+                  const wt = totals(rows)
+                  const wTotal = Object.values(wt).reduce((s,v)=>s+v,0)
+                  return (
+                    <div key={wk} className={styles.deptRow}>
+                      <div className={styles.deptHeader}>
+                        <span className={styles.deptName}>{wk}</span>
+                        <span className={styles.deptStat}>{fmt(wTotal)}</span>
+                      </div>
+                      <div className={styles.stackedBar}>
+                        {Object.entries(CATS).map(([k,c]) => (
+                          wt[k] > 0 && <div key={k} className={styles.stackedSeg} style={{width:`${wTotal>0?(wt[k]/wTotal*100):0}%`,background:c.color+'bb'}}/>
+                        ))}
+                      </div>
+                      <div style={{display:'flex',gap:12,marginTop:4,flexWrap:'wrap'}}>
+                        {Object.entries(CATS).map(([k,c]) => wt[k]>0 && (
+                          <span key={k} style={{fontSize:11,color:c.color}}>{c.icon} {fmt(wt[k])}</span>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })
+              })()}
+            </div>
+          </div>
+        )
+
+        : (
+          <div className={styles.page}>
+            <div className={styles.pageTitle}>Partner <em>Breakdown</em></div>
+            <div className={styles.pageSub}>Waste composition by restaurant partner</div>
+            <div className={styles.card}>
+              {partners.map(p => {
+                const pRows = filtered.filter(e => e.partner === p)
+                const pt = totals(pRows)
+                const pTotal = Object.values(pt).reduce((s,v)=>s+v,0)
+                return (
+                  <div key={p} className={styles.deptRow}>
+                    <div className={styles.deptHeader}>
+                      <span className={styles.deptName}>{p}</span>
+                      <span className={styles.deptStat}>{fmt(pTotal)} · {pRows.length} entries</span>
+                    </div>
+                    <div className={styles.stackedBar}>
+                      {Object.entries(CATS).map(([k,c]) => (
+                        pt[k] > 0 && <div key={k} className={styles.stackedSeg} style={{width:`${pTotal>0?(pt[k]/pTotal*100):0}%`,background:c.color+'bb'}}/>
+                      ))}
+                    </div>
+                    <div style={{display:'flex',gap:12,marginTop:6,flexWrap:'wrap'}}>
+                      {Object.entries(CATS).map(([k,c]) => pt[k]>0 && (
+                        <span key={k} className={styles.badge} style={{background:c.bg,color:c.color}}>{c.icon} {fmt(pt[k])}</span>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })}
+              {partners.length === 0 && <p style={{color:'#999',fontSize:13}}>No entries yet</p>}
+            </div>
+          </div>
+        )
       )}
     </div>
   )
