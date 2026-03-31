@@ -10,12 +10,12 @@ import { readFileSync } from 'fs'
 
 // ── Paste your Firebase config here ──────────────────────────
 const firebaseConfig = {
-  apiKey:            process.env.FIREBASE_API_KEY,
+  apiKey:            AIzaSyBWn6zVdd6E4yQrYMr1NN1a8tMBDWdpZbA
   authDomain:        'the-grove-70180.firebaseapp.com',
   projectId:         'the-grove-70180',
   storageBucket:     'the-grove-70180.appspot.com',
-  messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID,
-  appId:             process.env.FIREBASE_APP_ID,
+  messagingSenderId: 155052393852
+  appId:             1:155052393852:web:f53ce053d1d814944910f9
 }
 
 const app = initializeApp(firebaseConfig)
