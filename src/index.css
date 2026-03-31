@@ -72,3 +72,22 @@ a {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
+
+/* ── GLOBAL MOBILE ──────────────────────────────── */
+@media (max-width: 768px) {
+  :root {
+    --topbar-h: 54px;
+    --sidebar-w: 0px;
+  }
+  body { font-size: 14px; }
+
+  /* Prevent horizontal scroll */
+  * { box-sizing: border-box; }
+  html, body { overflow-x: hidden; }
+
+  /* Bigger tap targets */
+  button, select, input { min-height: 40px; }
+
+  /* Weekly Sales mobile */
+  .kpiBar { grid-template-columns: repeat(2,1fr) !important; }
+}

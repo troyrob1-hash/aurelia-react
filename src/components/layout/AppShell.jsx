@@ -1,7 +1,8 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useAuthStore } from '@/store/authStore'
-import { useLocations } from '@/store/LocationContext'
+import { db } from '@/lib/firebase'
+import { doc, onSnapshot } from 'firebase/firestore'
 import {
   LayoutDashboard, ShoppingCart, Package, TrendingUp,
   Trash2, FileText, PieChart, ArrowLeftRight, Users,
@@ -21,10 +22,24 @@ const NAV = [
 ]
 
 export default function AppShell() {
-  const { user, signOut }                          = useAuthStore()
-  const { groupedLocations, selectedLocation, setSelectedLocation } = useLocations()
-  const navigate                                   = useNavigate()
-  const [menuOpen, setMenuOpen]                    = useState(false)
+  const { user, signOut } = useAuthStore()
+  const navigate = useNavigate()
+  const [menuOpen, setMenuOpen]   = useState(false)
+  const [location, setLocation]   = useState('all')
+  const [locations, setLocations] = useState([])
+
+  // Load locations from Firestore
+  useEffect(() => {
+    if (!user?.tenantId) return
+    const ref = doc(db, 'tenants', user.tenantId, 'legacy', 'inv_locs')
+    const unsub = onSnapshot(ref, snap => {
+      if (snap.exists()) {
+        const data = snap.data().value || {}
+        setLocations(Object.keys(data))
+      }
+    })
+    return unsub
+  }, [user?.tenantId])
 
   function handleSignOut() {
     signOut()
@@ -47,19 +62,13 @@ export default function AppShell() {
           <div className={styles.locationPill}>
             <MapPin size={13} />
             <select
-              value={selectedLocation}
-              onChange={e => setSelectedLocation(e.target.value)}
+              value={location}
+              onChange={e => setLocation(e.target.value)}
               className={styles.locationSelect}
             >
               <option value="all">All Locations</option>
-              {Object.entries(groupedLocations).map(([director, locs]) => (
-                <optgroup key={director} label={director}>
-                  {locs.map(loc => (
-                    <option key={loc} value={loc}>
-                      {loc.replace(/^CR_|^SO_/, '')}
-                    </option>
-                  ))}
-                </optgroup>
+              {locations.map(loc => (
+                <option key={loc} value={loc}>{loc}</option>
               ))}
             </select>
           </div>
@@ -113,6 +122,7 @@ export default function AppShell() {
 
       {/* Main layout */}
       <div className={styles.body}>
+        {/* Sidebar */}
         <nav className={styles.sidebar}>
           {NAV.map(({ to, icon: Icon, label, category }) => (
             <NavLink
@@ -132,6 +142,7 @@ export default function AppShell() {
           ))}
         </nav>
 
+        {/* Page content */}
         <main className={styles.main}>
           <Outlet />
         </main>
