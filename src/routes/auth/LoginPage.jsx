@@ -23,7 +23,7 @@ export default function LoginPage() {
     setError('')
     setLoading(true)
     try {
-      const result = await signIn(email.trim().toLowerCase(), password)
+      const result = await signIn(email.trim(), password)
       if (result.type === 'new_password') {
         setSession(result.session)
         setStep('new_password')
@@ -47,7 +47,7 @@ export default function LoginPage() {
     if (newPw.length < 8)   { setError('Password must be at least 8 characters.'); return }
     setLoading(true)
     try {
-      const sess = await completeNewPassword(email.trim().toLowerCase(), newPw, session)
+      const sess = await completeNewPassword(email.trim(), newPw, session)
       const attrs = await getUser(sess.accessToken)
       setAuth(sess, attrs)
       navigate('/')
