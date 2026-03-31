@@ -10,6 +10,7 @@ import ForgotPage     from '@/routes/auth/ForgotPage'
 // App layout + routes (lazy loaded)
 import { lazy, Suspense } from 'react'
 import AppShell from '@/components/layout/AppShell'
+import { LocationProvider } from '@/store/LocationContext'
 import LoadingScreen from '@/components/ui/LoadingScreen'
 
 const Dashboard  = lazy(() => import('@/routes/Dashboard'))
@@ -50,7 +51,7 @@ export default function App() {
       <Route path="/forgot" element={<PublicRoute><ForgotPage /></PublicRoute>} />
 
       {/* Protected app routes */}
-      <Route path="/" element={<ProtectedRoute><AppShell /></ProtectedRoute>}>
+      <Route path="/" element={<ProtectedRoute><LocationProvider><AppShell /></LocationProvider></ProtectedRoute>}>
         <Route index element={
           <Suspense fallback={<LoadingScreen />}><Dashboard /></Suspense>
         } />
