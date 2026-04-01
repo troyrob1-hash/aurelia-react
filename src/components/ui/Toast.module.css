@@ -1,0 +1,53 @@
+.container {
+  position: fixed;
+  bottom: 80px;
+  right: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 1000;
+  max-width: 340px;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: 0 4px 16px rgba(0,0,0,.12);
+  animation: slideIn .2s ease;
+  background: white;
+  border: 1px solid var(--border);
+}
+
+@keyframes slideIn {
+  from { transform: translateX(100%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+.success { border-left: 4px solid #10b981; }
+.success .icon { color: #10b981; }
+
+.error { border-left: 4px solid #ef4444; }
+.error .icon { color: #ef4444; }
+
+.warning { border-left: 4px solid #f59e0b; }
+.warning .icon { color: #f59e0b; }
+
+.info { border-left: 4px solid #3b82f6; }
+.info .icon { color: #3b82f6; }
+
+.icon { flex-shrink: 0; display: flex; }
+.message { flex: 1; color: var(--text-primary); line-height: 1.4; }
+.close {
+  background: none; border: none; color: var(--text-muted);
+  cursor: pointer; padding: 2px; display: flex; flex-shrink: 0;
+}
+.close:hover { color: var(--text-primary); }
+
+@media (max-width: 900px) {
+  .container { bottom: 76px; right: 12px; left: 12px; max-width: 100%; }
+}

@@ -4,6 +4,7 @@ import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { db } from '@/lib/firebase'
 import { doc, getDoc, setDoc } from 'firebase/firestore'
 import { Download, ChevronLeft, ChevronRight } from 'lucide-react'
+import { useToast } from '@/components/ui/Toast'
 import styles from './WeeklySales.module.css'
 
 const TENANT = 'fooda'
@@ -58,7 +59,7 @@ export default function WeeklySales() {
       var ref  = doc(db, 'tenants', TENANT, 'locations', locId(location), 'sales', week.weekKey)
       var snap = await getDoc(ref)
       setEntries(snap.exists() ? (snap.data().entries || {}) : {})
-    } catch(e) { console.error(e) }
+    } catch(e) { toast.error('Something went wrong. Please try again.') }
     setLoading(false); setDirty(false)
   }
 
@@ -67,8 +68,9 @@ export default function WeeklySales() {
     try {
       var ref = doc(db, 'tenants', TENANT, 'locations', locId(location), 'sales', week.weekKey)
       await setDoc(ref, { entries: entries, weekKey: week.weekKey, location: location, updatedAt: new Date().toISOString(), updatedBy: user?.email || 'unknown' }, { merge: true })
+      toast.success('Sales saved!')
       setDirty(false)
-    } catch(e) { console.error(e) }
+    } catch(e) { toast.error('Something went wrong. Please try again.') }
     setSaving(false)
   }
 

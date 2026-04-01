@@ -3,6 +3,7 @@ import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { db } from '@/lib/firebase'
 import { collection, query, orderBy, getDocs, addDoc, deleteDoc, doc, serverTimestamp } from 'firebase/firestore'
+import { useToast } from '@/components/ui/Toast'
 import styles from './WasteLog.module.css'
 
 const CATS = {
@@ -26,6 +27,7 @@ function totals(rows) {
 const EMPTY_QTY = {landfill:0,compost:0,recycle:0,donate:0}
 
 export default function WasteLog() {
+  const toast = useToast()
   const { user }             = useAuthStore()
   const { selectedLocation } = useLocations()
   const [entries, setEntries] = useState([])
@@ -50,7 +52,7 @@ export default function WasteLog() {
       const ref  = collection(db,'tenants','fooda','locations',locationId(location),'waste')
       const snap = await getDocs(query(ref, orderBy('date','desc')))
       setEntries(snap.docs.map(d => ({ id:d.id, ...d.data() })))
-    } catch(e) { console.error(e) }
+    } catch(e) { toast.error('Something went wrong. Please try again.') }
     setLoading(false)
   }
 
@@ -75,8 +77,9 @@ export default function WasteLog() {
       setEntries(prev => [...newEntries, ...prev])
       setQty({...EMPTY_QTY})
       setForm({ date: new Date().toISOString().slice(0,10), partner:'', notes:'' })
+      toast.success('Waste entry logged!')
       setShowModal(false)
-    } catch(e) { console.error(e) }
+    } catch(e) { toast.error('Something went wrong. Please try again.') }
     setSaving(false)
   }
 

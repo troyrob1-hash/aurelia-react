@@ -1,0 +1,15 @@
+.banner {
+  position: fixed;
+  top: var(--topbar-h);
+  left: 0; right: 0;
+  background: #1f2937;
+  color: white;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  z-index: 200;
+}

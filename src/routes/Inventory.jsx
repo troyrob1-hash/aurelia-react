@@ -3,6 +3,7 @@ import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { getInventory, saveInventory } from '@/lib/inventory'
 import { Search, Download, RefreshCw } from 'lucide-react'
+import { useToast } from '@/components/ui/Toast'
 import styles from './Inventory.module.css'
 
 const INV_CATS = [
@@ -32,6 +33,7 @@ function assignCat(item) {
 }
 
 export default function Inventory() {
+  const toast = useToast()
   const { user }                           = useAuthStore()
   const { selectedLocation }               = useLocations()
   const [items, setItems]                  = useState([])
@@ -65,6 +67,7 @@ export default function Inventory() {
   async function handleSave() {
     setSaving(true)
     await saveInventory(location, items, user)
+    toast.success('Inventory saved!')
     setSaving(false)
     setDirty(false)
   }
