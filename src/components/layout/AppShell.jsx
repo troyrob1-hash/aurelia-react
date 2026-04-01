@@ -1,7 +1,7 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { useState } from 'react'
 import { useAuthStore } from '@/store/authStore'
-import { useLocations } from '@/store/LocationContext'
+import { useLocations, cleanLocName } from '@/store/LocationContext'
 import {
   LayoutDashboard, ShoppingCart, Package, TrendingUp,
   Trash2, FileText, PieChart, ArrowLeftRight,
@@ -59,7 +59,7 @@ export default function AppShell() {
               {Object.entries(groupedLocations).map(([director, locs]) => (
                 <optgroup key={director} label={director}>
                   {locs.map(loc => (
-                    <option key={loc} value={loc}>{loc.replace(/^CR_|^SO_/, '')}</option>
+                    <option key={loc} value={loc}>{cleanLocName(loc)}</option>
                   ))}
                 </optgroup>
               ))}

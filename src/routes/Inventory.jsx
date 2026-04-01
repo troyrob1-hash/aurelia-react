@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useAuthStore } from '@/store/authStore'
-import { useLocations } from '@/store/LocationContext'
+import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { getInventory, saveInventory } from '@/lib/inventory'
 import { Search, Download, RefreshCw } from 'lucide-react'
 import styles from './Inventory.module.css'
@@ -188,7 +188,7 @@ export default function Inventory() {
           <>
             <div className={styles.header}>
               <div>
-                <h1 className={styles.title}>{location.replace(/^CR_|^SO_/,'')}</h1>
+                <h1 className={styles.title}>{cleanLocName(location)}</h1>
                 <p className={styles.subtitle}>Inventory Count &middot; {new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'})}</p>
               </div>
               <div className={styles.headerActions}>

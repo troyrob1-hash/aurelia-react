@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useAuthStore } from '@/store/authStore'
-import { useLocations } from '@/store/LocationContext'
+import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { db } from '@/lib/firebase'
 import { collection, query, orderBy, getDocs, addDoc, deleteDoc, doc, serverTimestamp } from 'firebase/firestore'
 import styles from './WasteLog.module.css'
@@ -204,7 +204,7 @@ export default function WasteLog() {
         view === 'Dashboard' ? (
           <div className={styles.page}>
             <div className={styles.pageTitle}>Peel <em>Back</em> Waste</div>
-            <div className={styles.pageSub}>{location.replace(/^CR_|^SO_/,'')} · Last 14 days</div>
+            <div className={styles.pageSub}>{cleanLocName(location)} · Last 14 days</div>
 
             {/* KPI grid */}
             <div className={styles.kpiGrid}>

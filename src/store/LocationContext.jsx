@@ -101,3 +101,7 @@ function groupByDirector(locations) {
   Object.keys(grouped).forEach(r => grouped[r].sort())
   return grouped
 }
+
+export function cleanLocName(name) {
+  return (name || '').replace(/^CR_|^SO_/, '').replace(/_/g, ' ')
+}

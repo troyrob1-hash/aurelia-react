@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useAuthStore } from '@/store/authStore'
-import { useLocations } from '@/store/LocationContext'
+import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { db } from '@/lib/firebase'
 import { doc, getDoc, setDoc } from 'firebase/firestore'
 import { Download, ChevronLeft, ChevronRight } from 'lucide-react'
@@ -9,11 +9,9 @@ import styles from './WeeklySales.module.css'
 const TENANT = 'fooda'
 const DAYS   = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']
 const CATS   = [
-  { key: 'cafe',     label: 'Cafeteria', color: '#2563eb' },
-  { key: 'barista',  label: 'Barista',   color: '#7c3aed' },
-  { key: 'retail',   label: 'Retail',    color: '#059669' },
-  { key: 'catering', label: 'Catering',  color: '#d97706' },
-  { key: 'delivery', label: 'Delivery',  color: '#dc2626' },
+  { key: 'retail',   label: 'Retail',   color: '#059669', description: 'Café, barista & grab-and-go' },
+  { key: 'catering', label: 'Catering', color: '#7c3aed', description: 'Catering & events' },
+  { key: 'popup',    label: 'Pop-up',   color: '#2563eb', description: 'Pop-up events' },
 ]
 
 function getWeekInfo(offset) {
@@ -102,20 +100,89 @@ export default function WeeklySales() {
   async function handleImport(e) {
     var file = e.target.files[0]
     if (!file) return
-    var text = await file.text()
-    // Parse CSV — expect rows: Day, Category, Amount
-    var lines = text.split('\n').filter(Boolean)
+    try {
+      var XLSX = await import('xlsx')
+      var arrayBuffer = await file.arrayBuffer()
+      var wb = XLSX.read(new Uint8Array(arrayBuffer), { type:'array', cellDates:true })
+      // Skip Sheet1 (pivot) — use first data sheet
+      var sheetName = wb.SheetNames.find(function(s) { return s !== 'Sheet1' }) || wb.SheetNames[0]
+      var ws  = wb.Sheets[sheetName]
+      var rows = XLSX.utils.sheet_to_json(ws, { raw:false, dateNF:'yyyy-mm-dd' })
+      parseFoodaRows(rows)
+    } catch(err) {
+      console.error('Import error:', err)
+      alert('Import failed. Please try exporting as CSV from Excel.')
+    }
+    e.target.value = ''
+  }
+
+  function parseFoodaRows(rows) {
+    // Fooda export format: Event Date, Site Name, Gross Food Sales, Net Revenue, Commission, Meals Sold
+    var newData = emptyWeek()
+    var weekDatesArr = getWeekDates(week)
+    var weekStart = weekDatesArr[0]
+    var weekEnd   = weekDatesArr[4]
+
+    rows.forEach(function(row) {
+      var dateVal = row['Event Date'] || row['event_date']
+      if (!dateVal) return
+      var d = new Date(dateVal)
+      if (isNaN(d)) return
+      if (d < weekStart || d > weekEnd) return
+
+      // Map to day name
+      var dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']
+      var dayName = dayNames[d.getDay()]
+      if (!newData[dayName]) return
+
+      // Map location name to category
+      var locName = (row['Location Name'] || row['location_name'] || '').toLowerCase()
+      var cat = 'popup'
+      if (/barista|coffee|espresso/i.test(locName)) cat = 'barista'
+      else if (/cater/i.test(locName)) cat = 'catering'
+      else if (/grab.n.go|retail|snack/i.test(locName)) cat = 'retail'
+      else if (/deliver/i.test(locName)) cat = 'delivery'
+      else if (/pantry/i.test(locName)) cat = 'pantry'
+
+      var gross = parseFloat(row['Gross Food Sales'] || row['Gross Food Sale (before min sales adjustments)'] || 0)
+      var current = parseFloat(newData[dayName][cat]) || 0
+      newData[dayName][cat] = (current + gross).toFixed(2)
+    })
+
+    setData(newData)
+    setDirty(true)
+  }
+
+  function parseFoodaCSV(lines) {
+    // CSV fallback
+    var header = lines[0].split(',').map(function(h) { return h.replace(/"/g,'').trim() })
+    var dateIdx = header.indexOf('Event Date')
+    var locIdx  = header.indexOf('Location Name')
+    var grossIdx = header.indexOf('Gross Food Sales')
+    if (grossIdx === -1) grossIdx = header.indexOf('Gross Food Sale (before min sales adjustments)')
+
     var newData = emptyWeek()
     lines.slice(1).forEach(function(line) {
       var cols = line.split(',').map(function(c) { return c.replace(/"/g,'').trim() })
-      var day = cols[0], cat = cols[1]?.toLowerCase(), amt = cols[2]
-      if (newData[day] && cat && amt) {
-        newData[day][cat] = amt
-      }
+      var dateStr = cols[dateIdx], locName = (cols[locIdx]||'').toLowerCase()
+      var gross = parseFloat(cols[grossIdx]) || 0
+      if (!dateStr || !gross) return
+
+      var d = new Date(dateStr)
+      if (isNaN(d)) return
+      var dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']
+      var dayName = dayNames[d.getDay()]
+      if (!newData[dayName]) return
+
+      var cat = 'retail'
+      if (/cater/i.test(locName)) cat = 'catering'
+      else if (/pop.?up|popup/i.test(locName)) cat = 'popup'
+
+      var current = parseFloat(newData[dayName][cat]) || 0
+      newData[dayName][cat] = (current + gross).toFixed(2)
     })
     setData(newData)
     setDirty(true)
-    e.target.value = ''
   }
 
   if (!location) return (
@@ -131,7 +198,7 @@ export default function WeeklySales() {
       <div className={styles.header}>
         <div>
           <h1 className={styles.title}>Weekly Sales</h1>
-          <p className={styles.subtitle}>{location.replace(/^CR_|^SO_/,'')}</p>
+          <p className={styles.subtitle}>{cleanLocName(location)}</p>
         </div>
         <div className={styles.headerActions}>
           {dirty && <button className={styles.btnSave} onClick={handleSave} disabled={saving}>{saving?'Saving...':'Save Changes'}</button>}
