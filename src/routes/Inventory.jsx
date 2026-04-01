@@ -156,10 +156,14 @@ export default function Inventory() {
               key={cat.key}
               className={`${styles.chip} ${activeCat === cat.key ? styles.chipActive : ''}`}
               onClick={() => setActiveCat(cat.key)}
-              style={activeCat === cat.key ? { borderColor: cat.color, color: cat.color, background: cat.bg } : {}}
+              style={activeCat === cat.key
+                ? { borderColor: cat.color, color: cat.color, background: cat.bg }
+                : { borderColor: cat.color+'40', color: cat.color }}
             >
               {cat.label}
-              <span className={styles.chipBadge} style={{ background: done ? '#10b981' : '#9ca3af' }}>
+              <span className={styles.chipBadge} style={{
+                background: done ? '#10b981' : activeCat === cat.key ? cat.color : cat.color+'99'
+              }}>
                 {cc.counted}/{cc.total}
               </span>
             </button>
