@@ -239,7 +239,8 @@ export default function Inventory() {
                     <span style={{color:cat.color,fontSize:12}}>{collapsed[cat.key] ? '▶' : '▼'}</span>
                   </div>
                 </div>
-                {!collapsed[cat.key] && <table className={styles.table}>
+                {!collapsed[cat.key] && (
+                <table className={styles.table}>
                   <thead>
                     <tr className={styles.thead}>
                       <th className={styles.thNum}>#</th>
@@ -286,6 +287,7 @@ export default function Inventory() {
                     })}
                   </tbody>
                 </table>
+                )}
               </div>
             ))}
           </>
