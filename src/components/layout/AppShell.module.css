@@ -1,4 +1,4 @@
-/* mobile v2 */
+/* mobile v3 - forced */
 .shell {
   display: flex;
   flex-direction: column;
@@ -19,15 +19,11 @@
   z-index: 100;
 }
 
-.topbarLeft {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-shrink: 0;
-}
+.topbarLeft { display:flex;align-items:center;gap:10px;flex-shrink:0; }
 
+/* HAMBURGER — always visible by default, hidden on wide screens */
 .hamburger {
-  display: none;
+  display: flex;
   background: #2a2a2a;
   border: none;
   color: #ccc;
@@ -37,6 +33,7 @@
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  flex-shrink: 0;
 }
 
 .brand { display:flex;align-items:center;gap:10px; }
@@ -45,16 +42,9 @@
 .brandName  { color:var(--brand);font-size:15px;font-weight:800;line-height:1.1;letter-spacing:-.4px; }
 .brandSub   { color:#666;font-size:9px;letter-spacing:.02em; }
 
-.topbarCenter {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-}
-
+.topbarCenter { flex:1;display:flex;align-items:center;justify-content:center;gap:12px; }
 .locationPill { display:flex;align-items:center;gap:6px;background:#2a2a2a;border-radius:8px;padding:5px 10px;color:#ccc; }
-.locationSelect { background:transparent;border:none;outline:none;color:#ccc;font-size:12px;cursor:pointer;max-width:180px; }
+.locationSelect { background:transparent;border:none;outline:none;color:#ccc;font-size:12px;cursor:pointer;max-width:150px; }
 .locationSelect option { background:#2a2a2a; }
 
 .liveBadge { display:flex;align-items:center;gap:5px;border:1px solid #4ade80;border-radius:6px;padding:3px 8px;color:#4ade80;font-size:11px;font-weight:600; }
@@ -82,7 +72,7 @@
 /* ── Body ────────────────────────────────────────── */
 .body { display:flex;flex:1;overflow:hidden;position:relative; }
 
-/* ── Sidebar ─────────────────────────────────────── */
+/* ── Sidebar — hidden on mobile by default ───────── */
 .sidebar {
   width: var(--sidebar-w);
   background: white;
@@ -93,7 +83,22 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  z-index: 150;
+  transform: translateX(-100%);
   transition: transform .25s ease;
+  box-shadow: var(--shadow-lg);
+}
+.sidebarOpen { transform: translateX(0) !important; }
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,.4);
+  z-index: 140;
 }
 
 .navItem { display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:var(--radius-md);color:var(--text-secondary);transition:all .12s;text-decoration:none; }
@@ -107,80 +112,61 @@
 .navLabel    { font-size:13px;font-weight:500; }
 
 /* ── Main ────────────────────────────────────────── */
-.main { flex:1;overflow-y:auto;padding:28px; }
+.main { flex:1;overflow-y:auto;padding:16px;padding-bottom:80px; }
 
-/* ── Mobile overlay ──────────────────────────────── */
-.overlay { display:none; }
+/* ── Bottom nav — always visible ─────────────────── */
+.bottomNav {
+  display: flex;
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 64px;
+  background: white;
+  border-top: 1px solid var(--border);
+  z-index: 100;
+  box-shadow: 0 -2px 12px rgba(0,0,0,.08);
+}
+.bottomNavItem {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-decoration: none;
+  padding: 8px 0;
+}
+.bottomNavItem:hover { color: var(--text-primary); }
+.bottomNavActive { color: var(--brand) !important; }
 
-/* ── Bottom nav (mobile only) ────────────────────── */
-.bottomNav { display:none; }
+/* ── DESKTOP override — hide mobile elements ─────── */
+@media (min-width: 901px) {
+  .hamburger { display: none; }
+  .brandSub  { display: block; }
 
-/* ── MOBILE ──────────────────────────────────────── */
-@media (max-width: 900px) {
-  .hamburger { display:flex; }
-  .brandSub  { display:none; }
-  .liveBadge { display:none; }
-  .notifBtn  { display:none; }
-  .userName  { display:none; }
-
-  .locationSelect { max-width:120px; }
-
-  /* Sidebar slides in from left */
   .sidebar {
-    position: absolute;
-    top: 0;
-    left: 0;
-    height: 100%;
-    z-index: 150;
-    transform: translateX(-100%);
-    box-shadow: var(--shadow-lg);
-    width: 240px;
-  }
-  .sidebarOpen { transform: translateX(0); }
-
-  .overlay {
-    display: block;
-    position: absolute;
-    inset: 0;
-    background: rgba(0,0,0,.4);
-    z-index: 140;
+    position: relative;
+    transform: none !important;
+    width: var(--sidebar-w);
+    box-shadow: none;
   }
 
-  .main { padding: 16px; padding-bottom: 80px; }
+  .overlay { display: none !important; }
 
-  /* Bottom nav */
-  .bottomNav {
-    display: flex;
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    height: 64px;
-    background: white;
-    border-top: 1px solid var(--border);
-    z-index: 100;
-    box-shadow: 0 -2px 12px rgba(0,0,0,.08);
-  }
-  .bottomNavItem {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 3px;
-    font-size: 10px;
-    font-weight: 500;
-    color: var(--text-muted);
-    text-decoration: none;
-    transition: color .12s;
-    padding: 8px 0;
-  }
-  .bottomNavItem:hover { color: var(--text-primary); }
-  .bottomNavActive { color: var(--brand) !important; }
+  .main { padding: 28px; padding-bottom: 28px; }
+
+  .bottomNav { display: none; }
+
+  .locationSelect { max-width: 180px; }
 }
 
-@media (max-width: 500px) {
-  .topbar { padding: 0 12px; gap: 8px; }
-  .locationPill { padding: 5px 8px; }
+@media (max-width: 480px) {
+  .topbar { padding: 0 10px; gap: 6px; }
   .locationSelect { max-width: 100px; font-size: 11px; }
+  .liveBadge { display: none; }
+  .notifBtn  { display: none; }
 }
