@@ -137,43 +137,37 @@ export default function Inventory() {
   }, [displayItems, activeCat])
 
   return (
-    <div className={styles.splitLayout}>
+    <div className={styles.pageWrap}>
 
-      {/* ── Left: Category sidebar ── */}
-      <div className={styles.locSidebar}>
-        <div className={styles.locSidebarHeader}>
-          Inventory
-          {location && <span className={styles.locCount}>{counted}/{items.length}</span>}
-        </div>
-        <div className={styles.locList}>
-          <button
-            className={`${styles.locItem} ${activeCat === 'all' ? styles.locActive : ''}`}
-            onClick={() => setActiveCat('all')}
-          >
-            <span>All Items</span>
-            <span className={styles.locBadge}>{counted}/{items.length}</span>
-          </button>
-          {INV_CATS.map(cat => {
-            const cc = catCounts[cat.key] || { total: 0, counted: 0 }
-            const done = cc.counted === cc.total && cc.total > 0
-            return (
-              <button
-                key={cat.key}
-                className={`${styles.locItem} ${activeCat === cat.key ? styles.locActive : ''}`}
-                onClick={() => setActiveCat(cat.key)}
-                style={activeCat === cat.key ? { borderRightColor: cat.color, color: cat.color, background: cat.bg } : {}}
-              >
-                <span>{cat.label}</span>
-                <span className={styles.locBadge} style={{ background: done ? '#10b981' : '#9ca3af' }}>
-                  {cc.counted}/{cc.total}
-                </span>
-              </button>
-            )
-          })}
-        </div>
+      {/* ── Category chip bar ── */}
+      <div className={styles.chipBar}>
+        <button
+          className={`${styles.chip} ${activeCat === 'all' ? styles.chipActive : ''}`}
+          onClick={() => setActiveCat('all')}
+        >
+          All Items
+          <span className={styles.chipBadge}>{counted}/{items.length}</span>
+        </button>
+        {INV_CATS.map(cat => {
+          const cc = catCounts[cat.key] || { total: 0, counted: 0 }
+          const done = cc.counted === cc.total && cc.total > 0
+          return (
+            <button
+              key={cat.key}
+              className={`${styles.chip} ${activeCat === cat.key ? styles.chipActive : ''}`}
+              onClick={() => setActiveCat(cat.key)}
+              style={activeCat === cat.key ? { borderColor: cat.color, color: cat.color, background: cat.bg } : {}}
+            >
+              {cat.label}
+              <span className={styles.chipBadge} style={{ background: done ? '#10b981' : '#9ca3af' }}>
+                {cc.counted}/{cc.total}
+              </span>
+            </button>
+          )
+        })}
       </div>
 
-      {/* ── Right: Content ── */}
+      {/* ── Content ── */}
       <div className={styles.invContent}>
         {!location ? (
           <div className={styles.empty}>
