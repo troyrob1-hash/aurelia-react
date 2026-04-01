@@ -44,7 +44,9 @@ export default function App() {
   useEffect(() => { init() }, [init])
 
   return (
-    <ToastProvider><OfflineBanner/><Routes>
+    <ToastProvider>
+    <OfflineBanner/>
+    <Routes>
       {/* Public auth routes */}
       <Route path="/login"  element={<PublicRoute><LoginPage /></PublicRoute>} />
       <Route path="/signup" element={<PublicRoute><SignUpPage /></PublicRoute>} />
@@ -84,6 +86,7 @@ export default function App() {
         } />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
-    </Routes></ToastProvider>
+    </Routes>
+    </ToastProvider>
   )
 }
