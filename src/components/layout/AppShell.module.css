@@ -116,7 +116,7 @@
 .bottomNav { display:none; }
 
 /* ── MOBILE ──────────────────────────────────────── */
-@media (max-width: 768px) {
+@media (max-width: 900px) {
   .hamburger { display:flex; }
   .brandSub  { display:none; }
   .liveBadge { display:none; }
@@ -179,7 +179,7 @@
   .bottomNavActive { color: var(--brand) !important; }
 }
 
-@media (max-width: 480px) {
+@media (max-width: 500px) {
   .topbar { padding: 0 12px; gap: 8px; }
   .locationPill { padding: 5px 8px; }
   .locationSelect { max-width: 100px; font-size: 11px; }
