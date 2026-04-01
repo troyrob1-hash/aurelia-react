@@ -131,7 +131,6 @@
 @media (max-width: 900px) {
   .kpiBar { grid-template-columns: repeat(2,1fr); }
   .table  { font-size: 12px; }
-}
 
 /* Split layout */
 .splitLayout {
@@ -240,89 +239,177 @@
   padding: 24px 28px;
 }
 
+
 /* ── MOBILE ─────────────────────────────────────── */
 @media (max-width: 900px) {
-  .splitLayout { flex-direction: column; height: auto; margin: -16px; }
-  .locSidebar  { width: 100%; border-right: none; border-bottom: 1px solid var(--border); max-height: 180px; }
-  .locList     { display: flex; flex-direction: row; flex-wrap: wrap; gap: 4px; padding: 8px; overflow-x: auto; }
-  .locDirector { display: none; }
-  .locItem     { padding: 6px 12px; border-radius: 20px; border: 1px solid var(--border); font-size: 12px; white-space: nowrap; flex-shrink: 0; }
-  .locActive   { border-right: none !important; border-color: var(--brand) !important; }
-  .locSearchWrap { padding: 8px 8px 4px; }
-  .locSidebarHeader { padding: 10px 12px 8px; }
-
-  .invContent  { padding: 16px; }
-  .header      { flex-direction: column; align-items: flex-start; gap: 10px; }
-  .kpiBar      { grid-template-columns: repeat(2,1fr); gap: 8px; }
-  .kpi         { padding: 10px 12px; }
-  .kpiValue    { font-size: 20px; }
-
-  /* Table → card layout on mobile */
-  .table, .thead, tbody, tr, td, th { display: block; }
-  .thead tr { display: none; }
-  .section { margin-bottom: 12px; }
-
-  .row {
-    display: flex;
+  .splitLayout {
     flex-direction: column;
-    padding: 12px;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    margin-bottom: 8px;
-    background: white;
-  }
-  .rowAlt { background: white; }
-
-  .tdNum    { display: none; }
-  .tdName   { padding: 0 0 8px 0; border: none; }
-  .tdCenter { display: none; }
-  .tdRight  { padding: 0; border: none; text-align: left; }
-
-  .tdCount {
-    padding: 0;
-    border: none;
-    margin-top: 8px;
+    height: auto;
+    margin: -16px;
+    overflow: visible;
   }
 
-  /* Big mobile stepper */
-  .countRow  { display: flex; align-items: center; gap: 0; width: 100%; }
-  .adjBtn {
-    width: 52px;
-    height: 52px;
-    font-size: 24px;
-    border-radius: 12px;
-    background: var(--bg-app);
-    border: 1px solid var(--border);
+  /* Category chips row */
+  .locSidebar {
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    overflow: hidden;
     flex-shrink: 0;
   }
+  .locSidebarHeader { padding: 10px 12px 6px; font-size: 10px; }
+  .locSearchWrap { display: none; }
+  .locList {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    gap: 6px;
+    padding: 6px 12px 10px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .locDirector { display: none; }
+  .locItem {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 6px 12px;
+    border-radius: 20px;
+    border: 1px solid var(--border);
+    font-size: 12px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    background: white;
+  }
+  .locActive {
+    border-color: var(--brand) !important;
+    background: var(--brand-light) !important;
+    color: var(--brand) !important;
+    border-right: 1px solid var(--brand) !important;
+  }
+  .locBadge { font-size: 9px; padding: 1px 4px; }
+
+  /* Inventory content */
+  .invContent { padding: 12px; }
+
+  .header { flex-direction: column; align-items: flex-start; gap: 8px; margin-bottom: 12px; }
+  .title { font-size: 20px; }
+  .subtitle { font-size: 12px; }
+
+  .kpiBar { grid-template-columns: repeat(2,1fr); gap: 8px; margin-bottom: 12px; }
+  .kpi { padding: 10px 12px; }
+  .kpiLabel { font-size: 9px; }
+  .kpiValue { font-size: 18px; }
+  .kpiOf { font-size: 12px; }
+  .kpiPct { font-size: 10px; }
+
+  .toolbar { margin-bottom: 10px; }
+  .searchInput { font-size: 14px; padding: 10px 10px 10px 32px; }
+
+  .groupHeader { font-size: 10px; padding: 8px 4px 4px; }
+
+  .section { margin-bottom: 16px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+
+  .catHeader { padding: 10px 14px; }
+  .catTitle { font-size: 13px; gap: 6px; }
+  .catCount { font-size: 10px; padding: 1px 6px; }
+  .catCounted { font-size: 11px; }
+  .catTotal { font-size: 13px; }
+
+  /* Hide table, show cards */
+  .table { display: block; }
+  .thead { display: none; }
+
+  tbody { display: flex; flex-direction: column; gap: 0; }
+
+  .row, .rowAlt {
+    display: flex;
+    flex-direction: column;
+    padding: 12px 14px;
+    border-bottom: 1px solid #f0f0f0;
+    background: white;
+  }
+  .row:last-child, .rowAlt:last-child { border-bottom: none; }
+
+  /* Hide number column */
+  .tdNum { display: none; }
+
+  /* Item name row */
+  .tdName {
+    display: flex;
+    padding: 0 0 10px 0;
+    border: none;
+    width: 100%;
+  }
+  .dot { width: 8px; height: 8px; margin-top: 4px; flex-shrink: 0; }
+  .name { font-size: 15px; font-weight: 600; }
+  .vendor { font-size: 12px; }
+
+  /* Hide pack column */
+  .tdCenter { display: none; }
+
+  /* Show cost inline */
+  .tdRight {
+    display: block;
+    text-align: left;
+    padding: 0 0 8px 0;
+    border: none;
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+
+  /* Count stepper - big and thumb friendly */
+  .tdCount {
+    display: block;
+    padding: 0;
+    border: none;
+    width: 100%;
+  }
+  .countRow {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    gap: 0;
+    border: 1.5px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .adjBtn {
+    width: 56px;
+    height: 52px;
+    font-size: 26px;
+    font-weight: 300;
+    background: #f8f9fa;
+    border: none;
+    border-radius: 0;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    color: var(--text-primary);
+  }
+  .adjBtn:active { background: #e9ecef; }
   .countInput {
     flex: 1;
     height: 52px;
-    font-size: 20px;
+    font-size: 22px;
     font-weight: 700;
     text-align: center;
-    border-top: 1px solid var(--border);
-    border-bottom: 1px solid var(--border);
-    border-left: none;
-    border-right: none;
+    border: none;
+    border-left: 1.5px solid var(--border);
+    border-right: 1.5px solid var(--border);
     border-radius: 0;
+    outline: none;
+    background: white;
+    -moz-appearance: textfield;
   }
-  .counted { background: #f0fdf4; color: #065f46; }
+  .countInput::-webkit-outer-spin-button,
+  .countInput::-webkit-inner-spin-button { -webkit-appearance: none; }
+  .counted { background: #f0fdf4 !important; color: #065f46 !important; }
 
-  .dot { width: 8px; height: 8px; }
-  .name { font-size: 14px; }
-  .vendor { font-size: 11px; }
-  .badge { font-size: 11px; }
-
-  /* Show pack and cost inline on mobile */
-  .tdRight { font-size: 13px; color: var(--text-muted); }
-
-  /* Make catHeader sticky on mobile */
-  .catHeader { position: sticky; top: 0; z-index: 10; }
+  /* Hide total value column */
+  .row td:last-child, .rowAlt td:last-child { display: none; }
 }
-
-@media (max-width: 500px) {
-  .kpiBar { grid-template-columns: 1fr 1fr; }
-  .adjBtn { width: 48px; height: 48px; font-size: 22px; }
-  .countInput { height: 48px; font-size: 18px; }
 }
