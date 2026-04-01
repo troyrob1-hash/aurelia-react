@@ -155,7 +155,6 @@ export default function Inventory() {
           </button>
           {INV_CATS.map(cat => {
             const cc = catCounts[cat.key] || { total: 0, counted: 0 }
-            if (cc.total === 0) return null
             const done = cc.counted === cc.total && cc.total > 0
             return (
               <button
