@@ -172,3 +172,29 @@
   .liveBadge { display: none; }
   .notifBtn  { display: none; }
 }
+
+/* Fix mobile sidebar clipping */
+@media (max-width: 900px) {
+  .shell { overflow: visible; }
+  .body  { overflow: visible; }
+  .main  { overflow-y: auto; }
+  .sidebar {
+    position: fixed !important;
+    top: var(--topbar-h) !important;
+    left: 0 !important;
+    height: calc(100vh - var(--topbar-h)) !important;
+    width: 260px !important;
+    z-index: 300 !important;
+    transform: translateX(-100%) !important;
+    transition: transform .25s ease !important;
+  }
+  .sidebarOpen {
+    transform: translateX(0) !important;
+  }
+  .overlay {
+    position: fixed !important;
+    inset: 0 !important;
+    top: var(--topbar-h) !important;
+    z-index: 299 !important;
+  }
+}
