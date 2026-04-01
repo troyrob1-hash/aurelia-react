@@ -55,3 +55,76 @@
   font-weight:600;cursor:pointer;transition:all .15s;white-space:nowrap;
 }
 .btnImport:hover { background:var(--bg-app);color:var(--text-primary);border-color:var(--border-dark); }
+
+/* ── MOBILE ─────────────────────────────────────── */
+@media (max-width: 900px) {
+  .page { max-width: 100%; }
+
+  .header { flex-direction: column; align-items: flex-start; gap: 8px; margin-bottom: 12px; }
+  .title { font-size: 22px; }
+
+  .weekNav { flex-wrap: wrap; gap: 8px; }
+  .weekLabel { flex: 1; justify-content: center; }
+  .weekCode { font-size: 12px; }
+  .weekRange { font-size: 11px; }
+
+  .kpiBar { grid-template-columns: repeat(2,1fr); gap: 8px; margin-bottom: 12px; }
+  .kpiValue { font-size: 18px; }
+
+  /* Hide table, show day cards */
+  .tableWrap { background: none; border: none; overflow: visible; }
+  .table { display: block; }
+  .table thead { display: none; }
+  .table tbody { display: flex; flex-direction: column; gap: 10px; }
+  .table tfoot { display: none; }
+
+  .row {
+    display: block !important;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: white;
+    padding: 12px 14px;
+  }
+
+  /* Day label as header */
+  .row td:first-child {
+    display: block;
+    padding: 0 0 10px 0;
+    border: none;
+    font-weight: 700;
+    font-size: 15px;
+    color: var(--text-primary);
+  }
+
+  /* Category inputs as stacked rows */
+  .tdInput {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 0;
+    border-bottom: 1px solid #f0f0f0;
+    border-left: none;
+    text-align: left;
+  }
+  .tdInput:last-of-type { border-bottom: none; }
+
+  .tdTotal { display: none; }
+
+  .salesInput {
+    width: 120px;
+    height: 40px;
+    font-size: 15px;
+    text-align: right;
+  }
+  .salesInput.hasValue { background: #f0fdf4; border-color: #a7f3d0; color: #065f46; }
+}
+
+@media (max-width: 480px) {
+  .kpiBar { grid-template-columns: 1fr 1fr; }
+  .salesInput { width: 100px; }
+}
+
+.mobileLabel { display: none; font-size: 12px; font-weight: 600; color: var(--text-muted); }
+@media (max-width: 900px) {
+  .mobileLabel { display: block; }
+}
