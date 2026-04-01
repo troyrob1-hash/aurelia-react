@@ -72,6 +72,8 @@
 /* ── Body ────────────────────────────────────────── */
 .body { display:flex;flex:1;overflow:hidden;position:relative; }
 
+@media (max-width: 900px) { .body { overflow: visible; } }
+
 /* ── Sidebar — hidden on mobile by default ───────── */
 .sidebar {
   width: var(--sidebar-w);
