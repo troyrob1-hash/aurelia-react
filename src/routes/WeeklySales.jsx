@@ -3,7 +3,7 @@ import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { db } from '@/lib/firebase'
 import { doc, getDoc, setDoc } from 'firebase/firestore'
-import { Download, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Download, ChevronLeft, ChevronRight, Upload } from 'lucide-react'
 import { useToast } from '@/components/ui/Toast'
 import styles from './WeeklySales.module.css'
 
@@ -113,43 +113,61 @@ export default function WeeklySales() {
       parseFoodaRows(rows)
     } catch(err) {
       console.error('Import error:', err)
-      alert('Import failed. Please try exporting as CSV from Excel.')
+      toast.error('Import failed. Try exporting as CSV from Excel first.')
     }
     e.target.value = ''
   }
 
   function parseFoodaRows(rows) {
-    // Fooda export format: Event Date, Site Name, Gross Food Sales, Net Revenue, Commission, Meals Sold
+    // Fooda export: Event Date (col 0), Site Name (col 4), Location Name (col 13), Gross Food Sales (col 26)
     var newData = emptyWeek()
     var weekDatesArr = getWeekDates(week)
-    var weekStart = weekDatesArr[0]
-    var weekEnd   = weekDatesArr[4]
+    var weekStart = new Date(weekDatesArr[0]); weekStart.setHours(0,0,0,0)
+    var weekEnd   = new Date(weekDatesArr[6]); weekEnd.setHours(23,59,59,999)
+
+    // Current location's Site Name (e.g. CR_QualcommSanDiego)
+    var currentSite = location || ''
 
     rows.forEach(function(row) {
+      // Filter by site if a location is selected
+      if (currentSite) {
+        var site = (row['Site Name'] || row['site_name'] || '').trim()
+        if (site !== currentSite) return
+      }
+
       var dateVal = row['Event Date'] || row['event_date']
       if (!dateVal) return
       var d = new Date(dateVal)
       if (isNaN(d)) return
+      d.setHours(12,0,0,0) // normalize
+
       if (d < weekStart || d > weekEnd) return
 
-      // Map to day name
       var dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']
       var dayName = dayNames[d.getDay()]
       if (!newData[dayName]) return
 
-      // Map location name to category
-      var locName = (row['Location Name'] || row['location_name'] || '').toLowerCase()
-      var cat = 'popup'
-      if (/barista|coffee|espresso/i.test(locName)) cat = 'barista'
-      else if (/cater/i.test(locName)) cat = 'catering'
-      else if (/grab.n.go|retail|snack/i.test(locName)) cat = 'retail'
-      else if (/deliver/i.test(locName)) cat = 'delivery'
-      else if (/pantry/i.test(locName)) cat = 'pantry'
+      // Use Location Name to determine category
+      var locName = (row['Location Name'] || '').toLowerCase()
+      var cat = 'retail' // default — barista rolls into retail
+      if (/cater/i.test(locName)) cat = 'catering'
+      else if (/pop.?up|popup/i.test(locName)) cat = 'popup'
 
       var gross = parseFloat(row['Gross Food Sales'] || row['Gross Food Sale (before min sales adjustments)'] || 0)
+      if (!gross) return
       var current = parseFloat(newData[dayName][cat]) || 0
       newData[dayName][cat] = (current + gross).toFixed(2)
     })
+
+    var total = Object.values(newData).reduce(function(s, day) {
+      return s + Object.values(day).reduce(function(ss, v) { return ss + (parseFloat(v)||0) }, 0)
+    }, 0)
+
+    if (total === 0) {
+      toast.warning('No matching data found for ' + (currentSite || 'this period') + '. Check that the site name matches.')
+    } else {
+      toast.success('Imported $' + total.toLocaleString('en-US', {minimumFractionDigits:2}) + ' in sales.')
+    }
 
     setData(newData)
     setDirty(true)

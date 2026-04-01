@@ -128,3 +128,11 @@
 @media (max-width: 900px) {
   .mobileLabel { display: block; }
 }
+
+.btnImport {
+  display:flex;align-items:center;gap:6px;
+  padding:7px 14px;background:white;color:var(--text-secondary);
+  border:1px solid var(--border);border-radius:8px;font-size:13px;
+  font-weight:600;cursor:pointer;transition:all .15s;white-space:nowrap;
+}
+.btnImport:hover { background:var(--bg-app);color:var(--text-primary); }
