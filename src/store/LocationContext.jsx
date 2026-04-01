@@ -8,6 +8,7 @@ export function LocationProvider({ children }) {
   const { user } = useAuthStore()
   const [allLocations, setAllLocations]       = useState({}) // { name: { director, region } }
   const [selectedLocation, setSelectedLocation] = useState('all')
+  const [autoSelected, setAutoSelected] = useState(false)
   const [loading, setLoading]                 = useState(true)
 
   useEffect(() => {
@@ -21,6 +22,16 @@ export function LocationProvider({ children }) {
     })
     return unsub
   }, [user?.tenantId])
+
+  // Auto-select first location for directors
+  useEffect(() => {
+    if (autoSelected) return
+    if (user?.role === 'director' && Object.keys(allLocations).length > 0) {
+      const visible = getVisibleLocations(allLocations, user)
+      const first = Object.keys(visible)[0]
+      if (first) { setSelectedLocation(first); setAutoSelected(true) }
+    }
+  }, [allLocations, user?.role, autoSelected])
 
   // Filter locations based on role
   const visibleLocations = getVisibleLocations(allLocations, user)
