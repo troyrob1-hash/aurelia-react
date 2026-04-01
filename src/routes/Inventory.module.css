@@ -373,3 +373,11 @@
   .row td:last-child, .rowAlt td:last-child { display: none; }
 }
 }
+
+/* Chip bar override */
+.chipBar { display:flex;align-items:center;gap:8px;padding:10px 16px;background:white;border-bottom:1px solid var(--border);overflow-x:auto;flex-shrink:0;scrollbar-width:none; }
+.chipBar::-webkit-scrollbar { display:none; }
+.chip { display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:20px;border:1.5px solid #e5e7eb;background:white;font-size:12px;font-weight:600;color:#6b7280;white-space:nowrap;flex-shrink:0;cursor:pointer;transition:all .12s; }
+.chip:hover { background:#f9fafb;color:#111; }
+.chipActive { background:#fff5f2 !important;color:#E8593C !important;border-color:#E8593C !important; }
+.chipBadge { font-size:10px;font-weight:700;background:#d1d5db;color:white;padding:2px 7px;border-radius:10px;line-height:1; }
