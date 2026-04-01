@@ -39,9 +39,15 @@ export default function Inventory() {
   const [saving, setSaving]                = useState(false)
   const [search, setSearch]                = useState('')
   const [activeCat, setActiveCat]          = useState('all')
+  const [collapsed, setCollapsed]          = useState({})
+
+  function toggleCollapse(key) {
+    setCollapsed(prev => ({ ...prev, [key]: !prev[key] }))
+  }
   const [dirty, setDirty]                  = useState(false)
 
-  const location = selectedLocation === 'all' ? null : selectedLocation
+  // On mobile, if admin has 'all' selected, show prompt. Directors auto-filtered.
+  const location = (!selectedLocation || selectedLocation === 'all') ? null : selectedLocation
 
   useEffect(() => {
     if (!location) { setItems([]); return }
@@ -176,7 +182,7 @@ export default function Inventory() {
               <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
             </svg>
             <p className={styles.emptyTitle}>Select a location</p>
-            <p className={styles.emptySub}>Choose a location from the dropdown above to start counting</p>
+            <p className={styles.emptySub}>Tap the location dropdown at the top to begin counting</p>
           </div>
         ) : (
           <>
@@ -219,17 +225,21 @@ export default function Inventory() {
               <div className={styles.loading}>No items found.</div>
             ) : displayGroups.map(cat => (
               <div key={cat.key} className={styles.section}>
-                <div className={styles.catHeader} style={{background:cat.bg, borderBottomColor:cat.color+'40'}}>
+                <div className={styles.catHeader} style={{background:cat.bg, borderBottomColor:cat.color+'40', cursor:'pointer'}}
+                  onClick={() => toggleCollapse(cat.key)}>
                   <div className={styles.catTitle} style={{color:cat.color}}>
                     {cat.label}
                     <span className={styles.catCount} style={{background:cat.color}}>{cat.items.length}</span>
                     <span className={styles.catCounted} style={{color:cat.color}}>{cat.items.filter(i=>i.qty>0).length} counted</span>
                   </div>
-                  <div className={styles.catTotal} style={{color:cat.color}}>
-                    ${cat.items.reduce((s,i)=>s+((i.qty||0)*(i.unitCost||0)),0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
+                  <div style={{display:'flex',alignItems:'center',gap:8}}>
+                    <div className={styles.catTotal} style={{color:cat.color}}>
+                      ${cat.items.reduce((s,i)=>s+((i.qty||0)*(i.unitCost||0)),0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
+                    </div>
+                    <span style={{color:cat.color,fontSize:12}}>{collapsed[cat.key] ? '▶' : '▼'}</span>
                   </div>
                 </div>
-                <table className={styles.table}>
+                {!collapsed[cat.key] && <table className={styles.table}>
                   <thead>
                     <tr className={styles.thead}>
                       <th className={styles.thNum}>#</th>

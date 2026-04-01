@@ -260,14 +260,18 @@
   .locSidebarHeader { padding: 10px 12px 6px; font-size: 10px; }
   .locSearchWrap { display: none; }
   .locList {
-    display: flex;
-    flex-direction: row;
-    flex-wrap: nowrap;
+    display: flex !important;
+    flex-direction: row !important;
+    flex-wrap: nowrap !important;
     gap: 6px;
     padding: 6px 12px 10px;
-    overflow-x: auto;
+    overflow-x: auto !important;
+    overflow-y: hidden;
     -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    max-height: none !important;
   }
+  .locList::-webkit-scrollbar { display: none; }
   .locDirector { display: none; }
   .locItem {
     display: flex;
