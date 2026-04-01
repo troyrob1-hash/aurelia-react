@@ -428,6 +428,8 @@ export default function WasteLog() {
           </div>
         )
       )}
+      {/* Mobile FAB */}
+      <button className={styles.fab} onClick={()=>setShowModal(true)}>+</button>
     </div>
   )
 }

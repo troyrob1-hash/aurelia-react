@@ -120,3 +120,42 @@
   .page { padding:16px; }
   .qtyGrid,.formRow { grid-template-columns:1fr; }
 }
+
+/* Mobile FAB */
+.fab {
+  display: none;
+  position: fixed;
+  bottom: 80px;
+  right: 20px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: #E8593C;
+  color: white;
+  font-size: 28px;
+  font-weight: 300;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(232,89,60,.4);
+  z-index: 99;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+/* Mobile layout */
+@media (max-width: 900px) {
+  .fab { display: flex; }
+  .wrap { margin: 0; }
+  .header { padding: 0 16px; height: auto; flex-wrap: wrap; gap: 6px; padding: 10px 16px; }
+  .addBtn { display: none; }
+  .page { padding: 16px; padding-bottom: 80px; }
+  .kpiGrid { grid-template-columns: repeat(2,1fr); gap: 10px; }
+  .kpiValue { font-size: 22px; }
+  .mainGrid, .bottomGrid { grid-template-columns: 1fr; }
+  .modal { width: 95vw; padding: 20px 16px; }
+  .formRow { grid-template-columns: 1fr; }
+  .qtyGrid { grid-template-columns: 1fr; }
+  .qtyBtn { width: 48px; height: 48px; font-size: 22px; }
+  .qtyInput { height: 48px; font-size: 18px; }
+}
