@@ -52,6 +52,13 @@ const ITEMS = [
   { id:'dr3', vendor:'davidrio', cat:'Barista',   name:'Masala chai concentrate',     sku:'DR-20003',    pack:'case/4',    unitCost:6.75,  par:1, onHand:1 },
 ]
 
+const CAT_COLORS = {
+  Beverages: { color:'#1e40af', bg:'#dbeafe', light:'#eff6ff' },
+  Dairy:     { color:'#0369a1', bg:'#e0f2fe', light:'#f0f9ff' },
+  Snacks:    { color:'#92400e', bg:'#fef3c7', light:'#fffbeb' },
+  Barista:   { color:'#7c3aed', bg:'#ede9fe', light:'#f5f3ff' },
+  Supplies:  { color:'#374151', bg:'#f3f4f6', light:'#f9fafb' },
+}
 const CATS = ['All', 'Beverages', 'Dairy', 'Snacks', 'Barista', 'Supplies']
 
 export default function OrderHub() {
@@ -175,9 +182,15 @@ export default function OrderHub() {
             {CATS.map(c => {
               const count = c === 'All' ? vendorItems.length : vendorItems.filter(i => i.cat === c).length
               return (
-                <button key={c} className={`${styles.sideItem} ${cat === c ? styles.sideActive : ''}`} onClick={() => setCat(c)}>
+                <button key={c}
+                  className={`${styles.sideItem} ${cat === c ? styles.sideActive : ''}`}
+                  onClick={() => setCat(c)}
+                  style={cat === c && CAT_COLORS[c] ? {background: CAT_COLORS[c].light, color: CAT_COLORS[c].color, borderLeft: `3px solid ${CAT_COLORS[c].color}`} : {}}>
                   <span>{c}</span>
-                  <span className={styles.sideCount}>{count}</span>
+                  <span className={styles.sideCount}
+                    style={cat === c && CAT_COLORS[c] ? {background: CAT_COLORS[c].bg, color: CAT_COLORS[c].color} : {}}>
+                    {count}
+                  </span>
                 </button>
               )
             })}
@@ -214,14 +227,18 @@ export default function OrderHub() {
               {Object.entries(grouped).map(([catName, items]) => (
                 <>
                   <tr key={catName} className={styles.catRow}>
-                    <td colSpan={8} className={styles.catLabel}>{catName}</td>
+                    <td colSpan={8} className={styles.catLabel}
+                      style={{background: CAT_COLORS[catName]?.bg, color: CAT_COLORS[catName]?.color, borderTopColor: CAT_COLORS[catName]?.color+'40'}}>
+                      {catName}
+                    </td>
                   </tr>
                   {items.map(item => {
                     const q = qty[item.id] || 0
                     const belowPar = item.onHand < item.par
                     const subtotal = q * item.unitCost
                     return (
-                      <tr key={item.id} className={`${styles.row} ${q > 0 ? styles.rowOrdered : ''}`}>
+                      <tr key={item.id} className={`${styles.row} ${q > 0 ? styles.rowOrdered : ''}`}
+                        style={q > 0 ? {} : {borderLeft: `3px solid ${CAT_COLORS[item.cat]?.color || 'transparent'}33`}}>
                         <td className={styles.tdProduct}>
                           <div className={styles.itemName}>{item.name}</div>
                         </td>
