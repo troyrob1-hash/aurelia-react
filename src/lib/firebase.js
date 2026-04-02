@@ -1,4 +1,5 @@
 import { initializeApp } from 'firebase/app'
+import { getFunctions } from 'firebase/functions'
 import { getFirestore, doc, getDoc, setDoc, collection, query, where, getDocs, onSnapshot } from 'firebase/firestore'
 
 const firebaseConfig = {
@@ -12,6 +13,7 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig)
 export const db = getFirestore(app)
+export const functions = getFunctions(app)
 
 // ── Tenant-scoped helpers ─────────────────────────────────────
 
