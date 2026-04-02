@@ -1,6 +1,6 @@
 // src/pages/Settings/components/InviteModal.jsx
 import { useState } from "react";
-import { db, functions } from "../../../firebase";
+import { db, functions } from "@/lib/firebase";
 import { httpsCallable } from "firebase/functions";
 import { collection, getDocs } from "firebase/firestore";
 

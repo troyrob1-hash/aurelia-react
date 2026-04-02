@@ -4,7 +4,7 @@ import LocationsTab from "./tabs/LocationsTab";
 import APIKeysTab   from "./tabs/APIKeysTab";
 import AuditLogTab  from "./tabs/AuditLogTab";
 import SSOTab       from "./tabs/SSOTab";
-import { useAuth }  from "../../hooks/useAuth";
+import { useAuth }  from "@/hooks/useAuth";
 
 const TABS = [
   { id: "users",     label: "Users & roles",  adminOnly: false },

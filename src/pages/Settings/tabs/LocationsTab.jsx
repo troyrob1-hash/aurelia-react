@@ -5,11 +5,11 @@ import {
   getDocs, doc, setDoc, updateDoc,
   serverTimestamp
 } from "firebase/firestore";
-import { db }       from "../../../firebase";
-import { useAuth }  from "../../../hooks/useAuth";
+import { db }       from "@/lib/firebase";
+import { useAuth }  from "@/hooks/useAuth";
 import { v4 as uuid } from "uuid";
-import Spinner      from "../../../components/Spinner";
-import EmptyState   from "../../../components/EmptyState";
+import Spinner      from "@/components/ui/Spinner";
+import EmptyState   from "@/components/ui/EmptyState";
 
 const TIMEZONES = [
   "America/New_York",

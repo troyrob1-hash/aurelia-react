@@ -1,6 +1,6 @@
 // src/pages/Settings/components/UserRow.jsx
 import { useState } from "react";
-import { db }       from "../../../firebase";
+import { db }       from "@/lib/firebase";
 import { doc, updateDoc, serverTimestamp } from "firebase/firestore";
 import { formatDistanceToNow } from "date-fns";
 

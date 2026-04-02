@@ -4,11 +4,11 @@ import {
   collection, query, orderBy,
   limit, startAfter, getDocs, where
 } from "firebase/firestore";
-import { db }      from "../../../firebase";
-import { useAuth } from "../../../hooks/useAuth";
+import { db }      from "@/lib/firebase";
+import { useAuth } from "@/hooks/useAuth";
 import { formatDistanceToNow, format } from "date-fns";
-import Spinner     from "../../../components/Spinner";
-import EmptyState  from "../../../components/EmptyState";
+import Spinner     from "@/components/ui/Spinner";
+import EmptyState  from "@/components/ui/EmptyState";
 
 const PAGE_SIZE = 25;
 

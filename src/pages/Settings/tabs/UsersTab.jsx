@@ -1,16 +1,16 @@
 // src/pages/Settings/tabs/UsersTab.jsx
 import { useState, useEffect, useCallback } from "react";
-import { db, functions }   from "../../../firebase";
+import { db, functions }   from "@/lib/firebase";
 import { httpsCallable }   from "firebase/functions";
 import {
   collection, query, orderBy,
   limit, startAfter, getDocs, where
 } from "firebase/firestore";
-import { useAuth }         from "../../../hooks/useAuth";
+import { useAuth }         from "@/hooks/useAuth";
 import InviteModal         from "../components/InviteModal";
 import UserRow             from "../components/UserRow";
-import EmptyState          from "../../../components/EmptyState";
-import Spinner             from "../../../components/Spinner";
+import EmptyState          from "@/components/ui/EmptyState";
+import Spinner             from "@/components/ui/Spinner";
 
 const PAGE_SIZE = 20;
 

@@ -2,11 +2,11 @@
 import { useState, useEffect, useCallback } from "react";
 import { collection, getDocs, query, orderBy, where } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
-import { db, functions } from "../../../firebase";
-import { useAuth }       from "../../../hooks/useAuth";
+import { db, functions } from "@/lib/firebase";
+import { useAuth }       from "@/hooks/useAuth";
 import { formatDistanceToNow } from "date-fns";
-import Spinner           from "../../../components/Spinner";
-import EmptyState        from "../../../components/EmptyState";
+import Spinner           from "@/components/ui/Spinner";
+import EmptyState        from "@/components/ui/EmptyState";
 
 const SERVICES = [
   { value: "toast",         label: "Toast POS" },

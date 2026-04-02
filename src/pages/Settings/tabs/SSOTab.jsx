@@ -1,9 +1,9 @@
 // src/pages/Settings/tabs/SSOTab.jsx
 import { useState, useEffect } from "react";
 import { doc, getDoc, updateDoc, serverTimestamp } from "firebase/firestore";
-import { db }      from "../../../firebase";
-import { useAuth } from "../../../hooks/useAuth";
-import Spinner     from "../../../components/Spinner";
+import { db }      from "@/lib/firebase";
+import { useAuth } from "@/hooks/useAuth";
+import Spinner     from "@/components/ui/Spinner";
 
 const PROVIDERS = [
   { value: "okta",   label: "Okta",            logo: "O" },
