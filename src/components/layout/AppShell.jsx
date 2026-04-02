@@ -2,6 +2,7 @@ import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { useState } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
+import { usePeriod, getWeekLabel } from '@/store/PeriodContext'
 import { usePeriod, getPeriodLabel, getWeekLabel } from '@/store/PeriodContext'
 import {
   LayoutDashboard, ShoppingCart, Package, TrendingUp,
