@@ -1,334 +1,307 @@
 import { useState, useMemo } from 'react'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { useToast } from '@/components/ui/Toast'
-import { ShoppingCart, Search, ExternalLink, Trash2, Plus, Minus, Clock, CreditCard, BookOpen, AlertTriangle } from 'lucide-react'
+import { Search, Download, Minus, Plus, X } from 'lucide-react'
 import styles from './OrderHub.module.css'
 
 const VENDORS = [
-  { id:'sysco',       label:'Sysco',          url:'https://shop.sysco.com',           emoji:'🚚' },
-  { id:'nassau',      label:'Nassau',          url:'https://www.nassaucandy.com',      emoji:'🚚' },
-  { id:'vistar',      label:'Vistar',          url:'https://www.vistar.com',           emoji:'🚚' },
-  { id:'cafemoto',    label:'Café Moto',       url:'https://www.cafemoto.com',         emoji:'☕' },
-  { id:'davidrio',    label:'David Rio',       url:'https://www.davidrio.com',         emoji:'🍵' },
-  { id:'amazon',      label:'Amazon Business', url:'https://business.amazon.com',      emoji:'📦' },
-  { id:'webstaurant', label:'Webstaurant',     url:'https://www.webstaurantstore.com', emoji:'🌐' },
-  { id:'bluecart',    label:'Blue Cart',       url:'https://www.bluecart.com',         emoji:'🛒' },
-  { id:'rtzn',        label:'RTZN',            url:'https://www.rtznbrands.com',       emoji:'🚚' },
+  { id:'sysco',       label:'Sysco',           url:'https://shop.sysco.com' },
+  { id:'nassau',      label:'Nassau',           url:'https://www.nassaucandy.com' },
+  { id:'vistar',      label:'Vistar',           url:'https://www.vistar.com' },
+  { id:'cafemoto',    label:'Café Moto',        url:'https://www.cafemoto.com' },
+  { id:'davidrio',    label:'David Rio',        url:'https://www.davidrio.com' },
+  { id:'amazon',      label:'Amazon Business',  url:'https://business.amazon.com' },
+  { id:'webstaurant', label:'Webstaurant',      url:'https://www.webstaurantstore.com' },
+  { id:'bluecart',    label:'Blue Cart',        url:'https://www.bluecart.com' },
+  { id:'rtzn',        label:'RTZN',             url:'https://www.rtznbrands.com' },
 ]
 
-const ALL_ITEMS = [
+const ITEMS = [
   // Sysco
-  { id:'s1',  vendor:'sysco',    name:'Red Bull 12 oz',               pack:'case/24',  unitCost:1.98,  cat:'Beverages',   par:2 },
-  { id:'s2',  vendor:'sysco',    name:'Celsius tropical vibe 12 oz',  pack:'case/12',  unitCost:1.98,  cat:'Beverages',   par:2 },
-  { id:'s3',  vendor:'sysco',    name:'Smart Water 20 oz',            pack:'case/24',  unitCost:1.63,  cat:'Beverages',   par:3 },
-  { id:'s4',  vendor:'sysco',    name:'Boxed water 16.9 oz',          pack:'case/24',  unitCost:1.21,  cat:'Beverages',   par:2 },
-  { id:'s5',  vendor:'sysco',    name:'Gatorade lemon lime 20 oz',    pack:'case/24',  unitCost:1.04,  cat:'Beverages',   par:1 },
-  { id:'s6',  vendor:'sysco',    name:'Greek yogurt vanilla 5.3oz',   pack:'cs/12',    unitCost:1.14,  cat:'Dairy',       par:1 },
-  { id:'s7',  vendor:'sysco',    name:'Uncrustables PB strawberry',   pack:'case/72',  unitCost:0.92,  cat:'Dairy',       par:1 },
-  { id:'s8',  vendor:'sysco',    name:'M&M peanuts',                  pack:'case/48',  unitCost:1.25,  cat:'Snacks',      par:1 },
-  { id:'s9',  vendor:'sysco',    name:'Snickers',                     pack:'case/48',  unitCost:1.41,  cat:'Snacks',      par:1 },
-  { id:'s10', vendor:'sysco',    name:'Haribo goldbears',             pack:'case/12',  unitCost:1.81,  cat:'Snacks',      par:1 },
-  { id:'s11', vendor:'sysco',    name:'Hippeas chickpea puffs',       pack:'case/12',  unitCost:1.67,  cat:'Snacks',      par:1 },
-  { id:'s12', vendor:'sysco',    name:'Uglies sea salt',              pack:'case/24',  unitCost:1.19,  cat:'Snacks',      par:1 },
-  { id:'s13', vendor:'sysco',    name:'Ketchup packets',              pack:'case/1000',unitCost:0.04,  cat:'Supplies',    par:2 },
-  { id:'s14', vendor:'sysco',    name:'Whole milk gallon',            pack:'case/2',   unitCost:4.76,  cat:'Dairy',       par:2 },
-  { id:'s15', vendor:'sysco',    name:'2% milk gallon',               pack:'case/2',   unitCost:8.93,  cat:'Dairy',       par:1 },
-  { id:'s16', vendor:'sysco',    name:'Oat milk Pacific',             pack:'case/12',  unitCost:2.78,  cat:'Dairy',       par:1 },
-  { id:'s17', vendor:'sysco',    name:'Clif bar blueberry almond',    pack:'cs/12',    unitCost:2.45,  cat:'Snacks',      par:1 },
-  { id:'s18', vendor:'sysco',    name:'Ghirardelli chocolate sauce',  pack:'cs/6',     unitCost:21.34, cat:'Barista',     par:1 },
-  { id:'s19', vendor:'sysco',    name:'Agave organic Monin',          pack:'cs/6',     unitCost:6.87,  cat:'Barista',     par:1 },
-  { id:'s20', vendor:'sysco',    name:'Heavy cream',                  pack:'cs/12',    unitCost:4.17,  cat:'Barista',     par:1 },
+  { id:'s1',  vendor:'sysco',    cat:'Beverages', name:'Red Bull 12 oz',              sku:'SYS-1234567', pack:'case/24',   unitCost:1.98,  par:2, onHand:0 },
+  { id:'s2',  vendor:'sysco',    cat:'Beverages', name:'Celsius tropical vibe 12 oz', sku:'SYS-5541209', pack:'case/12',   unitCost:1.98,  par:2, onHand:2 },
+  { id:'s3',  vendor:'sysco',    cat:'Beverages', name:'Smart Water 20 oz',           sku:'SYS-8892341', pack:'case/24',   unitCost:1.63,  par:3, onHand:1 },
+  { id:'s4',  vendor:'sysco',    cat:'Beverages', name:'Gatorade lemon lime 20 oz',   sku:'SYS-4421890', pack:'case/24',   unitCost:1.04,  par:2, onHand:0 },
+  { id:'s5',  vendor:'sysco',    cat:'Beverages', name:'Diet Coke',                   sku:'SYS-3312091', pack:'case/24',   unitCost:0.84,  par:1, onHand:1 },
+  { id:'s6',  vendor:'sysco',    cat:'Dairy',     name:'Greek yogurt vanilla 5.3oz',  sku:'SYS-7123450', pack:'cs/12',     unitCost:1.14,  par:1, onHand:0 },
+  { id:'s7',  vendor:'sysco',    cat:'Dairy',     name:'Whole milk gallon',            sku:'SYS-4412890', pack:'case/2',    unitCost:4.76,  par:2, onHand:1 },
+  { id:'s8',  vendor:'sysco',    cat:'Dairy',     name:'2% milk gallon',              sku:'SYS-4412891', pack:'case/2',    unitCost:8.93,  par:1, onHand:0 },
+  { id:'s9',  vendor:'sysco',    cat:'Dairy',     name:'Oat milk Pacific',            sku:'SYS-9921034', pack:'case/12',   unitCost:2.78,  par:1, onHand:1 },
+  { id:'s10', vendor:'sysco',    cat:'Snacks',    name:'M&M peanuts',                 sku:'SYS-2219034', pack:'case/48',   unitCost:1.25,  par:1, onHand:0 },
+  { id:'s11', vendor:'sysco',    cat:'Snacks',    name:'Snickers',                    sku:'SYS-2219035', pack:'case/48',   unitCost:1.41,  par:1, onHand:0 },
+  { id:'s12', vendor:'sysco',    cat:'Snacks',    name:'Haribo goldbears',            sku:'SYS-8812398', pack:'case/12',   unitCost:1.81,  par:1, onHand:1 },
+  { id:'s13', vendor:'sysco',    cat:'Snacks',    name:'Uglies sea salt',             sku:'SYS-3312108', pack:'case/24',   unitCost:1.19,  par:1, onHand:0 },
+  { id:'s14', vendor:'sysco',    cat:'Snacks',    name:'Clif bar blueberry almond',   sku:'SYS-1109342', pack:'cs/12',     unitCost:2.45,  par:1, onHand:2 },
+  { id:'s15', vendor:'sysco',    cat:'Supplies',  name:'Ketchup packets',             sku:'SYS-0023411', pack:'case/1000', unitCost:0.04,  par:2, onHand:0 },
+  { id:'s16', vendor:'sysco',    cat:'Supplies',  name:'Mayonnaise packets',          sku:'SYS-0023412', pack:'case/500',  unitCost:0.13,  par:1, onHand:1 },
+  { id:'s17', vendor:'sysco',    cat:'Barista',   name:'Ghirardelli chocolate sauce', sku:'SYS-5512093', pack:'cs/6',      unitCost:21.34, par:1, onHand:0 },
+  { id:'s18', vendor:'sysco',    cat:'Barista',   name:'Agave organic Monin',         sku:'SYS-6612034', pack:'cs/6',      unitCost:6.87,  par:1, onHand:1 },
+  { id:'s19', vendor:'sysco',    cat:'Barista',   name:'Heavy cream',                 sku:'SYS-7712091', pack:'cs/12',     unitCost:4.17,  par:1, onHand:0 },
   // Nassau
-  { id:'n1',  vendor:'nassau',   name:'Joe strawberry lemonade',      pack:'case/12',  unitCost:1.88,  cat:'Beverages',   par:1 },
-  { id:'n2',  vendor:'nassau',   name:'North fork original',          pack:'case/24',  unitCost:1.23,  cat:'Snacks',      par:1 },
-  { id:'n3',  vendor:'nassau',   name:'Sahale fruit and nut',         pack:'case/9',   unitCost:2.43,  cat:'Snacks',      par:1 },
-  { id:'n4',  vendor:'nassau',   name:'Clif bar chocolate brownie',   pack:'cs/12',    unitCost:2.67,  cat:'Snacks',      par:1 },
-  { id:'n5',  vendor:'nassau',   name:'Barebell cookies and caramel', pack:'cs/12',    unitCost:2.84,  cat:'Snacks',      par:1 },
-  { id:'n6',  vendor:'nassau',   name:'Airheads Gum Blue Raspberry',  pack:'cs/12',    unitCost:1.47,  cat:'Snacks',      par:1 },
+  { id:'n1',  vendor:'nassau',   cat:'Beverages', name:'Joe strawberry lemonade',     sku:'NAS-1122334', pack:'case/12',   unitCost:1.88,  par:1, onHand:0 },
+  { id:'n2',  vendor:'nassau',   cat:'Snacks',    name:'North fork original',         sku:'NAS-2233445', pack:'case/24',   unitCost:1.23,  par:1, onHand:1 },
+  { id:'n3',  vendor:'nassau',   cat:'Snacks',    name:'Sahale fruit and nut',        sku:'NAS-3344556', pack:'case/9',    unitCost:2.43,  par:1, onHand:0 },
+  { id:'n4',  vendor:'nassau',   cat:'Snacks',    name:'Barebell cookies caramel',    sku:'NAS-4455667', pack:'cs/12',     unitCost:2.84,  par:1, onHand:0 },
   // Cafe Moto
-  { id:'cm1', vendor:'cafemoto', name:'Cafe moto espresso moto 5lb',  pack:'each',     unitCost:74.79, cat:'Barista',     par:1 },
-  { id:'cm2', vendor:'cafemoto', name:'Cafe moto brew 5lb',           pack:'each',     unitCost:73.05, cat:'Barista',     par:1 },
-  { id:'cm3', vendor:'cafemoto', name:'Decaf moto brew 5lb',          pack:'each',     unitCost:87.28, cat:'Barista',     par:1 },
+  { id:'cm1', vendor:'cafemoto', cat:'Barista',   name:'Espresso moto 5lb',           sku:'CM-10001',    pack:'each',      unitCost:74.79, par:1, onHand:0 },
+  { id:'cm2', vendor:'cafemoto', cat:'Barista',   name:'Cafe moto brew 5lb',          sku:'CM-10002',    pack:'each',      unitCost:73.05, par:1, onHand:1 },
+  { id:'cm3', vendor:'cafemoto', cat:'Barista',   name:'Decaf moto brew 5lb',         sku:'CM-10003',    pack:'each',      unitCost:87.28, par:1, onHand:0 },
   // David Rio
-  { id:'dr1', vendor:'davidrio', name:'Tiger spice chai 4lb',         pack:'case/4',   unitCost:11.75, cat:'Barista',     par:1 },
-  { id:'dr2', vendor:'davidrio', name:'Elephant vanilla chai 4lb',    pack:'case/4',   unitCost:11.75, cat:'Barista',     par:1 },
-  { id:'dr3', vendor:'davidrio', name:'Masala chai concentrate',       pack:'case/4',   unitCost:6.75,  cat:'Barista',     par:1 },
-  { id:'dr4', vendor:'davidrio', name:'David Rio tumeric latte',       pack:'each',     unitCost:32.00, cat:'Barista',     par:1 },
+  { id:'dr1', vendor:'davidrio', cat:'Barista',   name:'Tiger spice chai 4lb',        sku:'DR-20001',    pack:'case/4',    unitCost:11.75, par:1, onHand:0 },
+  { id:'dr2', vendor:'davidrio', cat:'Barista',   name:'Elephant vanilla chai 4lb',   sku:'DR-20002',    pack:'case/4',    unitCost:11.75, par:1, onHand:0 },
+  { id:'dr3', vendor:'davidrio', cat:'Barista',   name:'Masala chai concentrate',     sku:'DR-20003',    pack:'case/4',    unitCost:6.75,  par:1, onHand:1 },
 ]
 
-const CATS = ['All','Beverages','Snacks','Dairy','Barista','Supplies']
+const CATS = ['All', 'Beverages', 'Dairy', 'Snacks', 'Barista', 'Supplies']
 
 export default function OrderHub() {
   const { selectedLocation } = useLocations()
   const toast = useToast()
   const [vendor, setVendor]       = useState('sysco')
-  const [subTab, setSubTab]       = useState('suggest')
-  const [cart, setCart]           = useState({})
+  const [cat, setCat]             = useState('All')
+  const [search, setSearch]       = useState('')
+  const [filterBelowPar, setFilterBelowPar] = useState(false)
+  const [filterInCart, setFilterInCart]     = useState(false)
+  const [qty, setQty]             = useState({})
   const [deliveryDate, setDeliveryDate] = useState('')
-  const [orderNote, setOrderNote] = useState('')
-  const [searchQ, setSearchQ]     = useState('')
-  const [catFilter, setCatFilter] = useState('All')
+  const [note, setNote]           = useState('')
   const [submitted, setSubmitted] = useState(false)
 
   const location = selectedLocation === 'all' ? null : selectedLocation
   const currentVendor = VENDORS.find(v => v.id === vendor)
 
-  const vendorItems = ALL_ITEMS.filter(i => i.vendor === vendor)
-
-  // Suggested = items at/below par (simulate with random for demo)
-  const suggested = vendorItems.filter((_, i) => i % 3 === 0)
-
-  // Catalog search
-  const catalogResults = useMemo(() => {
-    if (!searchQ && catFilter === 'All') return vendorItems
-    return ALL_ITEMS.filter(i => {
-      const matchCat = catFilter === 'All' || i.cat === catFilter
-      const matchQ   = !searchQ || i.name.toLowerCase().includes(searchQ.toLowerCase())
-      return matchCat && matchQ
-    })
-  }, [searchQ, catFilter, vendorItems])
-
-  function addToCart(item, qty = 1) {
-    setCart(prev => ({ ...prev, [item.id]: { ...item, qty: (prev[item.id]?.qty || 0) + qty } }))
+  function setItemQty(id, val) {
+    const n = Math.max(0, parseInt(val) || 0)
+    setQty(prev => n === 0 ? (({ [id]: _, ...rest }) => rest)(prev) : { ...prev, [id]: n })
   }
 
-  function setQty(id, qty) {
-    if (qty <= 0) { setCart(prev => { const n = { ...prev }; delete n[id]; return n }); return }
-    setCart(prev => ({ ...prev, [id]: { ...prev[id], qty } }))
+  function adj(id, delta) {
+    setItemQty(id, (qty[id] || 0) + delta)
   }
 
-  function addAll(items) {
+  function addAllBelowPar() {
     const updates = {}
-    items.forEach(item => { updates[item.id] = { ...item, qty: (cart[item.id]?.qty || 0) + item.par } })
-    setCart(prev => ({ ...prev, ...updates }))
-    toast.success(`Added ${items.length} items to cart`)
+    vendorItems.filter(i => i.onHand < i.par).forEach(i => {
+      updates[i.id] = i.par - i.onHand
+    })
+    setQty(prev => ({ ...prev, ...updates }))
+    toast.success(`Added ${Object.keys(updates).length} below-par items to order`)
   }
 
   function submitOrder() {
-    const items = Object.values(cart)
-    if (!items.length) { toast.warning('Cart is empty'); return }
-    const total = items.reduce((s, i) => s + i.qty * i.unitCost, 0)
-    toast.success(`Order submitted to ${currentVendor?.label} — ${items.length} items · $${total.toFixed(2)}`)
+    const items = cartItems
+    if (!items.length) { toast.warning('Order is empty'); return }
+    const total = items.reduce((s, i) => s + i.qty * i.unitCost * 24, 0)
+    toast.success(`Order submitted to ${currentVendor?.label} — ${items.length} lines · $${total.toFixed(2)}`)
     setSubmitted(true)
-    setTimeout(() => { setCart({}); setSubmitted(false) }, 3000)
+    setTimeout(() => { setQty({}); setSubmitted(false) }, 3000)
   }
 
-  const cartItems = Object.values(cart)
-  const cartTotal = cartItems.reduce((s, i) => s + i.qty * (i.unitCost || 0), 0)
-  const cartCount = cartItems.reduce((s, i) => s + i.qty, 0)
-
-  const ItemRow = ({ item }) => {
-    const inCart = cart[item.id]
-    return (
-      <div className={`${styles.itemRow} ${inCart ? styles.itemInCart : ''}`}>
-        <div className={styles.itemInfo}>
-          <div className={styles.itemName}>{item.name}</div>
-          <div className={styles.itemMeta}>{item.cat} · {item.pack} · <strong>${item.unitCost.toFixed(2)}</strong>/unit</div>
-        </div>
-        <div className={styles.itemActions}>
-          {inCart ? (
-            <div className={styles.qtyCtrl}>
-              <button onClick={() => setQty(item.id, inCart.qty - 1)}><Minus size={11}/></button>
-              <span>{inCart.qty}</span>
-              <button onClick={() => setQty(item.id, inCart.qty + 1)}><Plus size={11}/></button>
-            </div>
-          ) : (
-            <button className={styles.addBtn} onClick={() => addToCart(item, item.par)}>
-              <Plus size={12}/> Add
-            </button>
-          )}
-        </div>
-      </div>
-    )
+  function exportCSV() {
+    const rows = [['SKU','Product','Pack','Unit Cost','Qty','Subtotal'],
+      ...cartItems.map(i => [i.sku, i.name, i.pack, i.unitCost, i.qty, (i.qty*i.unitCost).toFixed(2)])]
+    const csv = rows.map(r => r.map(v => `"${v}"`).join(',')).join('\n')
+    const blob = new Blob([csv], { type:'text/csv' })
+    const url = URL.createObjectURL(blob)
+    Object.assign(document.createElement('a'), { href:url, download:`order-${vendor}-${new Date().toISOString().slice(0,10)}.csv` }).click()
+    URL.revokeObjectURL(url)
   }
+
+  const vendorItems = ITEMS.filter(i => i.vendor === vendor)
+
+  const filtered = useMemo(() => vendorItems.filter(i => {
+    if (cat !== 'All' && i.cat !== cat) return false
+    if (filterBelowPar && i.onHand >= i.par) return false
+    if (filterInCart && !qty[i.id]) return false
+    if (search && !i.name.toLowerCase().includes(search.toLowerCase()) && !i.sku.toLowerCase().includes(search.toLowerCase())) return false
+    return true
+  }), [vendorItems, cat, filterBelowPar, filterInCart, search, qty])
+
+  const grouped = useMemo(() => {
+    const g = {}
+    filtered.forEach(i => {
+      if (!g[i.cat]) g[i.cat] = []
+      g[i.cat].push(i)
+    })
+    return g
+  }, [filtered])
+
+  const cartItems = Object.entries(qty).map(([id, q]) => {
+    const item = ITEMS.find(i => i.id === id)
+    return item ? { ...item, qty: q } : null
+  }).filter(Boolean)
+
+  const cartTotal   = cartItems.reduce((s, i) => s + i.qty * i.unitCost, 0)
+  const cartLines   = cartItems.length
+  const belowParCnt = vendorItems.filter(i => i.onHand < i.par).length
 
   return (
     <div className={styles.page}>
-      {/* Header */}
-      <div className={styles.header}>
-        <div>
-          <h1 className={styles.title}>Order Hub</h1>
-          <p className={styles.subtitle}>{location ? cleanLocName(location) : 'All Locations'} · Place orders with distributors</p>
+      {/* Toolbar */}
+      <div className={styles.toolbar}>
+        <div className={styles.toolGroup}>
+          <span className={styles.toolLabel}>Vendor</span>
+          <select value={vendor} onChange={e => { setVendor(e.target.value); setQty({}) }} className={styles.sel}>
+            {VENDORS.map(v => <option key={v.id} value={v.id}>{v.label}</option>)}
+          </select>
         </div>
-      </div>
-
-      {/* Vendor links */}
-      <div className={styles.vendorBanner}>
-        <span className={styles.bannerLabel}>🔌 Order Online:</span>
-        {VENDORS.map(v => (
-          <a key={v.id} href={v.url} target="_blank" rel="noopener noreferrer"
-            className={`${styles.vendorChip} ${vendor===v.id?styles.vendorChipActive:''}`}
-            onClick={e => { e.preventDefault(); setVendor(v.id) }}>
-            {v.emoji} {v.label}
+        <div className={styles.toolDivider}/>
+        <div className={styles.toolGroup}>
+          <span className={styles.toolLabel}>Delivery date</span>
+          <input type="date" value={deliveryDate} onChange={e => setDeliveryDate(e.target.value)} className={styles.dateInput}/>
+        </div>
+        <div className={styles.toolDivider}/>
+        <div className={styles.searchWrap}>
+          <Search size={13} className={styles.searchIcon}/>
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products or SKU..." className={styles.searchInput}/>
+        </div>
+        <div className={styles.toolRight}>
+          {belowParCnt > 0 && (
+            <button className={styles.belowParBtn} onClick={addAllBelowPar}>
+              ⚠ {belowParCnt} below par — add all
+            </button>
+          )}
+          <a href={currentVendor?.url} target="_blank" rel="noopener noreferrer" className={styles.portalLink}>
+            {currentVendor?.label} portal ↗
           </a>
-        ))}
-        <a href={currentVendor?.url} target="_blank" rel="noopener noreferrer" className={styles.orderDirectLink}>
-          Order on {currentVendor?.label} ↗ <ExternalLink size={11}/>
-        </a>
+        </div>
       </div>
 
       <div className={styles.layout}>
-        {/* Left panel */}
-        <div className={styles.left}>
-          {/* Sub-tabs */}
-          <div className={styles.subTabs}>
-            <button className={`${styles.subTab} ${subTab==='suggest'?styles.subTabActive:''}`} onClick={()=>setSubTab('suggest')}>
-              <AlertTriangle size={13}/> Suggested Order
-            </button>
-            <button className={`${styles.subTab} ${subTab==='guide'?styles.subTabActive:''}`} onClick={()=>setSubTab('guide')}>
-              <BookOpen size={13}/> Order Guide
-            </button>
-            <button className={`${styles.subTab} ${subTab==='catalog'?styles.subTabActive:''}`} onClick={()=>setSubTab('catalog')}>
-              <Search size={13}/> Catalog Search
-            </button>
-            <button className={`${styles.subTab} ${subTab==='history'?styles.subTabActive:''}`} onClick={()=>setSubTab('history')}>
-              <Clock size={13}/> Past Orders
-            </button>
-            <button className={`${styles.subTab} ${subTab==='terms'?styles.subTabActive:''}`} onClick={()=>setSubTab('terms')}>
-              <CreditCard size={13}/> Payment Terms
-            </button>
+        {/* Sidebar */}
+        <div className={styles.sidebar}>
+          <div className={styles.sideSection}>
+            <div className={styles.sideLabel}>Category</div>
+            {CATS.map(c => {
+              const count = c === 'All' ? vendorItems.length : vendorItems.filter(i => i.cat === c).length
+              return (
+                <button key={c} className={`${styles.sideItem} ${cat === c ? styles.sideActive : ''}`} onClick={() => setCat(c)}>
+                  <span>{c}</span>
+                  <span className={styles.sideCount}>{count}</span>
+                </button>
+              )
+            })}
           </div>
-
-          {/* Panel content */}
-          <div className={styles.panel}>
-            {/* Suggested */}
-            {subTab === 'suggest' && (
-              <>
-                <div className={styles.panelHeader}>
-                  <AlertTriangle size={15} color="#d97706"/>
-                  <span>Suggested Order — Items Below Par</span>
-                  <button className={styles.addAllBtn} onClick={()=>addAll(suggested)}>Add All to Cart</button>
-                </div>
-                <div className={styles.panelBody}>
-                  {suggested.length === 0
-                    ? <div className={styles.empty}>✅ All items are at par level</div>
-                    : suggested.map(item => <ItemRow key={item.id} item={item}/>)
-                  }
-                </div>
-              </>
-            )}
-
-            {/* Order Guide */}
-            {subTab === 'guide' && (
-              <>
-                <div className={styles.panelHeader}>
-                  <BookOpen size={15}/>
-                  <span>Order Guide — {currentVendor?.label} Items</span>
-                  <button className={styles.addAllBtn} onClick={()=>addAll(vendorItems)}>Add All to Cart</button>
-                </div>
-                <div className={styles.panelBody}>
-                  {vendorItems.map(item => <ItemRow key={item.id} item={item}/>)}
-                  {vendorItems.length === 0 && <div className={styles.empty}>No items for {currentVendor?.label} yet.</div>}
-                </div>
-              </>
-            )}
-
-            {/* Catalog Search */}
-            {subTab === 'catalog' && (
-              <>
-                <div className={styles.panelHeader}>
-                  <Search size={15}/>
-                  <span>Catalog Search</span>
-                </div>
-                <div className={styles.catalogSearch}>
-                  <div className={styles.searchWrap}>
-                    <Search size={14} className={styles.searchIcon}/>
-                    <input value={searchQ} onChange={e=>setSearchQ(e.target.value)}
-                      placeholder="Search products..." className={styles.searchInput}/>
-                  </div>
-                  <div className={styles.catChips}>
-                    {CATS.map(c => (
-                      <button key={c} className={`${styles.catChip} ${catFilter===c?styles.catChipActive:''}`}
-                        onClick={()=>setCatFilter(c)}>{c}</button>
-                    ))}
-                  </div>
-                </div>
-                <div className={styles.panelBody}>
-                  {catalogResults.map(item => <ItemRow key={item.id} item={item}/>)}
-                  {catalogResults.length === 0 && <div className={styles.empty}>No items found</div>}
-                </div>
-              </>
-            )}
-
-            {/* Past Orders */}
-            {subTab === 'history' && (
-              <>
-                <div className={styles.panelHeader}><Clock size={15}/><span>Past Orders</span></div>
-                <div className={styles.empty} style={{padding:48}}>
-                  <Clock size={32} color="#d1d5db"/>
-                  <p style={{marginTop:12,fontWeight:600}}>No past orders yet</p>
-                  <p style={{fontSize:12,color:'#999',marginTop:4}}>Order history will appear here after your first submission</p>
-                </div>
-              </>
-            )}
-
-            {/* Payment Terms */}
-            {subTab === 'terms' && (
-              <>
-                <div className={styles.panelHeader}><CreditCard size={15}/><span>Payment Terms & Outstanding Balances</span></div>
-                <div className={styles.termsBody}>
-                  {VENDORS.map(v => (
-                    <div key={v.id} className={styles.termRow}>
-                      <div className={styles.termVendor}>{v.emoji} {v.label}</div>
-                      <div className={styles.termInfo}>
-                        <span className={styles.termBadge}>Net 30</span>
-                        <span style={{color:'#999',fontSize:12}}>Balance: —</span>
-                        <a href={v.url} target="_blank" rel="noopener noreferrer" className={styles.termLink}>Portal ↗</a>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
+          <div className={styles.sideSection}>
+            <div className={styles.sideLabel}>Filter</div>
+            <button className={`${styles.sideItem} ${filterBelowPar ? styles.sideActive : ''}`} onClick={() => setFilterBelowPar(v => !v)}>
+              <span>Below par</span>
+              <span className={`${styles.sideCount} ${filterBelowPar ? styles.sideCountActive : ''}`}>{belowParCnt}</span>
+            </button>
+            <button className={`${styles.sideItem} ${filterInCart ? styles.sideActive : ''}`} onClick={() => setFilterInCart(v => !v)}>
+              <span>In order</span>
+              <span className={`${styles.sideCount} ${filterInCart ? styles.sideCountActive : ''}`}>{cartLines}</span>
+            </button>
           </div>
         </div>
 
-        {/* Cart */}
-        <div className={styles.cart}>
-          <div className={styles.cartHeader}>
-            <ShoppingCart size={15}/>
-            <span>Current Order · {currentVendor?.label}</span>
-            {cartCount > 0 && <span className={styles.cartBadge}>{cartCount}</span>}
+        {/* Product table */}
+        <div className={styles.tableWrap}>
+          <table className={styles.table}>
+            <thead>
+              <tr>
+                <th className={styles.thProduct}>Product</th>
+                <th className={styles.th}>SKU</th>
+                <th className={styles.th}>Pack</th>
+                <th className={`${styles.th} ${styles.r}`}>Unit cost</th>
+                <th className={`${styles.th} ${styles.r}`}>Par</th>
+                <th className={`${styles.th} ${styles.r}`}>On hand</th>
+                <th className={`${styles.th} ${styles.r}`} style={{width:120}}>Order qty</th>
+                <th className={`${styles.th} ${styles.r}`}>Subtotal</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(grouped).map(([catName, items]) => (
+                <>
+                  <tr key={catName} className={styles.catRow}>
+                    <td colSpan={8} className={styles.catLabel}>{catName}</td>
+                  </tr>
+                  {items.map(item => {
+                    const q = qty[item.id] || 0
+                    const belowPar = item.onHand < item.par
+                    const subtotal = q * item.unitCost
+                    return (
+                      <tr key={item.id} className={`${styles.row} ${q > 0 ? styles.rowOrdered : ''}`}>
+                        <td className={styles.tdProduct}>
+                          <div className={styles.itemName}>{item.name}</div>
+                        </td>
+                        <td className={styles.tdSku}>{item.sku}</td>
+                        <td><span className={styles.packBadge}>{item.pack}</span></td>
+                        <td className={`${styles.td} ${styles.r}`}>${item.unitCost.toFixed(2)}</td>
+                        <td className={`${styles.td} ${styles.r}`} style={{color: belowPar ? '#854F0B' : undefined}}>{item.par}</td>
+                        <td className={`${styles.td} ${styles.r}`} style={{fontWeight: belowPar ? 600 : 400, color: item.onHand === 0 ? '#A32D2D' : belowPar ? '#854F0B' : undefined}}>
+                          {item.onHand}
+                        </td>
+                        <td className={styles.tdQty}>
+                          <div className={`${styles.qtyWrap} ${q > 0 ? styles.qtyActive : ''}`}>
+                            <button className={styles.qtyBtn} onClick={() => adj(item.id, -1)}>−</button>
+                            <input type="number" min="0" value={q || ''} onChange={e => setItemQty(item.id, e.target.value)}
+                              className={styles.qtyInput} placeholder="0"/>
+                            <button className={styles.qtyBtn} onClick={() => adj(item.id, 1)}>+</button>
+                          </div>
+                        </td>
+                        <td className={`${styles.td} ${styles.r}`} style={{fontWeight: q > 0 ? 600 : 400, color: q > 0 ? '#185FA5' : '#ccc'}}>
+                          {q > 0 ? `$${subtotal.toFixed(2)}` : '—'}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </>
+              ))}
+              {Object.keys(grouped).length === 0 && (
+                <tr><td colSpan={8} className={styles.emptyRow}>No products match your filter</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Order summary */}
+        <div className={styles.summary}>
+          <div className={styles.sumHeader}>
+            Order summary
+            {cartLines > 0 && <span className={styles.sumBadge}>{cartLines} lines</span>}
           </div>
-          <div className={styles.cartBody}>
-            {cartItems.length === 0 ? (
-              <div className={styles.cartEmpty}>
-                <ShoppingCart size={28} color="#d1d5db"/>
-                <p>Your cart is empty</p>
-                <p style={{fontSize:11,color:'#999'}}>Add items from any panel on the left</p>
-              </div>
-            ) : (
-              <>
-                {cartItems.map(item => (
-                  <div key={item.id} className={styles.cartItem}>
-                    <div>
-                      <div className={styles.cartItemName}>{item.name}</div>
-                      <div className={styles.cartItemMeta}>{item.qty} × ${item.unitCost.toFixed(2)} = <strong>${(item.qty*item.unitCost).toFixed(2)}</strong></div>
-                    </div>
-                    <button className={styles.removeBtn} onClick={()=>setQty(item.id,0)}><Trash2 size={12}/></button>
+
+          {cartLines === 0 ? (
+            <div className={styles.sumEmpty}>
+              <div style={{fontSize:13,color:'var(--text-muted)'}}>No items added yet</div>
+              <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Set quantities in the table</div>
+            </div>
+          ) : (
+            <div className={styles.sumItems}>
+              {cartItems.map(item => (
+                <div key={item.id} className={styles.sumItem}>
+                  <div style={{flex:1}}>
+                    <div className={styles.sumItemName}>{item.name}</div>
+                    <div className={styles.sumItemSub}>{item.qty} × ${item.unitCost.toFixed(2)}</div>
                   </div>
-                ))}
-                <div className={styles.cartTotals}>
-                  <div className={styles.cartTotalRow}><span>Subtotal</span><span>${cartTotal.toFixed(2)}</span></div>
-                  <div className={styles.cartTotalRow} style={{color:'#999',fontSize:12}}><span>Est. Tax (0%)</span><span>$0.00</span></div>
-                  <div className={`${styles.cartTotalRow} ${styles.cartGrand}`}><span>Order Total</span><span>${cartTotal.toFixed(2)}</span></div>
+                  <div className={styles.sumItemPrice}>${(item.qty * item.unitCost).toFixed(2)}</div>
+                  <button className={styles.removeBtn} onClick={() => setItemQty(item.id, 0)}><X size={12}/></button>
                 </div>
-              </>
-            )}
-          </div>
-          <div className={styles.cartFooter}>
-            <div className={styles.cartField}>
-              <label>Delivery Date (Requested)</label>
-              <input type="date" value={deliveryDate} onChange={e=>setDeliveryDate(e.target.value)} className={styles.cartInput}/>
+              ))}
             </div>
-            <div className={styles.cartField}>
-              <label>Order Notes</label>
-              <textarea value={orderNote} onChange={e=>setOrderNote(e.target.value)}
-                placeholder="Special instructions, delivery notes..." className={styles.cartTextarea} rows={2}/>
+          )}
+
+          {cartLines > 0 && (
+            <div className={styles.sumTotals}>
+              <div className={styles.sumRow}><span>Subtotal</span><span>${cartTotal.toFixed(2)}</span></div>
+              <div className={styles.sumRow} style={{color:'var(--text-muted)',fontSize:12}}><span>Est. tax</span><span>$0.00</span></div>
+              <div className={styles.sumGrand}><span>Order total</span><span>${cartTotal.toFixed(2)}</span></div>
             </div>
-            <button className={styles.submitBtn} onClick={submitOrder} disabled={submitted || cartItems.length===0}>
-              {submitted ? '✓ Order Submitted!' : `📤 Submit to ${currentVendor?.label}`}
-            </button>
+          )}
+
+          <div className={styles.sumFooter}>
+            <div className={styles.sumField}>
+              <label className={styles.sumLabel}>Notes</label>
+              <textarea value={note} onChange={e => setNote(e.target.value)}
+                placeholder="Delivery instructions, special requests..." className={styles.sumTextarea} rows={3}/>
+            </div>
+            <div className={styles.sumActions}>
+              {cartLines > 0 && <button className={styles.exportBtn} onClick={exportCSV}><Download size={13}/> Export</button>}
+              <button className={styles.submitBtn} onClick={submitOrder} disabled={submitted || cartLines === 0}>
+                {submitted ? '✓ Submitted' : `Submit to ${currentVendor?.label}`}
+              </button>
+            </div>
           </div>
         </div>
       </div>
