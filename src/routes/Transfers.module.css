@@ -1,0 +1,38 @@
+.page{max-width:1100px}
+.header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:20px;gap:16px;flex-wrap:wrap}
+.title{font-size:26px;font-weight:800;letter-spacing:-.5px}
+.subtitle{font-size:13px;color:var(--text-secondary);margin-top:4px}
+.actions{display:flex;align-items:center;gap:8px}
+.kpiBar{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:20px;max-width:400px}
+.kpi{background:white;border:1px solid var(--border);border-radius:var(--radius-md);padding:14px 16px}
+.kpiL{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:4px}
+.kpiV{font-size:22px;font-weight:800}
+.formCard{background:white;border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px 24px;margin-bottom:16px}
+.formTitle{font-size:15px;font-weight:700;margin-bottom:14px}
+.form{display:flex;flex-direction:column;gap:14px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.field{display:flex;flex-direction:column;gap:5px}
+.field label{font-size:11px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em}
+.field input,.field select{padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;outline:none}
+.field input:focus,.field select:focus{border-color:var(--brand)}
+.total{padding:8px 12px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;font-size:15px;font-weight:800;color:#2563eb}
+.formActions{display:flex;justify-content:flex-end;gap:8px}
+.toolbar{margin-bottom:12px}
+.search{width:300px;padding:8px 14px;border:1px solid var(--border);border-radius:8px;font-size:13px;outline:none}
+.search:focus{border-color:var(--brand)}
+.loading{text-align:center;padding:48px;color:var(--text-muted)}
+.tableWrap{background:white;border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden}
+.table{width:100%;border-collapse:collapse;font-size:13px}
+.table thead tr{background:#fafafa;border-bottom:1px solid var(--border)}
+.table th{padding:10px 14px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#999;letter-spacing:.05em}
+.table td{padding:10px 14px;border-bottom:1px solid #f5f5f5;color:var(--text-secondary)}
+.table tr:hover td{background:#fafafa}
+.btnPrimary{display:flex;align-items:center;gap:6px;padding:8px 16px;background:var(--brand);color:white;border:none;border-radius:8px;font-size:13px;font-weight:700}
+.btnPrimary:hover:not(:disabled){opacity:.85}
+.btnPrimary:disabled{opacity:.6;cursor:default}
+.btnIcon{width:34px;height:34px;border:1px solid var(--border);border-radius:8px;background:white;display:flex;align-items:center;justify-content:center;color:var(--text-secondary)}
+.btnCancel{padding:8px 16px;background:white;color:var(--text-secondary);border:1px solid var(--border);border-radius:8px;font-size:13px;font-weight:600}
+.btnDelete{width:28px;height:28px;border:1px solid #fecaca;border-radius:6px;background:white;color:#dc2626;display:flex;align-items:center;justify-content:center}
+.btnConfirm{padding:4px 10px;background:#dc2626;color:white;border:none;border-radius:5px;font-size:11px;font-weight:700}
+.btnCancelSm{padding:4px 10px;background:white;color:var(--text-secondary);border:1px solid var(--border);border-radius:5px;font-size:11px}
+@media(max-width:900px){.grid{grid-template-columns:repeat(2,1fr)}.search{width:100%}}
