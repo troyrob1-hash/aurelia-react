@@ -4,7 +4,7 @@ import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { useToast } from '@/components/ui/Toast'
 import { db } from '@/lib/firebase'
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore'
-import { Upload, Download, RefreshCw, ChevronDown, ChevronRight, Settings } from 'lucide-react'
+import { Upload, Download, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react'
 import { readPnL } from '@/lib/pnl'
 import styles from './Budgets.module.css'
 
@@ -12,7 +12,6 @@ const MONTHS  = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','No
 const YEARS   = ['2025','2026','2027']
 const SECTION_COLORS = ['#059669','#2563eb','#7c3aed','#dc2626','#d97706','#0891b2']
 
-// ── Detect section from row label ─────────────────────────────
 function detectSection(label) {
   const l = label.toLowerCase()
   if (l.includes('gross food') || l.includes('gfs') || l === 'popup' || l === 'catering' || l === 'retail' || l === 'delivery' || l === 'pantry') return 'Gross Food Sales'
@@ -56,9 +55,7 @@ const fmt$ = v => {
 const fmtPct = (v, base) => base > 0 ? (v/base*100).toFixed(1)+'%' : '—'
 const varColor = v => v === null || v === undefined ? undefined : v >= 0 ? '#059669' : '#dc2626'
 
-// ── Excel → schema + data parser ─────────────────────────────
 function parseExcel(rows) {
-  // Step 1: find month header row
   let monthCols = null
   let monthRowIdx = -1
   const MONTH_NAMES = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec']
@@ -78,36 +75,29 @@ function parseExcel(rows) {
 
   if (!monthCols) return null
 
-  // Step 2: parse data rows into sections + lines
   const sections = {}
   const sectionOrder = []
-  const data = {} // lineKey → { 1: val, ... 12: val }
+  const data = {}
 
   for (let r = monthRowIdx + 1; r < rows.length; r++) {
     const row   = rows[r]
     const raw   = String(row[0] || row[1] || '').trim()
     if (!raw || raw.length < 2) continue
 
-    // Skip metadata / formula rows
     const lower = raw.toLowerCase()
     if (lower.includes('seasonality') || lower.includes('business days') || lower.includes('days in') ||
         lower.includes('checksum') || lower.includes('variance (sb') || lower.includes('#div') ||
         lower.includes('#n/a') || lower.includes('run rate') || lower.includes('update instructions') ||
         lower.includes('accounting site') || lower.includes('trailing') || lower.includes('inputs')) continue
 
-    // Read month values
     const months = {}
     let hasData = false
     monthCols.forEach((col, i) => {
-      const cell = String(row[col] || '').replace(/[$,\s]/g,'').trim()
-      // Handle parentheses as negatives: (12,345) → -12345
+      const cell  = String(row[col] || '').replace(/[$,\s]/g,'').trim()
       const isNeg = cell.startsWith('(') && cell.endsWith(')')
       const clean = cell.replace(/[()]/g,'')
       const val   = parseFloat(clean)
-      if (!isNaN(val) && val !== 0) {
-        months[i+1] = isNeg ? -val : val
-        hasData = true
-      }
+      if (!isNaN(val) && val !== 0) { months[i+1] = isNeg ? -val : val; hasData = true }
     })
 
     if (!hasData) continue
@@ -120,11 +110,9 @@ function parseExcel(rows) {
       sectionOrder.push(section)
     }
 
-    // Don't duplicate keys
     if (!sections[section].lines.find(l => l.key === key)) {
       sections[section].lines.push({
-        key,
-        label:     raw,
+        key, label: raw,
         bold:      isBoldRow(raw),
         highlight: isHighlightRow(raw),
         gfsBase:   isGFSBase(raw),
@@ -134,7 +122,6 @@ function parseExcel(rows) {
     data[key] = months
   }
 
-  // Build schema array
   const schema = sectionOrder.map((name, i) => ({
     id:    slugify(name),
     label: name,
@@ -151,8 +138,8 @@ export default function Budgets() {
   const toast                = useToast()
 
   const [year,      setYear]      = useState('2026')
-  const [schema,    setSchema]    = useState([])   // [{id,label,color,lines:[]}]
-  const [budget,    setBudget]    = useState({})   // { lineKey: { 1:val,...12:val } }
+  const [schema,    setSchema]    = useState([])
+  const [budget,    setBudget]    = useState({})
   const [actuals,   setActuals]   = useState({})
   const [loading,   setLoading]   = useState(false)
   const [saving,    setSaving]    = useState(false)
@@ -166,36 +153,27 @@ export default function Budgets() {
   const [rawWb,       setRawWb]       = useState(null)
 
   const location = selectedLocation === 'all' ? null : selectedLocation
-  const orgId    = 'fooda' // TODO: pull from useAuth once org migration complete
+  const orgId    = 'fooda'
 
   useEffect(() => { if (location) load() }, [location, year])
 
   async function load() {
     setLoading(true)
     try {
-      // Load schema
       const schemaSnap = await getDoc(doc(db,'orgs',orgId,'budgetSchema','default'))
       if (schemaSnap.exists()) setSchema(schemaSnap.data().sections || [])
 
-      // Load budget data
       const dataSnap = await getDoc(doc(db,'tenants','fooda','budgets',`${locId(location)}-${year}`))
       setBudget(dataSnap.exists() ? dataSnap.data().lines || {} : {})
       setDirty(false)
 
-      // Load actuals
       const act = {}
       await Promise.all(MONTHS.map(async (_, i) => {
         const mo  = i + 1
         const key = `${year}-P${String(mo).padStart(2,'0')}`
         try {
           const pnl = await readPnL(location, key)
-          if (pnl) {
-            // Map known P&L fields to budget keys dynamically
-            Object.entries(pnl).forEach(([pnlKey, val]) => {
-              if (!act[pnlKey]) act[pnlKey] = {}
-              act[pnlKey][mo] = val
-            })
-          }
+          if (pnl) Object.entries(pnl).forEach(([k, v]) => { if (!act[k]) act[k] = {}; act[k][mo] = v })
         } catch {}
       }))
       setActuals(act)
@@ -205,9 +183,7 @@ export default function Budgets() {
 
   async function saveSchema(newSchema) {
     await setDoc(doc(db,'orgs',orgId,'budgetSchema','default'), {
-      sections:  newSchema,
-      updatedAt: serverTimestamp(),
-      updatedBy: user?.email || 'unknown',
+      sections: newSchema, updatedAt: serverTimestamp(), updatedBy: user?.email || 'unknown',
     }, { merge: true })
   }
 
@@ -225,14 +201,12 @@ export default function Budgets() {
     setSaving(false)
   }
 
-  // ── File parsing ──────────────────────────────────────────
   async function parseFile(file) {
     try {
       const XLSX = await import('xlsx')
       const ab   = await file.arrayBuffer()
       const wb   = XLSX.read(new Uint8Array(ab), { type:'array', cellDates:true })
       setRawWb({ wb, XLSX })
-
       if (wb.SheetNames.length === 1) {
         doParseSheet(wb, wb.SheetNames[0], XLSX)
       } else {
@@ -247,15 +221,13 @@ export default function Budgets() {
   }
 
   function doParseSheet(wb, sheetName, XLSX) {
-    const ws   = wb.Sheets[sheetName]
-    const rows = XLSX.utils.sheet_to_json(ws, { header:1, defval:'' })
+    const ws     = wb.Sheets[sheetName]
+    const rows   = XLSX.utils.sheet_to_json(ws, { header:1, defval:'' })
     const result = parseExcel(rows)
-
     if (!result || result.schema.length === 0) {
       toast.error('No data found. Make sure the file has month columns (Jan–Dec).')
       return
     }
-
     setPreview({ ...result, sheetName, lineCount: Object.keys(result.data).length })
   }
 
@@ -266,7 +238,6 @@ export default function Budgets() {
 
   async function confirmImport() {
     if (!preview) return
-    // Save schema (shared across org) + budget data (per location)
     await saveSchema(preview.schema)
     setSchema(preview.schema)
     setBudget(preview.data)
@@ -323,7 +294,6 @@ export default function Budgets() {
     const gfsLine  = allLines.find(l => l.gfsBase)
     const gfsData  = gfsLine ? budget[gfsLine.key] || {} : {}
     const annualGFS = MONTHS.reduce((s,_,i) => s+(gfsData[i+1]||0), 0)
-
     const rows = [['Line Item',...MONTHS,'Annual','% GFS']]
     allLines.forEach(line => {
       const d = budget[line.key] || {}
@@ -337,15 +307,10 @@ export default function Budgets() {
     URL.revokeObjectURL(url)
   }
 
-  // ── Computed ──────────────────────────────────────────────
   const allLines = useMemo(() => schema.flatMap(s => s.lines), [schema])
-
-  const annuals = useMemo(() => {
+  const annuals  = useMemo(() => {
     const t = {}
-    allLines.forEach(l => {
-      const d = budget[l.key] || {}
-      t[l.key] = MONTHS.reduce((s,_,i) => s+(d[i+1]||0), 0)
-    })
+    allLines.forEach(l => { t[l.key] = MONTHS.reduce((s,_,i) => s+(budget[l.key]?.[i+1]||0), 0) })
     return t
   }, [budget, allLines])
 
@@ -361,7 +326,11 @@ export default function Budgets() {
   )
 
   return (
-    <div className={styles.page}>
+    <div className={styles.page}
+      onDragOver={e=>{e.preventDefault();setDragOver(true)}}
+      onDragLeave={()=>setDragOver(false)}
+      onDrop={onDrop}
+    >
       <div className={styles.header}>
         <div>
           <h1 className={styles.title}>Budget Manager</h1>
@@ -381,27 +350,6 @@ export default function Budgets() {
           <button className={styles.btnIcon} onClick={load} title="Refresh"><RefreshCw size={14}/></button>
           {dirty && <button className={styles.btnSave} onClick={handleSave} disabled={saving}>{saving?'Saving...':'Save'}</button>}
         </div>
-      </div>
-
-      {/* Drop zone */}
-      <div
-        className={`${styles.dropzone} ${dragOver?styles.dropzoneActive:''}`}
-        onDragOver={e=>{e.preventDefault();setDragOver(true)}}
-        onDragLeave={()=>setDragOver(false)}
-        onDrop={onDrop}
-      >
-        <Upload size={18} style={{color:'#2563eb',marginBottom:6}}/>
-        <div className={styles.dropTitle}>
-          {schema.length === 0 ? 'Upload your budget file to get started' : 'Drop a new budget file to update'}
-        </div>
-        <div className={styles.dropSub}>
-          or <label className={styles.dropLink}>browse files
-            <input type="file" accept=".xlsx,.xls,.csv" style={{display:'none'}} onChange={e=>e.target.files[0]&&parseFile(e.target.files[0])}/>
-          </label> · Excel or CSV · single or multi-tab
-        </div>
-        {schema.length === 0 && (
-          <div className={styles.dropHint}>First upload sets your P&L structure for this org — future uploads update numbers only</div>
-        )}
       </div>
 
       {/* Sheet picker */}
@@ -434,85 +382,126 @@ export default function Budgets() {
       )}
 
       {loading ? <div className={styles.loading}>Loading...</div> :
-       schema.length === 0 ? (
-        <div className={styles.noSchema}>
-          <div style={{fontSize:32,marginBottom:12,opacity:.3}}>📋</div>
-          <p style={{fontWeight:600,fontSize:15,marginBottom:6}}>No budget schema yet</p>
-          <p style={{fontSize:13,color:'var(--text-secondary)',maxWidth:360,textAlign:'center',lineHeight:1.6}}>
-            Upload your budget Excel file above. Aurelia will read your P&L structure automatically — sections, line items, everything.
-          </p>
+
+      schema.length === 0 ? (
+        /* ── Option C empty state ── */
+        <div className={`${styles.emptyState} ${dragOver?styles.emptyStateDrag:''}`}>
+          <div className={styles.emptyHeader}>
+            <div className={styles.emptyTitle2}>Get started with your budget</div>
+            <div className={styles.emptySub2}>Don't have a budget file yet? Download a template and fill it in. Already have one? Upload it directly.</div>
+          </div>
+          <div className={styles.templateCards}>
+            <div className={styles.tcard}>
+              <div className={styles.tcardIcon} style={{background:'#E1F5EE'}}>
+                <Download size={16} style={{color:'#0F6E56'}}/>
+              </div>
+              <div className={styles.tcardTitle}>Download a template</div>
+              <div className={styles.tcardDesc}>Start with our standard P&L template. Fill in your numbers and upload when ready.</div>
+              <button className={styles.tcardBtn} onClick={downloadTemplate}>↓ Download Excel template</button>
+            </div>
+            <div className={styles.tcard} style={{borderColor:'#B5D4F4'}}>
+              <div className={styles.tcardIcon} style={{background:'#E6F1FB'}}>
+                <Upload size={16} style={{color:'#185FA5'}}/>
+              </div>
+              <div className={styles.tcardTitle}>I already have a budget file</div>
+              <div className={styles.tcardDesc}>Upload your existing Excel or CSV — we'll read your P&L structure automatically.</div>
+              <label className={styles.tcardBtnBlue}>
+                ↑ Upload my file
+                <input type="file" accept=".xlsx,.xls,.csv" style={{display:'none'}} onChange={e=>e.target.files[0]&&parseFile(e.target.files[0])}/>
+              </label>
+            </div>
+          </div>
+          <div className={styles.orDivider}>
+            <div className={styles.orLine}/><span className={styles.orText}>or drag and drop anywhere on this page</span><div className={styles.orLine}/>
+          </div>
+          <div className={styles.miniDrop}>
+            <label className={styles.miniDropText}>
+              Drop file here or <span className={styles.miniDropLink}>browse</span> · Excel or CSV · single or multi-tab
+              <input type="file" accept=".xlsx,.xls,.csv" style={{display:'none'}} onChange={e=>e.target.files[0]&&parseFile(e.target.files[0])}/>
+            </label>
+          </div>
         </div>
       ) : (
-        <div className={styles.tableWrap}>
-          <table className={styles.table}>
-            <thead>
-              <tr>
-                <th className={styles.thLine}>Line item</th>
-                {MONTHS.map(m => <th key={m} className={styles.th}>{m}</th>)}
-                <th className={styles.thAnnual}>Annual</th>
-                <th className={styles.thPct}>% GFS</th>
-              </tr>
-            </thead>
-            <tbody>
-              {schema.map(section => (
-                <>
-                  <tr key={section.id} className={styles.sectionRow} onClick={()=>setCollapsed(p=>({...p,[section.id]:!p[section.id]}))}>
-                    <td colSpan={15} className={styles.sectionLabel} style={{borderTopColor:section.color,color:section.color}}>
-                      <span className={styles.sectionToggle}>
-                        {collapsed[section.id] ? <ChevronRight size={11}/> : <ChevronDown size={11}/>}
-                      </span>
-                      {section.label.toUpperCase()}
-                    </td>
-                  </tr>
+        <>
+          {/* Compact upload zone for subsequent uploads */}
+          <div className={`${styles.dropzone} ${dragOver?styles.dropzoneActive:''}`}>
+            <Upload size={16} style={{color:'#2563eb',marginBottom:4}}/>
+            <div className={styles.dropTitle}>Drop a new budget file to update</div>
+            <div className={styles.dropSub}>
+              or <label className={styles.dropLink}>browse files
+                <input type="file" accept=".xlsx,.xls,.csv" style={{display:'none'}} onChange={e=>e.target.files[0]&&parseFile(e.target.files[0])}/>
+              </label> · Excel or CSV
+            </div>
+          </div>
 
-                  {!collapsed[section.id] && section.lines.map(line => {
-                    const annualVal = annuals[line.key] || 0
+          <div className={styles.tableWrap}>
+            <table className={styles.table}>
+              <thead>
+                <tr>
+                  <th className={styles.thLine}>Line item</th>
+                  {MONTHS.map(m => <th key={m} className={styles.th}>{m}</th>)}
+                  <th className={styles.thAnnual}>Annual</th>
+                  <th className={styles.thPct}>% GFS</th>
+                </tr>
+              </thead>
+              <tbody>
+                {schema.map(section => (
+                  <>
+                    <tr key={section.id} className={styles.sectionRow} onClick={()=>setCollapsed(p=>({...p,[section.id]:!p[section.id]}))}>
+                      <td colSpan={15} className={styles.sectionLabel} style={{borderTopColor:section.color,color:section.color}}>
+                        <span className={styles.sectionToggle}>
+                          {collapsed[section.id] ? <ChevronRight size={11}/> : <ChevronDown size={11}/>}
+                        </span>
+                        {section.label.toUpperCase()}
+                      </td>
+                    </tr>
 
-                    return (
-                      <tr key={line.key} className={`${styles.row} ${line.bold?styles.boldRow:''} ${line.highlight?styles.highlightRow:''}`}>
-                        <td className={styles.lineLabel}>{line.label}</td>
+                    {!collapsed[section.id] && section.lines.map(line => {
+                      const annualVal = annuals[line.key] || 0
+                      return (
+                        <tr key={line.key} className={`${styles.row} ${line.bold?styles.boldRow:''} ${line.highlight?styles.highlightRow:''}`}>
+                          <td className={styles.lineLabel}>{line.label}</td>
+                          {MONTHS.map((_,i) => {
+                            const mo   = i + 1
+                            const bVal = budget[line.key]?.[mo] ?? null
+                            const aVal = actuals[line.key]?.[mo] ?? null
 
-                        {MONTHS.map((_,i) => {
-                          const mo   = i + 1
-                          const bVal = budget[line.key]?.[mo] ?? null
-                          const aVal = actuals[line.key]?.[mo] ?? null
+                            if (view === 'variance') {
+                              const variance = aVal !== null && bVal !== null ? aVal - bVal : null
+                              return (
+                                <td key={mo} className={styles.varCell}>
+                                  {aVal !== null && <div className={styles.varActual}>{fmt$(aVal)}</div>}
+                                  {bVal !== null && <div className={styles.varBudget}>{fmt$(bVal)}</div>}
+                                  {variance !== null && <div className={styles.varDiff} style={{color:varColor(variance)}}>{variance>=0?'+':''}{fmt$(variance)}</div>}
+                                  {aVal===null&&bVal===null&&<span className={styles.dash}>—</span>}
+                                </td>
+                              )
+                            }
 
-                          if (view === 'variance') {
-                            const variance = aVal !== null && bVal !== null ? aVal - bVal : null
                             return (
-                              <td key={mo} className={styles.varCell}>
-                                {aVal !== null && <div className={styles.varActual}>{fmt$(aVal)}</div>}
-                                {bVal !== null && <div className={styles.varBudget}>{fmt$(bVal)}</div>}
-                                {variance !== null && <div className={styles.varDiff} style={{color:varColor(variance)}}>{variance>=0?'+':''}{fmt$(variance)}</div>}
-                                {aVal===null&&bVal===null&&<span className={styles.dash}>—</span>}
+                              <td key={mo} className={styles.dataCell}>
+                                {bVal !== null
+                                  ? <span style={{color:line.highlight?(bVal>=0?'#059669':'#dc2626'):undefined}}>{fmt$(bVal)}</span>
+                                  : <span className={styles.dash}>—</span>
+                                }
                               </td>
                             )
-                          }
-
-                          return (
-                            <td key={mo} className={styles.dataCell}>
-                              {bVal !== null
-                                ? <span style={{color:line.highlight?(bVal>=0?'#059669':'#dc2626'):undefined}}>{fmt$(bVal)}</span>
-                                : <span className={styles.dash}>—</span>
-                              }
-                            </td>
-                          )
-                        })}
-
-                        <td className={styles.annualCell} style={{color:line.highlight?(annualVal>=0?'#059669':'#dc2626'):undefined}}>
-                          {fmt$(annualVal)}
-                        </td>
-                        <td className={styles.pctCell}>
-                          {line.gfsBase ? '100%' : fmtPct(annualVal, annualGFS)}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                          })}
+                          <td className={styles.annualCell} style={{color:line.highlight?(annualVal>=0?'#059669':'#dc2626'):undefined}}>
+                            {fmt$(annualVal)}
+                          </td>
+                          <td className={styles.pctCell}>
+                            {line.gfsBase ? '100%' : fmtPct(annualVal, annualGFS)}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </div>
   )
