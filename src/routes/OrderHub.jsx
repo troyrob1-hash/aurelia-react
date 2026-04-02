@@ -1,7 +1,10 @@
 import { useState, useMemo } from 'react'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { useToast } from '@/components/ui/Toast'
-import { Search, Download, Minus, Plus, X } from 'lucide-react'
+import { Search, Download, Minus, Plus, X, Clock } from 'lucide-react'
+import { db } from '@/lib/firebase'
+import { collection, addDoc, getDocs, query, orderBy, limit, serverTimestamp } from 'firebase/firestore'
+import { useAuthStore } from '@/store/authStore'
 import styles from './OrderHub.module.css'
 
 const VENDORS = [
@@ -73,6 +76,9 @@ export default function OrderHub() {
   const [deliveryDate, setDeliveryDate] = useState('')
   const [note, setNote]           = useState('')
   const [submitted, setSubmitted] = useState(false)
+  const [pastOrders, setPastOrders] = useState([])
+  const [showPast, setShowPast] = useState(false)
+  const { user } = useAuthStore()
 
   const location = selectedLocation === 'all' ? null : selectedLocation
   const currentVendor = VENDORS.find(v => v.id === vendor)
@@ -95,13 +101,62 @@ export default function OrderHub() {
     toast.success(`Added ${Object.keys(updates).length} below-par items to order`)
   }
 
-  function submitOrder() {
+  async function loadPastOrders() {
+    try {
+      const snap = await getDocs(query(collection(db,'tenants','fooda','orders'), orderBy('createdAt','desc'), limit(20)))
+      setPastOrders(snap.docs.map(d => ({ id:d.id, ...d.data() })))
+    } catch(e) {}
+  }
+
+  async function submitOrder() {
     const items = cartItems
     if (!items.length) { toast.warning('Order is empty'); return }
-    const total = items.reduce((s, i) => s + i.qty * i.unitCost * 24, 0)
-    toast.success(`Order submitted to ${currentVendor?.label} — ${items.length} lines · $${total.toFixed(2)}`)
-    setSubmitted(true)
-    setTimeout(() => { setQty({}); setSubmitted(false) }, 3000)
+    const orderTotal = items.reduce((s, i) => s + i.qty * i.unitCost, 0)
+    const now = new Date()
+    const orderNum = `ORD-${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}-${Math.floor(Math.random()*9000+1000)}`
+
+    const orderDoc = {
+      orderNum,
+      vendor: currentVendor?.label,
+      vendorId: vendor,
+      location: location || 'All Locations',
+      deliveryDate: deliveryDate || null,
+      note,
+      items: items.map(i => ({ id:i.id, name:i.name, sku:i.sku, pack:i.pack, unitCost:i.unitCost, qty:i.qty, subtotal:+(i.qty*i.unitCost).toFixed(2) })),
+      total: +orderTotal.toFixed(2),
+      status: 'Submitted',
+      createdBy: user?.email || 'unknown',
+      createdAt: serverTimestamp(),
+    }
+
+    // Auto-create invoice in Purchasing/AP
+    const invoiceDoc = {
+      invoiceNum: orderNum,
+      vendor: currentVendor?.label,
+      invoiceDate: now.toISOString().slice(0,10),
+      dueDate: deliveryDate || '',
+      amount: +orderTotal.toFixed(2),
+      amountPaid: 0,
+      location: location || '',
+      glCode: '12000',
+      notes: `Auto-created from Order Hub — ${items.length} line items`,
+      status: 'Pending',
+      source: 'order_hub',
+      createdBy: user?.email || 'unknown',
+      createdAt: serverTimestamp(),
+    }
+
+    try {
+      await Promise.all([
+        addDoc(collection(db,'tenants','fooda','orders'), orderDoc),
+        addDoc(collection(db,'tenants','fooda','invoices'), invoiceDoc),
+      ])
+      toast.success(`Order ${orderNum} submitted — invoice created in Purchasing`)
+      setSubmitted(true)
+      setTimeout(() => { setQty({}); setSubmitted(false); setNote('') }, 3000)
+    } catch(e) {
+      toast.error('Failed to submit order. Please try again.')
+    }
   }
 
   function exportCSV() {
@@ -168,11 +223,43 @@ export default function OrderHub() {
               ⚠ {belowParCnt} below par — add all
             </button>
           )}
+          <button className={styles.pastOrdersBtn} onClick={() => { setShowPast(v=>!v); loadPastOrders() }}>
+            <Clock size={13}/> Past Orders
+          </button>
           <a href={currentVendor?.url} target="_blank" rel="noopener noreferrer" className={styles.portalLink}>
             {currentVendor?.label} portal ↗
           </a>
         </div>
       </div>
+
+      {showPast && (
+        <div className={styles.pastPanel}>
+          <div className={styles.pastHeader}>
+            <span>Past Orders</span>
+            <button className={styles.pastClose} onClick={()=>setShowPast(false)}>✕</button>
+          </div>
+          {pastOrders.length === 0 ? (
+            <div className={styles.pastEmpty}>No orders submitted yet</div>
+          ) : (
+            <table className={styles.pastTable}>
+              <thead><tr><th>Order #</th><th>Vendor</th><th>Location</th><th>Date</th><th>Items</th><th>Total</th><th>Status</th></tr></thead>
+              <tbody>
+                {pastOrders.map(o => (
+                  <tr key={o.id}>
+                    <td style={{fontWeight:600,fontFamily:'monospace'}}>{o.orderNum}</td>
+                    <td>{o.vendor}</td>
+                    <td>{cleanLocName(o.location||'')}</td>
+                    <td>{o.createdAt?.toDate?.()?.toLocaleDateString?.() || '—'}</td>
+                    <td>{o.items?.length || 0} lines</td>
+                    <td style={{fontWeight:700,color:'#185FA5'}}>${(o.total||0).toFixed(2)}</td>
+                    <td><span className={styles.statusBadge}>{o.status}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
 
       <div className={styles.layout}>
         {/* Sidebar */}

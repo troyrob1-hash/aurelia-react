@@ -34,12 +34,28 @@ export default function Dashboard() {
 
   useEffect(() => { loadAll() }, [selectedLocation])
 
+  const [invoiceTotal, setInvoiceTotal] = useState(0)
+
   async function loadAll() {
     setLoading(true)
     try {
-      await Promise.all([loadSales(), loadWaste()])
+      await Promise.all([loadSales(), loadWaste(), loadInvoices()])
     } catch(e) { toast.error('Failed to load dashboard data.') }
     setLoading(false)
+  }
+
+  async function loadInvoices() {
+    try {
+      const snap = await getDocs(collection(db,'tenants','fooda','invoices'))
+      const now = new Date()
+      const monthAgo = new Date(now - 30*24*60*60*1000)
+      const total = snap.docs
+        .map(d => d.data())
+        .filter(i => i.status !== 'Void' && i.status !== 'Paid')
+        .filter(i => { const d = new Date(i.invoiceDate); return d >= monthAgo })
+        .reduce((s,i) => s + (i.amount||0), 0)
+      setInvoiceTotal(total)
+    } catch(e) {}
   }
 
   async function loadSales() {
@@ -103,7 +119,7 @@ export default function Dashboard() {
   const retailCOGS   = sales.retail * 0.48
   const cateringCOGS = sales.catering * 0.25
   const payProc      = sales.total * 0.018
-  const totalCOGS    = retailCOGS + cateringCOGS + payProc + wasteCost
+  const totalCOGS    = retailCOGS + cateringCOGS + payProc + wasteCost + invoiceTotal
   const grossMargin  = sales.total - totalCOGS
   const gmPct        = sales.total > 0 ? grossMargin/sales.total : 0
 
@@ -254,6 +270,7 @@ export default function Dashboard() {
               <Row label="Cafeteria" actual={retailCOGS} indent={1}/>
               <Row label="Catering Resale" actual={cateringCOGS} indent={1}/>
               <Row label="Total Retail COGS" actual={retailCOGS+cateringCOGS} indent={0} bold/>
+              <Row label="Purchases (AP)" actual={invoiceTotal} indent={0}/>
               <Row label="Waste / Shrinkage" actual={wasteCost} indent={0} color="#dc2626"/>
               <Row label="Total COGS" actual={totalCOGS} indent={0} bold isTotal/>
               <Gap/>
