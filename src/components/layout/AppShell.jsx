@@ -66,6 +66,21 @@ export default function AppShell() {
               ))}
             </select>
           </div>
+          <div className={styles.periodSelector}>
+            <button className={styles.periodNav} onClick={prevWeek}>&lsaquo;</button>
+            <div className={styles.periodDropdowns}>
+              <select value={year} onChange={e=>{setYear(Number(e.target.value));setWeek(1)}} className={styles.periodSel}>
+                {Array.from({length:10},(_,i)=>2024+i).map(y=><option key={y} value={y}>{y}</option>)}
+              </select>
+              <select value={period} onChange={e=>{setPeriod(Number(e.target.value));setWeek(1)}} className={styles.periodSel}>
+                {Array.from({length:12},(_,i)=>i+1).map(p=><option key={p} value={p}>P{p}</option>)}
+              </select>
+              <select value={week} onChange={e=>setWeek(Number(e.target.value))} className={styles.periodSel}>
+                {weeks.map((w,i)=><option key={i} value={i+1}>{getWeekLabel(w,i+1)}</option>)}
+              </select>
+            </div>
+            <button className={styles.periodNav} onClick={nextWeek}>&rsaquo;</button>
+          </div>
           <div className={styles.liveBadge}>
             <span className={styles.liveDot}/> live
           </div>
