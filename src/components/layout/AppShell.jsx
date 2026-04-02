@@ -24,6 +24,7 @@ const NAV = [
 export default function AppShell() {
   const { user, signOut }                                            = useAuthStore()
   const { groupedLocations, selectedLocation, setSelectedLocation } = useLocations()
+  const { year, period, week, weeks, setYear, setPeriod, setWeek, prevWeek, nextWeek } = usePeriod()
   const navigate                                                     = useNavigate()
   const [menuOpen, setMenuOpen]       = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
