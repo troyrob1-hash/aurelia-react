@@ -50,6 +50,12 @@ export default function Inventory() {
 
   // On mobile, if admin has 'all' selected, show prompt. Directors auto-filtered.
   const location = (!selectedLocation || selectedLocation === 'all') ? null : selectedLocation
+  const week = (() => {
+    const now = new Date(), year = now.getFullYear()
+    const start = new Date(year, 0, 1)
+    const w = Math.ceil(((now-start)/86400000+start.getDay()+1)/7)
+    return `${year}-W${String(w).padStart(2,'0')}`
+  })()
 
   useEffect(() => {
     if (!location) { setItems([]); return }
@@ -88,19 +94,68 @@ export default function Inventory() {
     setDirty(true)
   }
 
-  function exportCSV() {
-    const rows = [
-      ['Item','Vendor','Category','Pack','Unit Cost','Count','Total Value'],
-      ...items.map(i => [i.name, i.vendor, assignCat(i), i.packSize,
-        i.unitCost, i.qty||0, ((i.qty||0)*(i.unitCost||0)).toFixed(2)])
-    ]
-    const csv  = rows.map(r => r.map(v => `"${v??''}"`).join(',')).join('\n')
-    const blob = new Blob([csv], { type: 'text/csv' })
-    const url  = URL.createObjectURL(blob)
-    Object.assign(document.createElement('a'), {
-      href: url, download: `inventory-${location}-${new Date().toISOString().slice(0,10)}.csv`
-    }).click()
-    URL.revokeObjectURL(url)
+  async function exportExcel() {
+    try {
+      const XLSX = await import('xlsx')
+      const wb   = XLSX.utils.book_new()
+
+      // Summary sheet
+      const summaryRows = [
+        ['Aurelia FMS — Inventory Count Report'],
+        ['Location:', cleanLocName(location)],
+        ['Date:', new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'})],
+        ['Week:', week],
+        [],
+        ['SUMMARY'],
+        ['Total Items', items.length],
+        ['Items Counted', counted],
+        ['Inventory Value', totalValue.toFixed(2)],
+        ['Progress', items.length ? Math.round(counted/items.length*100)+'%' : '0%'],
+      ]
+      const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows)
+      XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary')
+
+      // Detail sheet — all items
+      const header = ['#','Item','Vendor','Category','Pack Size','Unit Cost','Count','Total Value','GL Code']
+      const detailRows = items.map((item, idx) => [
+        idx+1,
+        item.name,
+        item.vendor || '',
+        INV_CATS.find(c=>c.key===assignCat(item))?.label || 'General',
+        item.packSize || '',
+        item.unitCost || 0,
+        item.qty || 0,
+        +((item.qty||0)*(item.unitCost||0)).toFixed(2),
+        item.glCode || ''
+      ])
+      const wsDetail = XLSX.utils.aoa_to_sheet([header, ...detailRows])
+
+      // Column widths
+      wsDetail['!cols'] = [
+        {wch:4},{wch:40},{wch:15},{wch:20},{wch:10},{wch:10},{wch:8},{wch:12},{wch:30}
+      ]
+      XLSX.utils.book_append_sheet(wb, wsDetail, 'All Items')
+
+      // One sheet per category
+      INV_CATS.forEach(cat => {
+        const catItems = items.filter(i => assignCat(i) === cat.key)
+        if (catItems.length === 0) return
+        const catHeader = ['#','Item','Vendor','Pack Size','Unit Cost','Count','Total Value']
+        const catRows = catItems.map((item, idx) => [
+          idx+1, item.name, item.vendor||'', item.packSize||'',
+          item.unitCost||0, item.qty||0, +((item.qty||0)*(item.unitCost||0)).toFixed(2)
+        ])
+        catRows.push(['','','','','TOTAL','',+catItems.reduce((s,i)=>s+((i.qty||0)*(i.unitCost||0)),0).toFixed(2)])
+        const ws = XLSX.utils.aoa_to_sheet([catHeader, ...catRows])
+        ws['!cols'] = [{wch:4},{wch:40},{wch:15},{wch:10},{wch:10},{wch:8},{wch:12}]
+        XLSX.utils.book_append_sheet(wb, ws, cat.label.slice(0,31))
+      })
+
+      XLSX.writeFile(wb, `inventory-${cleanLocName(location)}-${week}.xlsx`)
+      toast.success('Inventory exported to Excel')
+    } catch(e) {
+      toast.error('Export failed. Please try again.')
+    }
   }
 
   const totalValue = useMemo(() =>
@@ -193,7 +248,7 @@ export default function Inventory() {
               </div>
               <div className={styles.headerActions}>
                 {dirty && <button className={styles.btnSave} onClick={handleSave} disabled={saving}>{saving?'Saving...':'Save Changes'}</button>}
-                <button className={styles.btnIcon} onClick={exportCSV} title="Export"><Download size={15}/></button>
+                <button className={styles.btnIcon} onClick={exportExcel} title="Export to Excel"><Download size={15}/></button>
                 <button className={styles.btnIcon} onClick={load} title="Refresh"><RefreshCw size={15}/></button>
               </div>
             </div>
