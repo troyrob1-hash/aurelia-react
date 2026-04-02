@@ -38,6 +38,29 @@
 .previewCheck{width:20px;height:20px;background:#059669;color:white;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;flex-shrink:0}
 
 .loading{text-align:center;padding:64px;color:var(--text-muted)}
+
+/* Option C empty state */
+.emptyState{border:2px dashed var(--border);border-radius:var(--radius-lg);padding:2rem;margin-bottom:16px;transition:border-color .15s,background .15s}
+.emptyStateDrag{border-color:#1D9E75;background:#f0fdf4}
+.emptyHeader{text-align:center;margin-bottom:1.5rem}
+.emptyTitle{font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:6px}
+.emptySub{font-size:13px;color:var(--text-secondary);line-height:1.6;max-width:420px;margin:0 auto}
+.templateCards{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:1.25rem}
+.tcard{padding:1.25rem;border:1px solid var(--border);border-radius:var(--radius-lg);background:white}
+.tcardIcon{width:34px;height:34px;border-radius:8px;display:flex;align-items:center;justify-content:center;margin-bottom:10px}
+.tcardTitle{font-size:13px;font-weight:700;color:var(--text-primary);margin-bottom:4px}
+.tcardDesc{font-size:12px;color:var(--text-secondary);line-height:1.5;margin-bottom:12px}
+.tcardBtn{padding:6px 14px;border:1px solid var(--border);border-radius:7px;background:white;font-size:12px;font-weight:600;color:var(--text-secondary);cursor:pointer;font-family:inherit}
+.tcardBtn:hover{background:var(--bg-app)}
+.tcardBtnBlue{display:inline-block;padding:6px 14px;border:1px solid #bfdbfe;border-radius:7px;background:#eff6ff;font-size:12px;font-weight:600;color:#2563eb;cursor:pointer;font-family:inherit}
+.tcardBtnBlue:hover{background:#dbeafe}
+.orDivider{display:flex;align-items:center;gap:10px;margin-bottom:1rem}
+.orLine{flex:1;height:0.5px;background:var(--border)}
+.orText{font-size:11px;color:var(--text-muted);white-space:nowrap}
+.miniDrop{border:1px dashed var(--border);border-radius:var(--radius-md);padding:14px;text-align:center;cursor:pointer}
+.miniDrop:hover{border-color:#2563eb;background:#f0f7ff}
+.miniDropText{font-size:13px;color:var(--text-secondary);cursor:pointer}
+.miniDropLink{color:#2563eb;text-decoration:underline}
 .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:60vh;gap:12px;text-align:center}
 .emptyTitle{font-size:18px;font-weight:700}
 .emptySub{font-size:13px;color:var(--text-secondary);max-width:300px}

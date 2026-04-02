@@ -282,6 +282,42 @@ export default function Budgets() {
     if (file) parseFile(file)
   }, [])
 
+  function downloadTemplate() {
+    const rows = [
+      ['Line Item','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],
+      ['GROSS FOOD SALES','','','','','','','','','','','',''],
+      ['Popup','','','','','','','','','','','',''],
+      ['Catering','','','','','','','','','','','',''],
+      ['Retail','','','','','','','','','','','',''],
+      ['Total Gross Food Sales','','','','','','','','','','','',''],
+      ['REVENUE','','','','','','','','','','','',''],
+      ['Total Revenue','','','','','','','','','','','',''],
+      ['LABOR','','','','','','','','','','','',''],
+      ['Total Salaries & Wages','','','','','','','','','','','',''],
+      ['Bonuses','','','','','','','','','','','',''],
+      ['Benefits & Taxes','','','','','','','','','','','',''],
+      ['Total Labor','','','','','','','','','','','',''],
+      ['COGS','','','','','','','','','','','',''],
+      ['Payment Processing Fees','','','','','','','','','','','',''],
+      ['Retail COGS','','','','','','','','','','','',''],
+      ['Total Cost of Goods Sold','','','','','','','','','','','',''],
+      ['GROSS MARGIN','','','','','','','','','','','',''],
+      ['Gross Margin','','','','','','','','','','','',''],
+      ['EXPENSES','','','','','','','','','','','',''],
+      ['Marketing & Advertising','','','','','','','','','','','',''],
+      ['Technology Services','','','','','','','','','','','',''],
+      ['Other','','','','','','','','','','','',''],
+      ['Expenses','','','','','','','','','','','',''],
+      ['EBITDA','','','','','','','','','','','',''],
+      ['EBITDA','','','','','','','','','','','',''],
+    ]
+    const csv  = rows.map(r => r.map(v=>`"${v}"`).join(',')).join('\n')
+    const blob = new Blob([csv],{type:'text/csv'})
+    const url  = URL.createObjectURL(blob)
+    Object.assign(document.createElement('a'),{href:url,download:'aurelia-budget-template.csv'}).click()
+    URL.revokeObjectURL(url)
+  }
+
   function exportCSV() {
     const allLines = schema.flatMap(s => s.lines)
     const gfsLine  = allLines.find(l => l.gfsBase)
