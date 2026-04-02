@@ -154,12 +154,6 @@ export default function Dashboard() {
           </p>
         </div>
         <div className={styles.headerRight}>
-          <div className={styles.periodTabs}>
-            {PERIODS.map(p => (
-              <button key={p.key} className={`${styles.periodTab} ${period===p.key?styles.periodActive:''}`}
-                onClick={() => setPeriod(p.key)}>{p.label}</button>
-            ))}
-          </div>
           <button className={styles.refreshBtn} onClick={refresh} disabled={refreshing}>
             <RefreshCw size={13} className={refreshing ? styles.spinning : ''}/>
           </button>
