@@ -72,8 +72,6 @@
 /* ── Body ────────────────────────────────────────── */
 .body { display:flex;flex:1;overflow:hidden;position:relative; }
 
-@media (max-width: 900px) { .body { overflow: visible; } }
-
 /* ── Sidebar — hidden on mobile by default ───────── */
 .sidebar {
   width: var(--sidebar-w);
@@ -173,28 +171,44 @@
   .notifBtn  { display: none; }
 }
 
-/* Fix mobile sidebar clipping */
+/* Period selector */
+.periodSelector {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 8px;
+  padding: 2px 4px;
+}
+.periodNav {
+  width: 24px;
+  height: 24px;
+  background: none;
+  border: none;
+  color: rgba(255,255,255,0.7);
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  line-height: 1;
+}
+.periodNav:hover { background: rgba(255,255,255,0.1); color: white; }
+.periodDropdowns { display: flex; gap: 4px; align-items: center; }
+.periodSel {
+  background: transparent;
+  border: none;
+  color: white;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
+  padding: 3px 4px;
+}
+.periodSel option { background: #1a1a1a; color: white; }
+
 @media (max-width: 900px) {
-  .shell { overflow: visible; }
-  .body  { overflow: visible; }
-  .main  { overflow-y: auto; }
-  .sidebar {
-    position: fixed !important;
-    top: var(--topbar-h) !important;
-    left: 0 !important;
-    height: calc(100vh - var(--topbar-h)) !important;
-    width: 260px !important;
-    z-index: 300 !important;
-    transform: translateX(-100%) !important;
-    transition: transform .25s ease !important;
-  }
-  .sidebarOpen {
-    transform: translateX(0) !important;
-  }
-  .overlay {
-    position: fixed !important;
-    inset: 0 !important;
-    top: var(--topbar-h) !important;
-    z-index: 299 !important;
-  }
+  .periodSelector { display: none; }
 }

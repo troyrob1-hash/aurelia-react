@@ -9,6 +9,7 @@ import ForgotPage     from '@/routes/auth/ForgotPage'
 import { lazy, Suspense } from 'react'
 import AppShell from '@/components/layout/AppShell'
 import { LocationProvider } from '@/store/LocationContext'
+import { PeriodProvider } from '@/store/PeriodContext'
 import { ToastProvider } from '@/components/ui/Toast'
 import OfflineBanner from '@/components/ui/OfflineBanner'
 import LoadingScreen from '@/components/ui/LoadingScreen'
@@ -52,9 +53,11 @@ export default function App() {
 
         <Route path="/" element={
           <ProtectedRoute>
+            <PeriodProvider>
             <LocationProvider>
               <AppShell />
             </LocationProvider>
+            </PeriodProvider>
           </ProtectedRoute>
         }>
           <Route index element={<Suspense fallback={<LoadingScreen />}><Dashboard /></Suspense>} />

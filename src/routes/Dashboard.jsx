@@ -3,14 +3,12 @@ import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { useToast } from '@/components/ui/Toast'
 import { db } from '@/lib/firebase'
 import { collection, getDocs, query, orderBy, limit, doc, getDoc } from 'firebase/firestore'
-import { readPnL, weekPeriod, monthPeriod, locId } from '@/lib/pnl'
+import { readPnL, locId } from '@/lib/pnl'
+import { usePeriod, getPeriodLabel } from '@/store/PeriodContext'
 import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react'
 import styles from './Dashboard.module.css'
 
-const PERIODS = [
-  { key:'week',  label:'This Week' },
-  { key:'month', label:'This Month' },
-]
+
 
 const fmt$ = v => {
   if (!v || isNaN(v) || v === 0) return '—'
@@ -24,16 +22,15 @@ const varColor = v => v === null || v === undefined ? undefined : v >= 0 ? '#059
 export default function Dashboard() {
   const toast = useToast()
   const { selectedLocation, visibleLocations } = useLocations()
-  const [period, setPeriod]   = useState('week')
   const [pnl, setPnl]         = useState({})
   const [loading, setLoading] = useState(true)
   const [collapsed, setCollapsed] = useState({})
   const [refreshing, setRefreshing] = useState(false)
 
+  const { year, period, week, periodKey, currentWeek } = usePeriod()
   const location = selectedLocation === 'all' ? null : selectedLocation
-  const periodKey = period === 'week' ? weekPeriod() : monthPeriod()
 
-  useEffect(() => { load() }, [selectedLocation, period])
+  useEffect(() => { load() }, [selectedLocation, periodKey])
 
   async function load() {
     setLoading(true)

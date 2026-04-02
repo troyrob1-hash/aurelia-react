@@ -3,10 +3,7 @@
 .title  { font-size:26px;font-weight:800;letter-spacing:-.5px; }
 .subtitle { font-size:13px;color:var(--text-secondary);margin-top:4px; }
 .headerRight { display:flex;align-items:center;gap:10px; }
-.periodTabs { display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden; }
-.periodTab { padding:6px 14px;border:none;background:white;font-size:12px;font-weight:600;color:var(--text-secondary);cursor:pointer;border-right:1px solid var(--border); }
-.periodTab:last-child { border-right:none; }
-.periodActive { background:#1a1a1a;color:white; }
+.periodLabel { font-size:12px;font-weight:600;color:var(--text-muted);padding:6px 12px;background:#f9fafb;border:1px solid var(--border);border-radius:8px; }
 .refreshBtn { width:32px;height:32px;border:1px solid var(--border);border-radius:8px;background:white;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text-secondary); }
 .refreshBtn:hover { background:#fafafa; }
 .spinning { animation:spin 1s linear infinite; }

@@ -5,6 +5,7 @@ import { db } from '@/lib/firebase'
 import { doc, getDoc, setDoc } from 'firebase/firestore'
 import { Download, ChevronLeft, ChevronRight, Upload } from 'lucide-react'
 import { useToast } from '@/components/ui/Toast'
+import { usePeriod } from '@/store/PeriodContext'
 import { writeSalesPnL } from '@/lib/pnl'
 import styles from './WeeklySales.module.css'
 
@@ -40,14 +41,28 @@ function locId(name) { return name.replace(/[^a-zA-Z0-9]/g,'_') }
 export default function WeeklySales() {
   var { user }                    = useAuthStore()
   var { selectedLocation }        = useLocations()
-  var [weekOffset, setWeekOffset] = useState(0)
+  var { year, period, week: weekNum, weeks, currentWeek, periodKey, prevWeek, nextWeek } = usePeriod()
   var [entries, setEntries]       = useState({})
   var [loading, setLoading]       = useState(false)
   var [saving, setSaving]         = useState(false)
   var [dirty, setDirty]           = useState(false)
 
   var location = selectedLocation === 'all' ? null : selectedLocation
-  var week     = useMemo(function() { return getWeekInfo(weekOffset) }, [weekOffset])
+  // Build week object compatible with existing code
+  var week = useMemo(function() {
+    if (!currentWeek) return null
+    var start = currentWeek.start
+    var end   = currentWeek.end
+    var wn    = Math.ceil(((start - new Date(start.getFullYear(),0,1)) / 86400000 + new Date(start.getFullYear(),0,1).getDay() + 1) / 7)
+    return {
+      weekKey: periodKey,
+      label: 'P' + period + ' Wk ' + weekNum + ' · ' + start.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' – ' + end.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}),
+      days: DAYS.map(function(name, i) {
+        var d = new Date(start); d.setDate(start.getDate() + i)
+        return d <= end ? { name: name, date: d, key: d.toISOString().slice(0,10) } : null
+      }).filter(Boolean)
+    }
+  }, [currentWeek, periodKey, period, weekNum])
 
   useEffect(function() {
     if (!location) return

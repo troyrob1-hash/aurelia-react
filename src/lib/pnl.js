@@ -12,17 +12,19 @@ export function locId(name) {
   return (name || '').replace(/[^a-zA-Z0-9]/g, '_')
 }
 
+// periodKey is now passed in from PeriodContext (e.g. '2026-P01-W2')
+// These helpers kept for backward compat but PeriodContext is the source of truth
 export function weekPeriod(offset = 0) {
   const d = new Date()
   d.setDate(d.getDate() + offset * 7)
   const yr = d.getFullYear()
-  const start = new Date(yr, 0, 1)
-  const wn = Math.ceil(((d - start) / 86400000 + start.getDay() + 1) / 7)
-  return `${yr}-W${String(wn).padStart(2, '0')}`
+  const mo = d.getMonth() + 1
+  // approximate - real period key comes from PeriodContext
+  return `${yr}-P${String(mo).padStart(2,'0')}-W1`
 }
 
 export function monthPeriod(date = new Date()) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+  return `${date.getFullYear()}-P${String(date.getMonth()+1).padStart(2,'0')}`
 }
 
 // Generic writer — merges into existing period doc
