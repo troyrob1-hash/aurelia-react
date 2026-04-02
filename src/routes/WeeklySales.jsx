@@ -5,6 +5,7 @@ import { db } from '@/lib/firebase'
 import { doc, getDoc, setDoc } from 'firebase/firestore'
 import { Download, ChevronLeft, ChevronRight, Upload } from 'lucide-react'
 import { useToast } from '@/components/ui/Toast'
+import { writeSalesPnL } from '@/lib/pnl'
 import styles from './WeeklySales.module.css'
 
 const TENANT = 'fooda'
@@ -68,6 +69,11 @@ export default function WeeklySales() {
     try {
       var ref = doc(db, 'tenants', TENANT, 'locations', locId(location), 'sales', week.weekKey)
       await setDoc(ref, { entries: entries, weekKey: week.weekKey, location: location, updatedAt: new Date().toISOString(), updatedBy: user?.email || 'unknown' }, { merge: true })
+      // Write P&L data
+      const retail   = CATS.find(c=>c.key==='retail')   ? Object.values(entries).reduce((s,d)=>s+(parseFloat(d?.retail)||0),0)   : 0
+      const catering = CATS.find(c=>c.key==='catering') ? Object.values(entries).reduce((s,d)=>s+(parseFloat(d?.catering)||0),0) : 0
+      const popup    = CATS.find(c=>c.key==='popup')    ? Object.values(entries).reduce((s,d)=>s+(parseFloat(d?.popup)||0),0)    : 0
+      await writeSalesPnL(location, week.weekKey, { retail, catering, popup })
       toast.success('Sales saved!')
       setDirty(false)
     } catch(e) { toast.error('Something went wrong. Please try again.') }

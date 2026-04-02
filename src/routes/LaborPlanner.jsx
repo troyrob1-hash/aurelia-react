@@ -1,6 +1,8 @@
 import { useState, useMemo } from 'react'
 import { useToast } from '@/components/ui/Toast'
 import { Upload, Download } from 'lucide-react'
+import { useLocations } from '@/store/LocationContext'
+import { writeLaborPnL, weekPeriod, locId } from '@/lib/pnl'
 import styles from './LaborPlanner.module.css'
 
 const GL_MAP = {
@@ -26,6 +28,8 @@ const GL_MAP = {
 
 export default function LaborPlanner() {
   const toast = useToast()
+  const { selectedLocation } = useLocations()
+  const location = selectedLocation === 'all' ? null : selectedLocation
   const [rows, setRows]   = useState([])
   const [source, setSource] = useState('')
 
@@ -48,6 +52,15 @@ export default function LaborPlanner() {
       })
       setRows(parsed)
       setSource(file.name)
+
+      // Write to P&L
+      if (location) {
+        const onsiteLabor  = parsed.filter(r=>r.gl?.startsWith('504')).reduce((s,r)=>s+r.amount,0)
+        const thirdParty   = parsed.find(r=>r.gl==='50420')?.amount||0
+        const compBenefits = parsed.filter(r=>r.gl?.startsWith('68')).reduce((s,r)=>s+r.amount,0)
+        await writeLaborPnL(location, weekPeriod(), { onsiteLabor, thirdParty, compBenefits, glRows: parsed })
+      }
+
       toast.success(`Imported ${parsed.length} GL lines from ${file.name}`)
     } catch(err) {
       toast.error('Import failed. Please check the file format.')

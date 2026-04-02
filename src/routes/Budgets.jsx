@@ -5,6 +5,7 @@ import { useToast } from '@/components/ui/Toast'
 import { db } from '@/lib/firebase'
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore'
 import { Save, Upload, Download } from 'lucide-react'
+import { writeBudgetPnL } from '@/lib/pnl'
 import styles from './Budgets.module.css'
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
@@ -51,6 +52,8 @@ export default function Budgets() {
     try {
       const ref = doc(db,'tenants','fooda','budgets',`${locationId(location)}-${year}`)
       await setDoc(ref, { months:budget, location, year, updatedAt:serverTimestamp(), updatedBy:user?.email||'unknown' }, {merge:true})
+      // Write budget to P&L
+      await writeBudgetPnL(location, year, budget)
       toast.success('Budget saved!')
       setDirty(false)
     } catch(e) { toast.error('Failed to save budget.') }

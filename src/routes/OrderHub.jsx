@@ -4,6 +4,7 @@ import { useToast } from '@/components/ui/Toast'
 import { Search, Download, Minus, Plus, X, Clock } from 'lucide-react'
 import { db } from '@/lib/firebase'
 import { collection, addDoc, getDocs, query, orderBy, limit, serverTimestamp } from 'firebase/firestore'
+import { writePurchasingPnL, weekPeriod } from '@/lib/pnl'
 import { useAuthStore } from '@/store/authStore'
 import styles from './OrderHub.module.css'
 
@@ -151,6 +152,14 @@ export default function OrderHub() {
         addDoc(collection(db,'tenants','fooda','orders'), orderDoc),
         addDoc(collection(db,'tenants','fooda','invoices'), invoiceDoc),
       ])
+      // Write to P&L COGS
+      if (location) {
+        await writePurchasingPnL(location, weekPeriod(), {
+          invoiceTotal: +orderTotal.toFixed(2),
+          paidTotal: 0,
+          pendingTotal: +orderTotal.toFixed(2),
+        })
+      }
       toast.success(`Order ${orderNum} submitted — invoice created in Purchasing`)
       setSubmitted(true)
       setTimeout(() => { setQty({}); setSubmitted(false); setNote('') }, 3000)

@@ -4,6 +4,7 @@ import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { getInventory, saveInventory } from '@/lib/inventory'
 import { Search, Download, RefreshCw } from 'lucide-react'
 import { useToast } from '@/components/ui/Toast'
+import { writeInventoryPnL, weekPeriod } from '@/lib/pnl'
 import styles from './Inventory.module.css'
 
 const INV_CATS = [
@@ -73,6 +74,11 @@ export default function Inventory() {
   async function handleSave() {
     setSaving(true)
     await saveInventory(location, items, user)
+    // Write closing inventory value to P&L
+    const closingValue = items.reduce((s,i)=>s+((i.qty||0)*(i.unitCost||0)),0)
+    if (location && closingValue > 0) {
+      await writeInventoryPnL(location, weekPeriod(), { closingValue, openingValue: 0, purchases: 0 })
+    }
     toast.success('Inventory saved!')
     setSaving(false)
     setDirty(false)

@@ -4,6 +4,7 @@ import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { db } from '@/lib/firebase'
 import { collection, query, orderBy, getDocs, addDoc, deleteDoc, doc, serverTimestamp } from 'firebase/firestore'
 import { useToast } from '@/components/ui/Toast'
+import { writeWastePnL, weekPeriod } from '@/lib/pnl'
 import styles from './WasteLog.module.css'
 
 const CATS = {
@@ -77,6 +78,15 @@ export default function WasteLog() {
       setEntries(prev => [...newEntries, ...prev])
       setQty({...EMPTY_QTY})
       setForm({ date: new Date().toISOString().slice(0,10), partner:'', notes:'' })
+      // Write to P&L
+      if (location) {
+        const allWaste = [...entries, { ...form, total: formTotal }]
+        const now = new Date(), weekAgo = new Date(now - 7*24*60*60*1000)
+        const weekWaste = allWaste.filter(e => new Date(e.date) >= weekAgo)
+        const wasteCost = weekWaste.reduce((s,e)=>s+(e.total||0),0)
+        const wasteOz   = weekWaste.reduce((s,e)=>s+(e.oz||0),0)
+        await writeWastePnL(location, weekPeriod(), { wasteCost, wasteOz })
+      }
       toast.success('Waste entry logged!')
       setShowModal(false)
     } catch(e) { toast.error('Something went wrong. Please try again.') }
