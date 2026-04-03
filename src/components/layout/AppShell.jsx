@@ -19,6 +19,7 @@ const NAV = [
   { to: '/purchasing', icon: FileText,        label: 'Purchasing',   category: 'AP' },
   { to: '/budgets',    icon: PieChart,        label: 'Budgets',      category: 'Planning' },
   { to: '/transfers',  icon: ArrowLeftRight,  label: 'Transfers',    category: 'Logistics' },
+{ to: '/labor',      icon: Users,           label: 'Labor',        category: 'Labor' },
 ]
 
 export default function AppShell() {
@@ -40,7 +41,7 @@ export default function AppShell() {
           <button className={styles.hamburger} onClick={() => setSidebarOpen(v => !v)}>
             {sidebarOpen ? <X size={18}/> : <Menu size={18}/>}
           </button>
-          <div className={styles.brand}>
+          <div className={styles.brand} onClick={() => navigate('/')} style={{cursor:'pointer'}}>
             <div className={styles.foodaLogo}>fooda</div>
             <div className={styles.brandText}>
               <span className={styles.brandName}>Aurelia</span>

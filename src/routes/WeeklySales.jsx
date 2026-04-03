@@ -47,6 +47,7 @@ export default function WeeklySales() {
       label: `P${period} Wk ${weekNum} · ${start.toLocaleDateString('en-US',{month:'short',day:'numeric'})} – ${end.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}`,
       days: DAYS.map((name, i) => {
         const d = new Date(start); d.setDate(start.getDate() + i)
+        d.setHours(12,0,0,0) // normalize to noon to avoid UTC boundary issues
         return d <= end ? { name, date: d, key: d.toISOString().slice(0,10) } : null
       }).filter(Boolean)
     }
@@ -333,8 +334,9 @@ export default function WeeklySales() {
                 const dt       = dayTotal(day.key)
                 const prev     = prevDayTotal(day.key)
                 const chg      = pctChange(dt, prev)
-                const isToday  = day.date.toDateString() === new Date().toDateString()
-                const isFuture = day.date > new Date()
+                const now      = new Date(); now.setHours(12,0,0,0)
+                const isToday  = day.date.toDateString() === now.toDateString()
+                const isFuture = day.date > now
                 const isAlert  = chg !== null && chg < -10 && !isFuture && dt > 0
 
                 return (

@@ -4,7 +4,7 @@ import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { usePeriod } from '@/store/PeriodContext'
 import {
   BarChart2, ShoppingCart, TrendingUp, Package,
-  Trash2, FileText, LayoutGrid, ArrowLeftRight, Settings
+  Trash2, FileText, LayoutGrid, ArrowLeftRight, Settings, Users
 } from 'lucide-react'
 import styles from './Home.module.css'
 
@@ -82,6 +82,15 @@ const MODULES = [
     bg: '#FAEEDA',
   },
   {
+    path: '/labor',
+    section: 'Labor',
+    label: 'Labor',
+    desc: 'GL codes · Actual vs Budget · Approval',
+    icon: Users,
+    color: '#993C1D',
+    bg: '#FAECE7',
+  },
+  {
     path: '/settings',
     section: 'Admin',
     label: 'Settings',
@@ -105,15 +114,14 @@ export default function Home() {
   const { selectedLocation }  = useLocations()
   const { year, period, currentWeek } = usePeriod()
 
-  const name     = user?.name?.split(' ')[0] || user?.email?.split('@')[0] || 'there'
-  const location = selectedLocation === 'all' ? 'All Locations' : cleanLocName(selectedLocation)
+  const name      = user?.name?.split(' ')[0] || user?.email?.split('@')[0] || 'there'
+  const location  = selectedLocation === 'all' ? 'All Locations' : cleanLocName(selectedLocation)
   const weekLabel = currentWeek
-    ? `${currentWeek.start.toLocaleDateString('en-US',{month:'short',day:'numeric'})} – ${currentWeek.end.toLocaleDateString('en-US',{month:'short',day:'numeric'})}`
+    ? `${currentWeek.start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${currentWeek.end.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
     : null
 
   return (
     <div className={styles.page}>
-      {/* Greeting */}
       <div className={styles.greeting}>
         <div className={styles.greetingText}>{greeting()}, {name}</div>
         <div className={styles.greetingSub}>
@@ -121,7 +129,6 @@ export default function Home() {
         </div>
       </div>
 
-      {/* Module grid */}
       <div className={styles.grid}>
         {MODULES.map(mod => {
           const Icon = mod.icon
@@ -131,8 +138,8 @@ export default function Home() {
               className={styles.card}
               onClick={() => navigate(mod.path)}
             >
-              <div className={styles.cardIcon} style={{background:mod.bg}}>
-                <Icon size={18} style={{color:mod.color}} strokeWidth={1.5}/>
+              <div className={styles.cardIcon} style={{ background: mod.bg }}>
+                <Icon size={18} style={{ color: mod.color }} strokeWidth={1.5} />
               </div>
               <div className={styles.cardSection}>{mod.section}</div>
               <div className={styles.cardLabel}>{mod.label}</div>
