@@ -24,6 +24,7 @@ const Budgets     = lazy(() => import('@/routes/Budgets'))
 const Transfers   = lazy(() => import('@/routes/Transfers'))
 const LaborPlanner = lazy(() => import('@/routes/LaborPlanner'))
 const Settings    = lazy(() => import('@/routes/Settings'))
+const Home = lazy(() => import('@/routes/Home'))
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuthStore()
@@ -60,7 +61,8 @@ export default function App() {
             </PeriodProvider>
           </ProtectedRoute>
         }>
-          <Route index element={<Suspense fallback={<LoadingScreen />}><Dashboard /></Suspense>} />
+         <Route index element={<Suspense fallback={<LoadingScreen />}><Home /></Suspense>} />
+          <Route path="dashboard" element={<Suspense fallback={<LoadingScreen />}><Dashboard /></Suspense>} />
           <Route path="orders"    element={<Suspense fallback={<LoadingScreen />}><OrderHub /></Suspense>} />
           <Route path="inventory" element={<Suspense fallback={<LoadingScreen />}><Inventory /></Suspense>} />
           <Route path="sales"     element={<Suspense fallback={<LoadingScreen />}><WeeklySales /></Suspense>} />
