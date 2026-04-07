@@ -31,7 +31,7 @@ jobs:
           FIREBASE_PROJECT_ID:   ${{ secrets.FIREBASE_PROJECT_ID }}
           FIREBASE_CLIENT_EMAIL: ${{ secrets.FIREBASE_CLIENT_EMAIL }}
           FIREBASE_PRIVATE_KEY:  ${{ secrets.FIREBASE_PRIVATE_KEY }}
-        run: npx vitest run tests/smoke.test.js --reporter=verbose --config=none
+        run: npx vitest run tests/smoke.test.js --reporter=verbose --environment=node --globals
 
       - name: Post health report on failure
         if: failure()
