@@ -1,50 +1,80 @@
 .page { max-width: 1100px; }
-.header { display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:20px;gap:16px;flex-wrap:wrap; }
-.title  { font-size:26px;font-weight:800;letter-spacing:-.5px; }
-.subtitle { font-size:13px;color:var(--text-secondary);margin-top:4px; }
-.headerRight { display:flex;align-items:center;gap:10px; }
-.periodLabel { font-size:12px;font-weight:600;color:var(--text-muted);padding:6px 12px;background:#f9fafb;border:1px solid var(--border);border-radius:8px; }
-.refreshBtn { width:32px;height:32px;border:1px solid var(--border);border-radius:8px;background:white;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text-secondary); }
+
+/* ── Header ── */
+.header      { display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:16px;gap:16px;flex-wrap:wrap; }
+.title       { font-size:26px;font-weight:800;letter-spacing:-.5px; }
+.subtitle    { font-size:13px;color:var(--text-secondary);margin-top:4px; }
+.headerRight { display:flex;align-items:center;gap:8px; }
+.refreshBtn  { width:32px;height:32px;border:1px solid var(--border);border-radius:8px;background:white;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text-secondary); }
 .refreshBtn:hover { background:#fafafa; }
-.spinning { animation:spin 1s linear infinite; }
+.btnExport   { display:flex;align-items:center;gap:5px;padding:7px 14px;border:1px solid var(--border);border-radius:8px;background:white;font-size:12px;font-weight:600;color:var(--text-secondary);cursor:pointer; }
+.btnExport:hover { background:#fafafa; }
+.spinning    { animation:spin 1s linear infinite; }
 @keyframes spin { from{transform:rotate(0deg)}to{transform:rotate(360deg)} }
-.loading { text-align:center;padding:64px;color:var(--text-muted); }
-.noData { display:flex;flex-direction:column;align-items:center;justify-content:center;padding:80px 20px;text-align:center; }
+.loading     { text-align:center;padding:64px;color:var(--text-muted); }
 
-/* KPI Strip */
-.kpiStrip { display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:20px; }
-.kpi { background:white;border:1px solid var(--border);border-radius:var(--radius-md);padding:14px 16px; }
-.kpiL { font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:6px; }
-.kpiV { font-size:18px;font-weight:800;letter-spacing:-.3px; }
-.kpiVar { font-size:11px;font-weight:600;margin-top:3px; }
-.kpiSub { font-size:11px;color:var(--text-muted);margin-top:3px; }
+/* ── Alert banner ── */
+.alertBanner { background:#fee2e2;border:1px solid #fca5a5;border-radius:10px;padding:10px 16px;margin-bottom:14px;font-size:13px;font-weight:700;color:#991b1b; }
 
-/* P&L Table */
-.tableWrap { background:white;border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden; }
-.table { width:100%;border-collapse:collapse;font-size:13px; }
-.thead { background:#1a1a1a; }
-.thLabel { padding:11px 16px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#888;width:55%; }
-.thVal   { padding:11px 16px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#888;width:15%; }
+/* ── Freshness bar ── */
+.freshnessBar   { display:flex;align-items:center;gap:10px;background:white;border:1px solid var(--border);border-radius:10px;padding:9px 14px;margin-bottom:14px;flex-wrap:wrap; }
+.freshnessLabel { font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);white-space:nowrap; }
+.freshnessPills { display:flex;align-items:center;gap:6px;flex-wrap:wrap; }
+.freshPill      { display:flex;align-items:center;gap:5px;font-size:12px;font-weight:600;padding:4px 10px;border-radius:20px;border:1px solid;cursor:pointer;background:none; }
+.freshPosted    { background:#f0fdf4;border-color:#86efac;color:#15803d; }
+.freshMissing   { background:#f9fafb;border-color:#e5e7eb;color:#9ca3af; }
+.freshDot       { width:6px;height:6px;border-radius:50%;background:currentColor;flex-shrink:0; }
 
-.section { cursor:pointer; }
+/* ── KPI Strip ── */
+.kpiStrip     { display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:20px; }
+.kpi          { background:white;border:1px solid var(--border);border-radius:var(--radius-md);padding:14px 16px; }
+.kpiAlert     { border-color:#fca5a5;background:#fff5f5; }
+.kpiL         { font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-muted);margin-bottom:6px; }
+.kpiV         { font-size:18px;font-weight:800;letter-spacing:-.3px; }
+.kpiSub       { font-size:11px;color:var(--text-muted);margin-top:3px; }
+.kpiBadge     { display:inline-block;font-size:10px;font-weight:700;margin-top:6px;padding:2px 8px;border-radius:12px; }
+.kpiBadgeGood { background:#d1fae5;color:#065f46; }
+.kpiBadgeWarn { background:#fef3c7;color:#92400e; }
+.kpiBadgeOver { background:#fee2e2;color:#991b1b; }
+
+/* ── P&L Table ── */
+.tableWrap   { background:white;border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden; }
+.table       { width:100%;border-collapse:collapse;font-size:13px; }
+.thead       { background:#1a1a1a; }
+.thLabel     { padding:11px 16px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#888;width:50%; }
+.thVal       { padding:11px 16px;text-align:right;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#888;width:12.5%; }
+.section     { cursor:pointer; }
 .section:hover .sectionCell { background:#fff0ed; }
 .sectionCell { padding:9px 16px;font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.1em;color:var(--brand);background:#fff7f5;border-top:2px solid #fde8e2; }
 .sectionToggle { display:inline-flex;align-items:center;margin-right:6px;opacity:.6; }
+.row         { border-bottom:1px solid #f5f5f5; }
+.row:hover   { background:#fafafa; }
+.bold td     { font-weight:700; }
+.highlight   { background:#f9fafb !important; }
+.ebitdaRow   { background:#f0fdf4 !important;border-top:2px solid #059669 !important; }
+.pctRow td   { padding:4px 16px;color:#888;font-size:12px; }
+.gap td      { padding:4px 0;background:#f8f9fa; }
+.label       { padding:8px 16px;color:var(--text-primary);display:flex;align-items:center;gap:6px; }
+.val         { padding:8px 16px;text-align:right;font-weight:500; }
+.drillBtn    { background:none;border:none;cursor:pointer;color:#ccc;display:inline-flex;align-items:center;padding:0;opacity:0; }
+.row:hover .drillBtn { opacity:1;color:#7c3aed; }
 
-.row { border-bottom:1px solid #f5f5f5; }
-.row:hover { background:#fafafa; }
-.totalRow { background:#f9fafb !important;border-top:1px solid #e5e7eb; }
-.bold td { font-weight:700; }
-.netIncome { background:#f0fdf4 !important;border-top:2px solid #059669 !important; }
-.pctRow td { padding:4px 16px;color:#888;font-size:12px; }
-.gap td { padding:4px 0;background:#f8f9fa; }
+/* ── Location ranking ── */
+.rankingWrap   { margin-top:24px;background:white;border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden; }
+.rankingHeader { padding:12px 20px;background:#1a1a1a;color:white;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.08em; }
+.rankingTable  { width:100%;border-collapse:collapse;font-size:13px; }
+.rankingTable thead tr { background:#fafafa;border-bottom:1px solid var(--border); }
+.rankingTable th { padding:9px 16px;text-align:left;font-size:10px;font-weight:700;text-transform:uppercase;color:#999;letter-spacing:.05em; }
+.rankingTable td { padding:10px 16px;border-bottom:1px solid #f5f5f5; }
+.rankRow       { cursor:pointer; }
+.rankRow:hover td { background:#fafafa; }
+.rankNum       { font-size:13px;font-weight:800;width:32px; }
+.rankName      { font-weight:600;color:var(--text-primary); }
 
-.label { padding:8px 16px;color:var(--text-primary); }
-.val   { padding:8px 16px;text-align:right;font-weight:500; }
-
+/* ── Responsive ── */
 @media (max-width:900px) {
   .kpiStrip { grid-template-columns:repeat(3,1fr); }
   .kpiV { font-size:15px; }
-  .thVal:nth-child(3),.thVal:nth-child(4) { display:none; }
-  td:nth-child(3),td:nth-child(4) { display:none; }
+  .thVal:nth-child(4),.thVal:nth-child(5) { display:none; }
+  td:nth-child(4),td:nth-child(5) { display:none; }
 }
