@@ -1,168 +1,75 @@
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { usePeriod } from '@/store/PeriodContext'
-import { getInventory, saveInventory, getPriorClosingValue, getPriorItems } from '@/lib/inventory'
-import { writeInventoryPnL } from '@/lib/pnl'
-import { Search, Download, RefreshCw, Eye, EyeOff, TrendingUp, TrendingDown, Minus } from 'lucide-react'
+import { useInventory, fmt$, sanitizeDocId } from '@/hooks/useInventory'
+import { getTopVarianceIssues, calcParStatus } from '@/lib/variance'
+import { Search, Download, RefreshCw, Eye, EyeOff, TrendingUp, TrendingDown, Minus, Mic, AlertTriangle } from 'lucide-react'
 import { useToast } from '@/components/ui/Toast'
-import { doc, getDoc } from 'firebase/firestore'
-import { db } from '@/lib/firebase'
 import styles from './Inventory.module.css'
 
-const INV_CATS = [
-  { key: 'beverages',  label: 'Beverages',             color: '#1e40af', bg: '#dbeafe',
-    rx: /red bull|celsius|coke(?! power)|diet coke|sprite|boylan|virgil|perrier|topochico|pelegrino|ginger ale|root beer|sparkling water|smart water|boxed water|eclipse water|juice|lemonade|tractor bev|joe.*(tea|sweet|lemon|kiwi|pine|black|ginseng|half)|naked (green|mango|straw|trraw|coconut)|simply orange|tropicana|orange juice|apple juice|kombucha|yerba mate|babe.*(kombucha|yerba)|aura bora|auro bora|frappuccino|illy cold|la colombe|gatorade|coconut water|core power|starbucks.*frapp/i },
-  { key: 'bar_items',  label: 'Bar / Barista',         color: '#7c3aed', bg: '#ede9fe',
-    rx: /coffee|espresso|decaf|cafe moto|starbucks.*(blend|roast|pike|verona|veranda|holiday)|syrup.*1883|1883.*syrup|ghirardelli|caramel brulee|pumpkin spice.*sauce|white chocolate sauce|bitter.*chocolate sauce|caramel sauce.*oz|strawberry puree|cold brew powder|starbucks.*lemonade.*concentrate|teavana|tevana|chai.*latte|chai.*concentrate|david rio|tiger spice|elephant.*chai|masala chai|matcha|tumeric latte|agave organic|cream charger|freeze dried|dragon fruit|hazelnut.*syrup|peppermint syrup|gingerbread syrup|brown sugar syrup|pecan syrup|sugar cookie syrup|vanilla syrup|caramel.*(1 L|4.cs)|iced.*coffee.*package|mango dragon|strawberry acai.*concentrate/i },
-  { key: 'storeroom',  label: 'Pantry / Snacks',       color: '#92400e', bg: '#fef3c7',
-    rx: /chip|cheeto|dorito|lays|tostito|popchips|uglies|puffcorn|popcorn|pretzel|sun chip|smartfood|north fork|miss vickie|hippeas|block.*barrel|frito corn|m&m|snicker|twix|kit kat|reese|hershey|skittles|starburst|haribo|awake.*bite|unreal.*choc|blobs|vegobear|gummy bear|chimes ginger|airhead|trident|altoid|pur mint|icebreaker|pure mint|eclipse gum|kind.*(bar|dark choc|peanut butter dark|caramel almond|cherry cashew|cluster)|clif bar|builder.*bar|rx bar|rxbar|kate.*real food|lenka|luna.*bar|88 acres|special k.*bar|protein bar|barebell|sahale|nut harvest|ferris roasted|righteous felon|wenzel|beef jerky|beef stick|meat stick|teriyaki.*balboa|venison.*pork|honey ham stick|pepperoni meat|grandma.*(cookie|brownie)|oatmeal raisin|pop tart|caramel rice crisp|rip van|oreo|solely fruit|fruit jerky|poshi|olive.*chili|olive.*lemon|pickle|hummus|sabra|seaweed|veggie straw|bean vivo|love corn|quinn.*salt|quinn.*pb|cono hazelnut|marish|maestri|mylk labs|awake.*almond/i },
-  { key: 'dairy',      label: 'Dairy',                 color: '#0369a1', bg: '#e0f2fe',
-    rx: /\bmilk\b|yogurt|chobani|mozzarella string|half.*half|heavy cream|salami fontina|genoa.*salami|uncrustables|horizon.*milk|oat milk|soy milk|coconut milk.*pacific|almond milk.*pacific|2 % milk|whole milk gallon|non fat milk|almond milk califia/i },
-  { key: 'frozen',     label: 'Frozen / Ice Cream',    color: '#1d4ed8', bg: '#dbeafe',
-    rx: /ice cream|blue bunny|haagen|dibs.*crunch|soft frozen lemonade|ice cream bar|ice cream cone|chips galore sandwich|vanilla sandwhich|strawberry shortcake.*bar|chocolate brownie.*bar|loadd sundae/i },
-  { key: 'prepared',   label: 'Prepared Foods',        color: '#065f46', bg: '#d1fae5',
-    rx: /soup|chicken noodle|wedding meatball|enchilada soup|broccoli cheddar|fresh.*apple.*5lb|apple.*bag.*5lb/i },
-  { key: 'condiments', label: 'Condiments & Supplies', color: '#374151', bg: '#f3f4f6',
-    rx: /ketchup packet|mustard.*packet|mayo.*packet|pepper packet|salt packet|tapatio|cholula|sriracha|tabasco|soy sauce packet|sugar.*organic|sugar.*turbinado|sugar.*sucralose|sugar.*stevia|saltine.*saladitas|sugar.*sweetener|mayonnaise packet/i },
-]
-
-function assignCat(item) {
-  for (const cat of INV_CATS) {
-    if (cat.rx.test(item.name || '')) return cat.key
-  }
-  return 'storeroom'
-}
-
-// Compute prior period key from current
-function getPriorKey(key) {
-  const parts = key.match(/(\d+)-P(\d+)-W(\d+)/)
-  if (!parts) return null
-  let [, yr, p, w] = parts.map(Number)
-  if (w > 1) return `${yr}-P${String(p).padStart(2,'0')}-W${w-1}`
-  if (p > 1) return `${yr}-P${String(p-1).padStart(2,'0')}-W4`
-  return `${yr-1}-P12-W4`
-}
-
-// Variance classification for heatmap
-function varianceClass(curr, prior) {
-  if (!prior || prior === 0) return 'neutral'
-  const pct = Math.abs((curr - prior) / prior)
-  if (pct <= 0.10) return 'good'
-  if (pct <= 0.25) return 'warn'
-  return 'alert'
-}
-
-const fmt$ = v => '$' + Number(v || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+// ═══════════════════════════════════════════════════════════════════════════
+// Inventory Component - Aurelia FMS
+// ═══════════════════════════════════════════════════════════════════════════
 
 export default function Inventory() {
   const toast = useToast()
-  const { user }             = useAuthStore()
-  const orgId                = user?.tenantId || 'fooda'
+  const { user } = useAuthStore()
+  const orgId = user?.tenantId || 'fooda'
   const { selectedLocation } = useLocations()
-  const { periodKey }        = usePeriod()
+  const { periodKey } = usePeriod()
 
-  const [items,        setItems]        = useState([])
-  const [priorItems,   setPriorItems]   = useState([])
-  const [openingValue, setOpeningValue] = useState(0)
-  const [purchases,    setPurchases]    = useState(0)
-  const [loading,      setLoading]      = useState(false)
-  const [saving,       setSaving]       = useState(false)
-  const [dirty,        setDirty]        = useState(false)
-  const [search,       setSearch]       = useState('')
-  const [activeCat,    setActiveCat]    = useState('all')
-  const [collapsed,    setCollapsed]    = useState({})
-  const [blindMode,    setBlindMode]    = useState(false)
+  // ─── Local UI State ────────────────────────────────────────────────────────
+  const [search, setSearch] = useState('')
+  const [activeCat, setActiveCat] = useState('all')
+  const [collapsed, setCollapsed] = useState({})
+  const [blindMode, setBlindMode] = useState(false)
   const [showVariance, setShowVariance] = useState(true)
-  const [countSession, setCountSession] = useState(null)
+  const [showParPanel, setShowParPanel] = useState(false)
 
   const location = selectedLocation === 'all' ? null : selectedLocation
-  const priorKey = getPriorKey(periodKey)
 
-  useEffect(() => {
-    if (!location) { setItems([]); setPriorItems([]); setOpeningValue(0); return }
-    load()
-  }, [location, periodKey])
+  // ─── Use Inventory Hook ────────────────────────────────────────────────────
+  const {
+    items,
+    categories,
+    catStats,
+    totals,
+    varianceAlerts,
+    itemsBelowPar,
+    session,
+    loading,
+    saving,
+    dirty,
+    error,
+    load,
+    adjust,
+    setQty,
+    copyPrior,
+    markSectionComplete,
+    save
+  } = useInventory(orgId, location, periodKey, user)
 
-  async function load() {
-    setLoading(true)
-    try {
-      // Load current period inventory
-      const data = await getInventory(orgId, location, periodKey)
-      setItems(data)
-
-      // Load prior period items for variance
-      const prior = await getPriorItems(orgId, location, priorKey)
-      setPriorItems(prior)
-
-      // Load opening value (prior week's closing)
-      const opening = await getPriorClosingValue(orgId, location, priorKey)
-      setOpeningValue(opening)
-
-      // Load period purchases from P&L
-      try {
-        const pnlSnap = await getDoc(doc(db, 'tenants', orgId, 'pnl', location.replace(/[^a-zA-Z0-9]/g, '_'), 'periods', periodKey))
-        if (pnlSnap.exists()) setPurchases(pnlSnap.data().cogs_purchases || 0)
-      } catch { /* no purchases yet */ }
-
-      // Start count session if not already started
-      if (!countSession) {
-        setCountSession({ startedAt: new Date(), startedBy: user?.name || user?.email, sectionsCompleted: [] })
-      }
-    } catch { toast.error('Failed to load inventory.') }
-    setLoading(false)
-    setDirty(false)
-  }
-
-  async function handleSave() {
-    setSaving(true)
-    try {
-      await saveInventory(orgId, location, items, user, periodKey)
-      const closingValue = items.reduce((s, i) => s + ((i.qty || 0) * (i.unitCost || 0)), 0)
-      await writeInventoryPnL(location, periodKey, { closingValue, openingValue, purchases })
+  // ─── Handlers ──────────────────────────────────────────────────────────────
+  const handleSave = useCallback(async () => {
+    const success = await save()
+    if (success) {
       toast.success('Inventory saved & COGS posted to P&L')
-      setDirty(false)
-    } catch { toast.error('Save failed. Please try again.') }
-    setSaving(false)
-  }
-
-  function adjust(id, delta) {
-    setItems(prev => prev.map(i => {
-      if (i.id !== id) return i
-      const next = Math.max(0, parseFloat(((i.qty || 0) + delta).toFixed(2)))
-      return { ...i, qty: next }
-    }))
-    setDirty(true)
-  }
-
-  function setQty(id, val) {
-    setItems(prev => prev.map(i =>
-      i.id === id ? { ...i, qty: val === '' ? null : Math.max(0, parseFloat(val) || 0) } : i
-    ))
-    setDirty(true)
-  }
-
-  function toggleCollapse(key) {
-    setCollapsed(prev => ({ ...prev, [key]: !prev[key] }))
-    // Track section completion in session
-    const cat = INV_CATS.find(c => c.key === key)
-    if (cat && countSession) {
-      setCountSession(prev => ({
-        ...prev,
-        sectionsCompleted: prev.sectionsCompleted.includes(key)
-          ? prev.sectionsCompleted
-          : [...prev.sectionsCompleted, key]
-      }))
+    } else {
+      toast.error('Save failed. Please try again.')
     }
-  }
+  }, [save, toast])
 
-  async function exportExcel() {
+  const toggleCollapse = useCallback((key) => {
+    setCollapsed(prev => ({ ...prev, [key]: !prev[key] }))
+  }, [])
+
+  const handleExport = useCallback(async () => {
     try {
       const XLSX = await import('xlsx')
-      const wb   = XLSX.utils.book_new()
-      const closingValue = items.reduce((s, i) => s + ((i.qty || 0) * (i.unitCost || 0)), 0)
-      const cogs = Math.max(0, openingValue + purchases - closingValue)
+      const wb = XLSX.utils.book_new()
 
+      // Summary sheet
       const summaryRows = [
         ['Aurelia FMS — Inventory Count Report'],
         ['Location:', cleanLocName(location)],
@@ -170,127 +77,109 @@ export default function Inventory() {
         ['Date:', new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })],
         [],
         ['COGS CALCULATION'],
-        ['Opening Inventory', openingValue.toFixed(2)],
-        ['+ Purchases', purchases.toFixed(2)],
-        ['- Closing Inventory', closingValue.toFixed(2)],
-        ['= COGS (Inventory Usage)', cogs.toFixed(2)],
+        ['Opening Inventory', totals.openingValue.toFixed(2)],
+        ['+ Purchases', totals.purchases.toFixed(2)],
+        ['- Closing Inventory', totals.closingValue.toFixed(2)],
+        ['= COGS (Inventory Usage)', totals.liveCOGS.toFixed(2)],
         [],
         ['SUMMARY'],
         ['Total Items', items.length],
-        ['Items Counted', counted],
-        ['Inventory Value', closingValue.toFixed(2)],
-        ['Progress', items.length ? Math.round(counted / items.length * 100) + '%' : '0%'],
+        ['Items Counted', totals.counted],
+        ['Inventory Value', totals.closingValue.toFixed(2)],
+        ['Progress', totals.progress + '%'],
       ]
       const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows)
       XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary')
 
-      const header = ['#', 'Item', 'Vendor', 'Category', 'Pack Size', 'Unit Cost', 'Count', 'Prior Count', 'Variance', 'Total Value', 'GL Code']
-      const detailRows = items.map((item, idx) => {
-        const prior = priorItems.find(p => p.id === item.id)?.qty || 0
-        const variance = (item.qty || 0) - prior
-        return [
-          idx + 1, item.name, item.vendor || '',
-          INV_CATS.find(c => c.key === assignCat(item))?.label || 'General',
-          item.packSize || '', item.unitCost || 0, item.qty || 0,
-          prior, variance, +((item.qty || 0) * (item.unitCost || 0)).toFixed(2), item.glCode || ''
-        ]
-      })
+      // Detail sheet
+      const header = ['#', 'Item', 'Vendor', 'Category', 'Pack Size', 'Unit Cost', 'Count', 'Prior Count', 'Variance', 'Total Value', 'Par Level', 'Days On Hand']
+      const detailRows = items.map((item, idx) => [
+        idx + 1, item.name, item.vendor || '',
+        categories.find(c => c.key === item._cat)?.label || 'General',
+        item.packSize || '', item.unitCost || 0, item.qty || 0,
+        item._priorQty || 0, item._variance || 0, 
+        +((item.qty || 0) * (item.unitCost || 0)).toFixed(2),
+        item.parLevel || '', item._daysOnHand || ''
+      ])
       const wsDetail = XLSX.utils.aoa_to_sheet([header, ...detailRows])
-      wsDetail['!cols'] = [{ wch: 4 }, { wch: 40 }, { wch: 15 }, { wch: 20 }, { wch: 10 }, { wch: 10 }, { wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 12 }]
+      wsDetail['!cols'] = [{ wch: 4 }, { wch: 40 }, { wch: 15 }, { wch: 18 }, { wch: 10 }, { wch: 10 }, { wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 12 }]
       XLSX.utils.book_append_sheet(wb, wsDetail, 'All Items')
 
-      INV_CATS.forEach(cat => {
-        const catItems = items.filter(i => assignCat(i) === cat.key)
-        if (!catItems.length) return
-        const catRows = catItems.map((item, idx) => {
-          const prior = priorItems.find(p => p.id === item.id)?.qty || 0
-          return [idx + 1, item.name, item.vendor || '', item.packSize || '', item.unitCost || 0, item.qty || 0, prior, (item.qty || 0) - prior, +((item.qty || 0) * (item.unitCost || 0)).toFixed(2)]
-        })
-        catRows.push(['', '', '', '', '', 'TOTAL', '', '', +catItems.reduce((s, i) => s + ((i.qty || 0) * (i.unitCost || 0)), 0).toFixed(2)])
-        const ws = XLSX.utils.aoa_to_sheet([['#', 'Item', 'Vendor', 'Pack', 'Unit Cost', 'Count', 'Prior', 'Variance', 'Value'], ...catRows])
-        XLSX.utils.book_append_sheet(wb, ws, cat.label.slice(0, 31))
-      })
-
-      XLSX.writeFile(wb, `inventory-${cleanLocName(location)}-${periodKey}.xlsx`)
+      XLSX.writeFile(wb, `inventory-${sanitizeDocId(location)}-${periodKey}.xlsx`)
       toast.success('Exported to Excel')
-    } catch { toast.error('Export failed.') }
-  }
+    } catch (err) {
+      console.error('Export failed:', err)
+      toast.error('Export failed.')
+    }
+  }, [items, categories, totals, location, periodKey, toast])
 
-  // ── Derived values ────────────────────────────────────────────
-  const totalValue   = useMemo(() => items.reduce((s, i) => s + ((i.qty || 0) * (i.unitCost || 0)), 0), [items])
-  const counted      = items.filter(i => i.qty != null && i.qty > 0).length
-  const liveCOGS     = Math.max(0, openingValue + purchases - totalValue)
-
-  const itemsWithCat = useMemo(() => items.map(i => {
-    const cat   = assignCat(i)
-    const prior = priorItems.find(p => p.id === i.id)
-    const priorQty = prior?.qty || 0
-    const variance = (i.qty || 0) - priorQty
-    const varClass = i.qty != null ? varianceClass(i.qty, priorQty) : 'neutral'
-    return { ...i, _cat: cat, _priorQty: priorQty, _variance: variance, _varClass: varClass }
-  }), [items, priorItems])
-
-  const catCounts = useMemo(() => {
-    const counts = {}
-    INV_CATS.forEach(c => {
-      const catItems = itemsWithCat.filter(i => i._cat === c.key)
-      counts[c.key] = {
-        total:   catItems.length,
-        counted: catItems.filter(i => i.qty != null && i.qty > 0).length,
-        value:   catItems.reduce((s, i) => s + ((i.qty || 0) * (i.unitCost || 0)), 0),
-      }
-    })
-    return counts
-  }, [itemsWithCat])
-
+  // ─── Filtered Items ────────────────────────────────────────────────────────
   const q = search.toLowerCase()
-  const displayItems = useMemo(() => itemsWithCat.filter(i => {
-    const matchCat    = activeCat === 'all' || i._cat === activeCat
+  const displayItems = useMemo(() => items.filter(i => {
+    const matchCat = activeCat === 'all' || i._cat === activeCat
     const matchSearch = !q || i.name?.toLowerCase().includes(q) || i.vendor?.toLowerCase().includes(q)
     return matchCat && matchSearch
-  }), [itemsWithCat, activeCat, q])
+  }), [items, activeCat, q])
 
   const displayGroups = useMemo(() => {
-    const cats = activeCat === 'all' ? INV_CATS : INV_CATS.filter(c => c.key === activeCat)
+    const cats = activeCat === 'all' ? categories : categories.filter(c => c.key === activeCat)
     return cats.map(cat => ({
       ...cat,
       items: displayItems.filter(i => i._cat === cat.key),
     })).filter(g => g.items.length > 0)
-  }, [displayItems, activeCat])
+  }, [displayItems, activeCat, categories])
 
-  if (!location) return (
-    <div className={styles.empty}>
-      <div className={styles.emptyIcon}>📦</div>
-      <p className={styles.emptyTitle}>Select a location to begin counting</p>
-      <p className={styles.emptySub}>Choose a location from the dropdown above</p>
-    </div>
-  )
+  // ─── Top Variance Alerts ───────────────────────────────────────────────────
+  const topVariance = useMemo(() => getTopVarianceIssues(items, 3), [items])
 
+  // ─── Empty State ───────────────────────────────────────────────────────────
+  if (!location) {
+    return (
+      <div className={styles.empty}>
+        <div className={styles.emptyIcon}>📦</div>
+        <p className={styles.emptyTitle}>Select a location to begin counting</p>
+        <p className={styles.emptySub}>Choose a location from the dropdown above</p>
+      </div>
+    )
+  }
+
+  // ─── Render ────────────────────────────────────────────────────────────────
   return (
     <div className={styles.pageWrap}>
-
-      {/* ── Category chip bar ── */}
+      {/* Category Chips */}
       <div className={styles.chipBar}>
-        <button className={`${styles.chip} ${activeCat === 'all' ? styles.chipActive : ''}`} onClick={() => setActiveCat('all')}>
+        <button 
+          className={`${styles.chip} ${activeCat === 'all' ? styles.chipActive : ''}`} 
+          onClick={() => setActiveCat('all')}
+        >
           All Items
-          <span className={styles.chipBadge}>{counted}/{items.length}</span>
+          <span className={styles.chipBadge}>{totals.counted}/{totals.total}</span>
         </button>
-        {INV_CATS.map(cat => {
-          const cc   = catCounts[cat.key] || { total: 0, counted: 0 }
+        {categories.map(cat => {
+          const cc = catStats[cat.key] || { total: 0, counted: 0 }
           const done = cc.counted === cc.total && cc.total > 0
-          const pct  = cc.total > 0 ? cc.counted / cc.total : 0
+          const pct = cc.total > 0 ? cc.counted / cc.total : 0
           return (
-            <button key={cat.key}
+            <button 
+              key={cat.key}
               className={`${styles.chip} ${activeCat === cat.key ? styles.chipActive : ''}`}
               onClick={() => setActiveCat(cat.key)}
-              style={activeCat === cat.key ? { borderColor: cat.color, color: cat.color, background: cat.bg } : { borderColor: cat.color + '40', color: cat.color }}
+              style={activeCat === cat.key 
+                ? { borderColor: cat.color, color: cat.color, background: cat.bg } 
+                : { borderColor: cat.color + '40', color: cat.color }
+              }
             >
-              {/* Completion ring */}
-              <svg width="16" height="16" viewBox="0 0 16 16" style={{ flexShrink: 0 }}>
-                <circle cx="8" cy="8" r="6" fill="none" stroke={cat.color + '30'} strokeWidth="2" />
-                <circle cx="8" cy="8" r="6" fill="none" stroke={done ? '#10b981' : cat.color} strokeWidth="2"
-                  strokeDasharray={`${pct * 37.7} 37.7`} strokeLinecap="round"
-                  transform="rotate(-90 8 8)" style={{ transition: 'stroke-dasharray .4s' }} />
+              <svg width="14" height="14" viewBox="0 0 14 14" style={{ flexShrink: 0 }}>
+                <circle cx="7" cy="7" r="5" fill="none" stroke={cat.color + '30'} strokeWidth="2" />
+                <circle 
+                  cx="7" cy="7" r="5" fill="none" 
+                  stroke={done ? '#10b981' : cat.color} 
+                  strokeWidth="2"
+                  strokeDasharray={`${pct * 31.4} 31.4`} 
+                  strokeLinecap="round"
+                  transform="rotate(-90 7 7)" 
+                  style={{ transition: 'stroke-dasharray .4s' }} 
+                />
               </svg>
               {cat.label}
               <span className={styles.chipBadge} style={{ background: done ? '#10b981' : cat.color + '99' }}>
@@ -301,99 +190,208 @@ export default function Inventory() {
         })}
       </div>
 
-      {/* ── Main content ── */}
       <div className={styles.invContent}>
-
-        {/* ── Header ── */}
+        {/* Header */}
         <div className={styles.header}>
           <div>
             <h1 className={styles.title}>{cleanLocName(location)}</h1>
             <p className={styles.subtitle}>
               Inventory Count · {periodKey}
-              {countSession && <span className={styles.sessionBadge}>Session active · {countSession.sectionsCompleted.length}/{INV_CATS.length} sections</span>}
+              {session && (
+                <span className={styles.sessionBadge}>
+                  Session active · {session.sectionsCompleted?.length || 0}/{categories.length} sections
+                </span>
+              )}
             </p>
           </div>
           <div className={styles.headerActions}>
-            <button className={`${styles.btnMode} ${blindMode ? styles.btnModeActive : ''}`} onClick={() => setBlindMode(v => !v)} title="Blind count mode">
+            <button 
+              className={`${styles.btnMode} ${blindMode ? styles.btnModeActive : ''}`} 
+              onClick={() => setBlindMode(v => !v)} 
+              title="Blind count mode"
+            >
               {blindMode ? <EyeOff size={14} /> : <Eye size={14} />}
               {blindMode ? 'Blind' : 'Show prior'}
+            </button>
+            <button 
+              className={`${styles.btnMode} ${showParPanel ? styles.btnModeActive : ''}`} 
+              onClick={() => setShowParPanel(v => !v)} 
+              title="Par levels"
+            >
+              <AlertTriangle size={14} />
+              Par ({totals.belowPar})
             </button>
             {dirty && (
               <button className={styles.btnSave} onClick={handleSave} disabled={saving}>
                 {saving ? 'Saving...' : 'Save & Post to P&L'}
               </button>
             )}
-            <button className={styles.btnIcon} onClick={exportExcel} title="Export Excel"><Download size={15} /></button>
-            <button className={styles.btnIcon} onClick={load} title="Refresh"><RefreshCw size={15} /></button>
+            <button className={styles.btnIcon} onClick={handleExport} title="Export Excel">
+              <Download size={15} />
+            </button>
+            <button className={styles.btnIcon} onClick={load} title="Refresh">
+              <RefreshCw size={15} />
+            </button>
           </div>
         </div>
 
-        {/* ── KPI bar with live COGS ── */}
+        {/* KPI Bar */}
         <div className={styles.kpiBar}>
           <div className={`${styles.kpi} ${styles.kpiDark}`}>
-            <div className={styles.kpiLabel}>Live COGS Estimate</div>
-            <div className={styles.kpiValue} style={{ color: '#6ee7b7' }}>{fmt$(liveCOGS)}</div>
+            <div className={styles.kpiLabel}>Live COGS</div>
+            <div className={styles.kpiValue} style={{ color: '#6ee7b7' }}>{fmt$(totals.liveCOGS)}</div>
             <div className={styles.cogsFormula}>
-              {fmt$(openingValue)} + {fmt$(purchases)} − {fmt$(totalValue)}
+              {fmt$(totals.openingValue)} + {fmt$(totals.purchases)} − {fmt$(totals.closingValue)}
             </div>
           </div>
           <div className={styles.kpi}>
             <div className={styles.kpiLabel}>Closing Value</div>
-            <div className={styles.kpiValue}>{fmt$(totalValue)}</div>
+            <div className={styles.kpiValue}>{fmt$(totals.closingValue)}</div>
             <div className={styles.kpiSub}>Current count</div>
           </div>
           <div className={styles.kpi}>
             <div className={styles.kpiLabel}>Opening Value</div>
-            <div className={styles.kpiValue} style={{ color: '#888' }}>{fmt$(openingValue)}</div>
+            <div className={styles.kpiValue} style={{ color: '#888' }}>{fmt$(totals.openingValue)}</div>
             <div className={styles.kpiSub}>Prior week closing</div>
           </div>
           <div className={styles.kpi}>
-            <div className={styles.kpiLabel}>Counted</div>
-            <div className={styles.kpiValue}>{counted} <span className={styles.kpiOf}>of {items.length}</span></div>
+            <div className={styles.kpiLabel}>Progress</div>
+            <div className={styles.kpiValue}>
+              {totals.counted} <span className={styles.kpiOf}>of {totals.total}</span>
+            </div>
             <div className={styles.progressWrap}>
               <div className={styles.progressBar}>
-                <div className={styles.progressFill} style={{ width: items.length ? (counted / items.length * 100) + '%' : '0%' }} />
+                <div className={styles.progressFill} style={{ width: totals.progress + '%' }} />
               </div>
-              <span className={styles.kpiPct}>{items.length ? Math.round(counted / items.length * 100) : 0}%</span>
+              <span className={styles.kpiPct}>{totals.progress}%</span>
             </div>
           </div>
           <div className={styles.kpi}>
             <div className={styles.kpiLabel}>Purchases</div>
-            <div className={styles.kpiValue} style={{ color: '#888' }}>{fmt$(purchases)}</div>
+            <div className={styles.kpiValue} style={{ color: '#888' }}>{fmt$(totals.purchases)}</div>
             <div className={styles.kpiSub}>From AP this period</div>
           </div>
         </div>
 
-        {/* ── Toolbar ── */}
+        {/* Variance Alerts */}
+        {topVariance.length > 0 && !blindMode && (
+          <div className={styles.alertsBox}>
+            <p className={styles.alertsTitle}>Variance alerts</p>
+            <div className={styles.alertsList}>
+              {topVariance.map(item => (
+                <div key={item.id} className={styles.alertItem}>
+                  <span className={`${styles.alertDot} ${styles['alert_' + item.status]}`} />
+                  <span className={styles.alertName}>{item.name}:</span>
+                  <span className={styles.alertDetail}>
+                    {item.direction === 'down' ? '−' : '+'}{Math.abs(item.variance)} ({item.pct}%)
+                  </span>
+                  <span className={`${styles.alertAction} ${styles['action_' + item.status]}`}>
+                    {item.status === 'alert' ? 'Investigate' : 'Review'}
+                  </span>
+                </div>
+              ))}
+              {items.filter(i => i._varClass === 'good').length > 0 && (
+                <div className={styles.alertItem}>
+                  <span className={`${styles.alertDot} ${styles.alert_good}`} />
+                  <span className={styles.alertDetail}>
+                    {items.filter(i => i._varClass === 'good').length} items within normal variance (±10%)
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Par Level Panel */}
+        {showParPanel && itemsBelowPar.length > 0 && (
+          <div className={styles.parPanel}>
+            <p className={styles.parTitle}>Items below par ({itemsBelowPar.length})</p>
+            <div className={styles.parList}>
+              {itemsBelowPar.slice(0, 5).map(item => {
+                const par = calcParStatus(item)
+                return (
+                  <div key={item.id} className={styles.parItem}>
+                    <div className={styles.parItemHeader}>
+                      <div>
+                        <p className={styles.parItemName}>{item.name}</p>
+                        <p className={styles.parItemVendor}>{item.vendor}</p>
+                      </div>
+                      <div className={styles.parItemStats}>
+                        <span className={styles.parQty}>{item.qty || 0}</span>
+                        <span className={styles.parOf}>/ {item.parLevel} par</span>
+                        {par.daysOnHand && (
+                          <span className={`${styles.parDays} ${par.status === 'critical' ? styles.parDaysCrit : ''}`}>
+                            {par.daysOnHand} days
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className={styles.parBar}>
+                      <div 
+                        className={`${styles.parFill} ${styles['parFill_' + par.status]}`}
+                        style={{ width: par.fillPct + '%' }}
+                      />
+                      <div 
+                        className={styles.parReorderMark}
+                        style={{ left: par.reorderPct + '%' }}
+                      />
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Toolbar */}
         <div className={styles.toolbar}>
           <div className={styles.searchWrap}>
             <Search size={14} className={styles.searchIcon} />
-            <input type="text" value={search} onChange={e => setSearch(e.target.value)}
-              placeholder="Search items or vendor..." className={styles.searchInput} />
+            <input 
+              type="text" 
+              value={search} 
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search items or vendor..." 
+              className={styles.searchInput} 
+            />
           </div>
-          <button className={`${styles.btnVariance} ${showVariance ? styles.btnVarianceActive : ''}`}
-            onClick={() => setShowVariance(v => !v)}>
+          <button 
+            className={`${styles.btnVariance} ${showVariance ? styles.btnVarianceActive : ''}`}
+            onClick={() => setShowVariance(v => !v)}
+          >
             {showVariance ? <TrendingDown size={13} /> : <TrendingUp size={13} />}
             Variance
           </button>
         </div>
 
-        {loading ? (
-          <div className={styles.loading}>Loading inventory...</div>
-        ) : displayGroups.map(cat => (
+        {/* Loading State */}
+        {loading && <div className={styles.loading}>Loading inventory...</div>}
+
+        {/* Error State */}
+        {error && <div className={styles.error}>{error}</div>}
+
+        {/* Category Sections */}
+        {!loading && displayGroups.map(cat => (
           <div key={cat.key} className={styles.section}>
-            <div className={styles.catHeader} style={{ background: cat.bg, borderBottomColor: cat.color + '40', cursor: 'pointer' }}
-              onClick={() => toggleCollapse(cat.key)}>
+            <div 
+              className={styles.catHeader} 
+              style={{ background: cat.bg, borderBottomColor: cat.color + '40', cursor: 'pointer' }}
+              onClick={() => toggleCollapse(cat.key)}
+            >
               <div className={styles.catTitle} style={{ color: cat.color }}>
                 {cat.label}
                 <span className={styles.catCount} style={{ background: cat.color }}>{cat.items.length}</span>
-                <span className={styles.catCounted}>{cat.items.filter(i => i.qty != null && i.qty > 0).length} counted</span>
+                <span className={styles.catCounted}>
+                  {cat.items.filter(i => i.qty != null && i.qty > 0).length} counted
+                </span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <div className={styles.catTotal} style={{ color: cat.color }}>
-                  {fmt$(cat.items.reduce((s, i) => s + ((i.qty || 0) * (i.unitCost || 0)), 0))}
+                  {fmt$(cat.items.reduce((s, i) => s + i._value, 0))}
                 </div>
-                <span style={{ color: cat.color, fontSize: 11 }}>{collapsed[cat.key] ? '▶' : '▼'}</span>
+                <span style={{ color: cat.color, fontSize: 11 }}>
+                  {collapsed[cat.key] ? '▶' : '▼'}
+                </span>
               </div>
             </div>
 
@@ -414,20 +412,25 @@ export default function Inventory() {
                 <tbody>
                   {cat.items.map((item, idx) => {
                     const isCounted = item.qty != null && item.qty > 0
-                    const total     = (item.qty || 0) * (item.unitCost || 0)
-                    const varDir    = item._variance > 0 ? 'up' : item._variance < 0 ? 'down' : 'neutral'
+                    const varDir = item._variance > 0 ? 'up' : item._variance < 0 ? 'down' : 'neutral'
 
                     return (
                       <tr key={item.id} className={`${styles.row} ${idx % 2 === 0 ? '' : styles.rowAlt}`}>
                         <td className={styles.tdNum}>{idx + 1}</td>
                         <td className={styles.tdName}>
                           <div className={styles.nameRow}>
-                            {/* Variance heatmap dot */}
-                            <div className={`${styles.heatDot} ${isCounted ? styles['heat_' + item._varClass] : styles.heat_empty}`} title={
-                              isCounted ? `${item._varClass === 'good' ? 'Within 10% of last week' : item._varClass === 'warn' ? '10-25% variance' : '>25% variance'}` : 'Not counted'
-                            } />
+                            <div 
+                              className={`${styles.heatDot} ${isCounted ? styles['heat_' + item._varClass] : styles.heat_empty}`} 
+                              title={isCounted 
+                                ? `${item._varClass === 'good' ? 'Within 10%' : item._varClass === 'warn' ? '10-25% variance' : '>25% variance'}` 
+                                : 'Not counted'
+                              } 
+                            />
                             <div>
-                              <div className={styles.name}>{item.name}</div>
+                              <div className={styles.name}>
+                                {item.name}
+                                {item._belowPar && <span className={styles.parFlag}>↓ Par</span>}
+                              </div>
                               {item.vendor && <div className={styles.vendor}>{item.vendor}</div>}
                             </div>
                           </div>
@@ -444,11 +447,16 @@ export default function Inventory() {
                         <td className={styles.tdCount}>
                           <div className={styles.countRow}>
                             <button className={styles.adjBtn} onClick={() => adjust(item.id, -1)}>−</button>
-                            <input type="number" min="0" step="0.5"
+                            <input 
+                              type="number" 
+                              min="0" 
+                              step="0.5"
                               value={item.qty ?? ''}
                               onChange={e => setQty(item.id, e.target.value)}
-                              className={`${styles.countInput} ${isCounted ? styles.counted : ''}`}
+                              onDoubleClick={() => !blindMode && copyPrior(item.id)}
+                              className={`${styles.countInput} ${isCounted ? styles['counted_' + item._varClass] : ''}`}
                               placeholder={blindMode ? '0' : item._priorQty > 0 ? String(item._priorQty) : '0'}
+                              title="Double-click to copy prior count"
                             />
                             <button className={styles.adjBtn} onClick={() => adjust(item.id, 1)}>+</button>
                           </div>
@@ -463,8 +471,8 @@ export default function Inventory() {
                             ) : <span style={{ color: '#ddd' }}>—</span>}
                           </td>
                         )}
-                        <td className={styles.tdRight} style={{ fontWeight: 700, color: total > 0 ? '#059669' : '#bbb' }}>
-                          {total > 0 ? fmt$(total) : '—'}
+                        <td className={styles.tdRight} style={{ fontWeight: 700, color: item._value > 0 ? '#059669' : '#bbb' }}>
+                          {item._value > 0 ? fmt$(item._value) : '—'}
                         </td>
                       </tr>
                     )
@@ -475,13 +483,15 @@ export default function Inventory() {
           </div>
         ))}
 
-        {/* ── Sticky COGS footer ── */}
+        {/* Sticky COGS Footer */}
         {dirty && (
           <div className={styles.cogsFooter}>
             <div className={styles.cogsFooterLeft}>
               <span className={styles.cogsLabel}>Live COGS</span>
-              <span className={styles.cogsValue}>{fmt$(liveCOGS)}</span>
-              <span className={styles.cogsBreakdown}>{fmt$(openingValue)} opening + {fmt$(purchases)} purchases − {fmt$(totalValue)} closing</span>
+              <span className={styles.cogsValue}>{fmt$(totals.liveCOGS)}</span>
+              <span className={styles.cogsBreakdown}>
+                {fmt$(totals.openingValue)} opening + {fmt$(totals.purchases)} purchases − {fmt$(totals.closingValue)} closing
+              </span>
             </div>
             <button className={styles.btnSaveFooter} onClick={handleSave} disabled={saving}>
               {saving ? 'Saving...' : 'Save & Post to P&L'}
