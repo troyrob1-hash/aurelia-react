@@ -75,15 +75,15 @@ const SYSTEM_ACTOR = { uid: "system", email: "system@aurelia-fms", displayName: 
 // CALLABLE: mintFirebaseToken
 // Verifies Cognito ID token and returns a Firebase custom token
 // ============================================================
-exports.mintFirebaseToken = onCall(async (request) => {
-  const { idToken } = request.data;
-
-  if (!idToken) {
-    throw new HttpsError("invalid-argument", "Missing idToken");
-  }
-
-  try {
-    const decoded = await verifyCognitoToken(idToken);
+exports.mintFirebaseToken = onCall(
+  { invoker: "public" },
+  async (request) => {
+    const { idToken } = request.data;
+    if (!idToken) {
+      throw new HttpsError("invalid-argument", "Missing idToken");
+    }
+    try {
+      const decoded = await verifyCognitoToken(idToken);
 
     const uid = decoded.sub;
     const email = decoded.email || "";
