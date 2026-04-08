@@ -1,8 +1,141 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    function isAuth() {
+      return request.auth != null;
+    }
+
+    function tenantId() {
+      return request.auth.token["custom:tenantId"];
+    }
+
+    function role() {
+      return request.auth.token["custom:role"];
+    }
+
+    function isAdmin()    { return role() == 'admin'    || role() == 'Admin'; }
+    function isDirector() { return role() == 'director' || role() == 'Director' || isAdmin(); }
+    function isManager()  { return role() == 'manager'  || role() == 'Manager'  || isDirector(); }
+
+    function ownsTenant(tid) {
+      return isAuth() && tenantId() == tid;
+    }
+
+    match /tenants/{tenantId} {
+      allow read:  if ownsTenant(tenantId);
+      allow write: if ownsTenant(tenantId) && isAdmin();
+
+      match /config/{doc} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isDirector();
+      }
+
+      match /settings/{doc} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isDirector();
+      }
+
+      match /inventory/{locationId}/items/{itemId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isManager();
+      }
+
+      match /inventorySessions/{sessionId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isManager();
+      }
+
+      match /pnl/{locationId}/periods/{periodId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isManager();
+      }
+
+      match /budgets/{budgetId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isManager();
+      }
+
+      match /budgetUnlockRequests/{reqId} {
+        allow read:  if ownsTenant(tenantId) && isDirector();
+        allow create: if ownsTenant(tenantId) && isManager();
+        allow update: if ownsTenant(tenantId) && isDirector();
+      }
+
+      match /invoices/{invoiceId} {
+        allow read:   if ownsTenant(tenantId);
+        allow create: if ownsTenant(tenantId) && isManager();
+        allow update: if ownsTenant(tenantId) && isManager();
+        allow delete: if ownsTenant(tenantId) && isDirector();
+      }
+
+      match /transfers/{transferId} {
+        allow read:   if ownsTenant(tenantId);
+        allow create: if ownsTenant(tenantId) && isManager();
+        allow update: if ownsTenant(tenantId) && (
+          isDirector() ||
+          (isManager() && request.resource.data.status == 'Received')
+        );
+        allow delete: if ownsTenant(tenantId) && isDirector();
+      }
+
+      match /laborSubmissions/{subId} {
+        allow read:   if ownsTenant(tenantId);
+        allow create: if ownsTenant(tenantId) && isManager();
+        allow update: if ownsTenant(tenantId) && isDirector();
+      }
+
+      match /salesSubmissions/{subId} {
+        allow read:   if ownsTenant(tenantId);
+        allow create: if ownsTenant(tenantId) && isManager();
+        allow update: if ownsTenant(tenantId) && isDirector();
+      }
+
+      match /wasteSubmissions/{subId} {
+        allow read:   if ownsTenant(tenantId);
+        allow create: if ownsTenant(tenantId) && isManager();
+        allow update: if ownsTenant(tenantId) && isDirector();
+      }
+
+      match /locations/{locationId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isManager();
+
+        match /inventory/{periodId} {
+          allow read:  if ownsTenant(tenantId);
+          allow write: if ownsTenant(tenantId) && isManager();
+        }
+
+        match /sales/{weekId} {
+          allow read:  if ownsTenant(tenantId);
+          allow write: if ownsTenant(tenantId) && isManager();
+        }
+
+        match /waste/{entryId} {
+          allow read:  if ownsTenant(tenantId);
+          allow create: if ownsTenant(tenantId) && isManager();
+          allow delete: if ownsTenant(tenantId) && isManager();
+        }
+      }
+
+      match /legacy/{doc} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isAdmin();
+      }
+
+      match /auditLog/{logId} {
+        allow read:  if ownsTenant(tenantId) && isDirector();
+        allow write: if false;
+      }
+
+      match /users/{userId} {
+        allow read:  if ownsTenant(tenantId) && isManager();
+        allow write: if ownsTenant(tenantId) && isAdmin();
+      }
+    }
+
     match /{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
     }
   }
 }

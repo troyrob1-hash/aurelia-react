@@ -1,3 +1,5 @@
+import { signInWithCognito, signOutFirebase } from './firebase'
+
 const REGION    = import.meta.env.VITE_COGNITO_REGION    || 'us-east-2'
 const CLIENT_ID = import.meta.env.VITE_COGNITO_CLIENT_ID || '29lq06sva9bvh2rns29s2vjcc2'
 const ENDPOINT  = `https://cognito-idp.${REGION}.amazonaws.com/`
@@ -15,8 +17,6 @@ async function cognitoPost(action, body) {
   if (!res.ok) throw new Error(data.message || data.__type || 'Auth error')
   return data
 }
-
-// ── Session storage ───────────────────────────────────────────
 
 const SESSION_KEY = 'aurelia_session'
 
@@ -48,8 +48,6 @@ export function getAuthHeaders() {
   return { Authorization: `Bearer ${session.idToken}` }
 }
 
-// ── Auth actions ──────────────────────────────────────────────
-
 export async function signIn(email, password) {
   const data = await cognitoPost('InitiateAuth', {
     AuthFlow: 'USER_PASSWORD_AUTH',
@@ -58,7 +56,9 @@ export async function signIn(email, password) {
   })
 
   if (data.AuthenticationResult) {
-    return { type: 'success', session: saveSession(data.AuthenticationResult) }
+    const session = saveSession(data.AuthenticationResult)
+    await signInWithCognito(data.AuthenticationResult.IdToken)
+    return { type: 'success', session }
   }
   if (data.ChallengeName === 'NEW_PASSWORD_REQUIRED') {
     return { type: 'new_password', session: data.Session }
@@ -74,7 +74,9 @@ export async function completeNewPassword(email, newPassword, session) {
     Session: session,
   })
   if (data.AuthenticationResult) {
-    return saveSession(data.AuthenticationResult)
+    const newSession = saveSession(data.AuthenticationResult)
+    await signInWithCognito(data.AuthenticationResult.IdToken)
+    return newSession
   }
   throw new Error('Password change failed')
 }
@@ -93,9 +95,16 @@ export async function refreshSession(refreshToken) {
     AuthParameters: { REFRESH_TOKEN: refreshToken },
   })
   if (data.AuthenticationResult) {
-    return saveSession({ ...data.AuthenticationResult, RefreshToken: refreshToken })
+    const session = saveSession({ ...data.AuthenticationResult, RefreshToken: refreshToken })
+    await signInWithCognito(data.AuthenticationResult.IdToken)
+    return session
   }
   throw new Error('Session refresh failed')
+}
+
+export async function signOut() {
+  clearSession()
+  await signOutFirebase()
 }
 
 export async function signUp(email, password, name) {
