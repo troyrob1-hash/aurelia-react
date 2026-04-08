@@ -18,21 +18,24 @@ export const ORDER_STATUS = {
   PENDING_APPROVAL: 'Pending Approval',
   APPROVED: 'Approved',
   REJECTED: 'Rejected',
-  ORDERED: 'Ordered',        // Sent to vendor
-  RECEIVING: 'Receiving',    // Partial receipt
-  RECEIVED: 'Received',      // Full receipt
-  CLOSED: 'Closed',          // Reconciled
+  ORDERED: 'Ordered',
+  RECEIVING: 'Receiving',
+  RECEIVED: 'Received',
+  CLOSED: 'Closed',
   CANCELLED: 'Cancelled'
 }
 
 // Approval thresholds
-const APPROVAL_THRESHOLDS = {
-  AUTO_APPROVE: 250,         // Orders under $250 auto-approve for Managers
-  DIRECTOR_REQUIRED: 1000,   // Orders over $1000 need Director
+export const APPROVAL_THRESHOLDS = {
+  AUTO_APPROVE: 250,
+  DIRECTOR_REQUIRED: 1000,
 }
 
 export function useOrders(locationId = null) {
-  const { user, orgId } = useAuthStore()
+  // Get user and derive orgId consistently
+  const { user } = useAuthStore()
+  const orgId = user?.tenantId || null
+  
   const toast = useToast()
   const [orders, setOrders] = useState([])
   const [loading, setLoading] = useState(true)
@@ -40,7 +43,14 @@ export function useOrders(locationId = null) {
 
   // Real-time orders subscription
   useEffect(() => {
-    if (!orgId) return
+    if (!orgId) {
+      setOrders([])
+      setLoading(false)
+      return
+    }
+
+    setLoading(true)
+    setError(null)
 
     const ordersRef = collection(db, 'tenants', orgId, 'orders')
     let q = query(ordersRef, orderBy('createdAt', 'desc'))
@@ -131,7 +141,7 @@ export function useOrders(locationId = null) {
     if (!orgId || !user) throw new Error('Not authenticated')
 
     const subtotal = items.reduce((sum, i) => sum + (i.qty * i.unitCost), 0)
-    const tax = 0 // Calculate if needed
+    const tax = 0
     const total = subtotal + tax
 
     // Determine if auto-approve applies
@@ -141,12 +151,10 @@ export function useOrders(locationId = null) {
     let approvedAt = null
 
     if (userRole === 'Admin' || userRole === 'Director') {
-      // Directors/Admins can self-approve
       nextStatus = ORDER_STATUS.APPROVED
       approvedBy = user.email
       approvedAt = serverTimestamp()
     } else if (total <= APPROVAL_THRESHOLDS.AUTO_APPROVE) {
-      // Small orders auto-approve
       nextStatus = ORDER_STATUS.APPROVED
       approvedBy = 'system:auto-approve'
       approvedAt = serverTimestamp()
@@ -158,7 +166,7 @@ export function useOrders(locationId = null) {
         productId: i.id,
         name: i.name,
         sku: i.sku,
-        category: i.cat,
+        category: i.cat || i.category,
         pack: i.pack,
         unitCost: i.unitCost,
         qtyOrdered: i.qty,
@@ -322,10 +330,23 @@ export function useOrders(locationId = null) {
     orders.filter(o => o.status === ORDER_STATUS.PENDING_APPROVAL).length
   , [orders])
 
+  // Computed: This week's order total
+  const weeklyOrderTotal = useMemo(() => {
+    const now = new Date()
+    const startOfWeek = new Date(now)
+    startOfWeek.setDate(now.getDate() - now.getDay())
+    startOfWeek.setHours(0, 0, 0, 0)
+    
+    return orders
+      .filter(o => o.createdAt && o.createdAt >= startOfWeek)
+      .reduce((sum, o) => sum + (o.total || 0), 0)
+  }, [orders])
+
   return {
     orders,
     ordersByStatus,
     pendingApprovalCount,
+    weeklyOrderTotal,
     loading,
     error,
     createDraft,
@@ -341,4 +362,4 @@ export function useOrders(locationId = null) {
   }
 }
 
-
+export default useOrders

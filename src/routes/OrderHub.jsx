@@ -1,13 +1,17 @@
-import { useState, useMemo, useEffect, Fragment } from 'react'
+import { useState, useMemo, useEffect, Fragment, useCallback } from 'react'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { useToast } from '@/components/ui/Toast'
-import { Search, Download, X, Clock, LayoutGrid, List, TrendingUp, Package, CheckCircle, AlertTriangle, Truck } from 'lucide-react'
+import { Search, Download, X, Clock, LayoutGrid, List, TrendingUp, Package, CheckCircle, AlertTriangle, Truck, RefreshCw } from 'lucide-react'
 import { db } from '@/lib/firebase'
-import { collection, addDoc, getDocs, query, orderBy, limit, serverTimestamp, where } from 'firebase/firestore'
+import { collection, addDoc, getDocs, query, orderBy, limit, serverTimestamp, doc, getDoc } from 'firebase/firestore'
 import { writePurchasingPnL, weekPeriod } from '@/lib/pnl'
 import { useAuthStore } from '@/store/authStore'
 import { submitToVendor } from '@/services/vendors'
 import styles from './OrderHub.module.css'
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Constants
+// ═══════════════════════════════════════════════════════════════════════════
 
 const VENDORS = [
   { id:'sysco',       label:'Sysco',           url:'https://shop.sysco.com' },
@@ -76,36 +80,70 @@ const STATUS_CONFIG = {
 
 const CATS = ['All', 'Beverages', 'Dairy', 'Snacks', 'Barista', 'Supplies']
 
-// Mock weekly budget data (replace with real data from Firestore)
-const WEEKLY_BUDGET = { cogs: 3500, spent: 1847.50 }
+// ═══════════════════════════════════════════════════════════════════════════
+// OrderHub Component
+// ═══════════════════════════════════════════════════════════════════════════
 
 export default function OrderHub() {
   const { selectedLocation } = useLocations()
   const toast = useToast()
   const { user } = useAuthStore()
   
+  // FIXED: Derive orgId from user consistently
+  const orgId = user?.tenantId || null
+  
   // View state
-  const [view, setView] = useState('order') // 'order' | 'kanban'
+  const [view, setView] = useState('order')
   
   // Filter state
-  const [vendorFilter, setVendorFilter] = useState('all') // 'all' = multi-vendor mode
+  const [vendorFilter, setVendorFilter] = useState('all')
   const [cat, setCat] = useState('All')
   const [search, setSearch] = useState('')
   const [filterBelowPar, setFilterBelowPar] = useState(false)
   const [filterInCart, setFilterInCart] = useState(false)
   
-  // Cart state (persists across vendors in multi-vendor mode)
+  // Cart state
   const [qty, setQty] = useState({})
   const [deliveryDate, setDeliveryDate] = useState('')
   const [note, setNote] = useState('')
+  const [submitting, setSubmitting] = useState(false)
   const [submitted, setSubmitted] = useState(false)
   const [showBudgetPreview, setShowBudgetPreview] = useState(false)
   
   // Past orders
   const [pastOrders, setPastOrders] = useState([])
+  const [pastOrdersLoading, setPastOrdersLoading] = useState(false)
   const [showPast, setShowPast] = useState(false)
 
+  // Budget data from Firestore
+  const [weeklyBudget, setWeeklyBudget] = useState({ cogs: 3500, spent: 0 })
+
   const location = selectedLocation === 'all' ? null : selectedLocation
+
+  // Load weekly budget from Firestore
+  useEffect(() => {
+    if (!orgId || !location) return
+    
+    const loadBudget = async () => {
+      try {
+        const period = weekPeriod()
+        const pnlRef = doc(db, 'tenants', orgId, 'pnl', location, 'periods', period)
+        const pnlSnap = await getDoc(pnlRef)
+        
+        if (pnlSnap.exists()) {
+          const data = pnlSnap.data()
+          setWeeklyBudget({
+            cogs: data.cogs_budget || 3500,
+            spent: data.cogs_purchases || 0
+          })
+        }
+      } catch (err) {
+        console.error('Failed to load budget:', err)
+      }
+    }
+    
+    loadBudget()
+  }, [orgId, location])
 
   // Get items based on vendor filter
   const visibleItems = useMemo(() => {
@@ -113,7 +151,7 @@ export default function OrderHub() {
     return ITEMS.filter(i => i.vendor === vendorFilter)
   }, [vendorFilter])
 
-  // Cart items from ALL vendors (multi-vendor cart)
+  // Cart items from ALL vendors
   const cartItems = useMemo(() => {
     return Object.entries(qty).map(([id, q]) => {
       const item = ITEMS.find(i => i.id === id)
@@ -121,7 +159,7 @@ export default function OrderHub() {
     }).filter(Boolean)
   }, [qty])
 
-  // Group cart by vendor for submission
+  // Group cart by vendor
   const cartByVendor = useMemo(() => {
     const grouped = {}
     cartItems.forEach(item => {
@@ -135,7 +173,7 @@ export default function OrderHub() {
   const cartLines = cartItems.length
   const vendorCount = Object.keys(cartByVendor).length
 
-  // Filtered products for display
+  // Filtered products
   const filtered = useMemo(() => visibleItems.filter(i => {
     if (cat !== 'All' && i.cat !== cat) return false
     if (filterBelowPar && i.onHand >= i.par) return false
@@ -155,38 +193,64 @@ export default function OrderHub() {
 
   const belowParCnt = visibleItems.filter(i => i.onHand < i.par).length
 
-  function setItemQty(id, val) {
+  // ─── Handlers ──────────────────────────────────────────────────────────────
+
+  const setItemQty = useCallback((id, val) => {
     const n = Math.max(0, parseInt(val) || 0)
     setQty(prev => n === 0 ? (({ [id]: _, ...rest }) => rest)(prev) : { ...prev, [id]: n })
-  }
+  }, [])
 
-  function adj(id, delta) {
+  const adj = useCallback((id, delta) => {
     setItemQty(id, (qty[id] || 0) + delta)
-  }
+  }, [qty, setItemQty])
 
-  function addAllBelowPar() {
+  const addAllBelowPar = useCallback(() => {
     const updates = {}
     visibleItems.filter(i => i.onHand < i.par).forEach(i => {
       updates[i.id] = i.par - i.onHand
     })
     setQty(prev => ({ ...prev, ...updates }))
     toast.success(`Added ${Object.keys(updates).length} below-par items to order`)
-  }
+  }, [visibleItems, toast])
 
-  async function loadPastOrders() {
+  const loadPastOrders = useCallback(async () => {
+    if (!orgId) {
+      toast.error('No organization found')
+      return
+    }
+
+    setPastOrdersLoading(true)
     try {
-      const snap = await getDocs(query(collection(db,'tenants','fooda','orders'), orderBy('createdAt','desc'), limit(20)))
-      setPastOrders(snap.docs.map(d => ({ id:d.id, ...d.data() })))
-    } catch(e) { console.error(e) }
-  }
+      const snap = await getDocs(
+        query(
+          collection(db, 'tenants', orgId, 'orders'),
+          orderBy('createdAt', 'desc'),
+          limit(20)
+        )
+      )
+      setPastOrders(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+    } catch (e) {
+      console.error('Failed to load past orders:', e)
+      toast.error('Failed to load past orders')
+    } finally {
+      setPastOrdersLoading(false)
+    }
+  }, [orgId, toast])
 
-  // Submit orders - creates separate PO for each vendor
-  async function submitOrders() {
-    if (!cartLines) { toast.warning('Cart is empty'); return }
+  // Submit orders
+  const submitOrders = useCallback(async () => {
+    if (!cartLines) {
+      toast.warning('Cart is empty')
+      return
+    }
     
-    setSubmitted(true)
+    if (!orgId) {
+      toast.error('No organization found. Please log in again.')
+      return
+    }
+
+    setSubmitting(true)
     const now = new Date()
-    const results = []
 
     try {
       // Create separate order for each vendor
@@ -197,26 +261,35 @@ export default function OrderHub() {
 
         const orderDoc = {
           orderNum,
-          vendor: vendor?.label,
+          vendor: vendor?.label || vendorId,
           vendorId,
           location: location || 'All Locations',
+          locationId: location,
           deliveryDate: deliveryDate || null,
           note,
-          items: items.map(i => ({ id:i.id, name:i.name, sku:i.sku, pack:i.pack, unitCost:i.unitCost, qty:i.qty, subtotal:+(i.qty*i.unitCost).toFixed(2) })),
+          items: items.map(i => ({
+            id: i.id,
+            name: i.name,
+            sku: i.sku,
+            pack: i.pack,
+            unitCost: i.unitCost,
+            qty: i.qty,
+            subtotal: +(i.qty * i.unitCost).toFixed(2)
+          })),
           total: +vendorTotal.toFixed(2),
           status: 'Submitted',
           createdBy: user?.email || 'unknown',
           createdAt: serverTimestamp(),
         }
 
-        // Save to Firestore
-        await addDoc(collection(db,'tenants','fooda','orders'), orderDoc)
+        // FIXED: Use dynamic orgId
+        await addDoc(collection(db, 'tenants', orgId, 'orders'), orderDoc)
 
         // Auto-create invoice
-        await addDoc(collection(db,'tenants','fooda','invoices'), {
+        await addDoc(collection(db, 'tenants', orgId, 'invoices'), {
           invoiceNum: orderNum,
-          vendor: vendor?.label,
-          invoiceDate: now.toISOString().slice(0,10),
+          vendor: vendor?.label || vendorId,
+          invoiceDate: now.toISOString().slice(0, 10),
           dueDate: deliveryDate || '',
           amount: +vendorTotal.toFixed(2),
           amountPaid: 0,
@@ -229,9 +302,12 @@ export default function OrderHub() {
           createdAt: serverTimestamp(),
         })
 
-        // Try to submit to vendor API (will fallback gracefully)
-        const apiResult = await submitToVendor(vendorId, orderDoc)
-        results.push({ vendor: vendor?.label, orderNum, total: vendorTotal, apiResult })
+        // Try to submit to vendor API
+        try {
+          await submitToVendor(vendorId, orderDoc)
+        } catch (apiErr) {
+          console.warn(`Vendor API submission failed for ${vendorId}:`, apiErr)
+        }
       }
 
       // Write to P&L
@@ -243,27 +319,42 @@ export default function OrderHub() {
         })
       }
 
+      setSubmitted(true)
       toast.success(`${vendorCount} order${vendorCount > 1 ? 's' : ''} submitted — $${cartTotal.toFixed(2)} total`)
-      setTimeout(() => { setQty({}); setSubmitted(false); setNote(''); setDeliveryDate('') }, 2000)
-    } catch(e) {
-      console.error(e)
-      toast.error('Failed to submit orders')
-      setSubmitted(false)
-    }
-  }
+      
+      // Reset after success
+      setTimeout(() => {
+        setQty({})
+        setSubmitted(false)
+        setNote('')
+        setDeliveryDate('')
+      }, 2000)
 
-  function exportCSV() {
-    const rows = [['Vendor','SKU','Product','Pack','Unit Cost','Qty','Subtotal'],
+    } catch (e) {
+      console.error('Order submission failed:', e)
+      toast.error('Failed to submit orders: ' + e.message)
+    } finally {
+      setSubmitting(false)
+    }
+  }, [cartLines, cartByVendor, cartTotal, vendorCount, orgId, location, deliveryDate, note, user, toast])
+
+  const exportCSV = useCallback(() => {
+    const rows = [
+      ['Vendor', 'SKU', 'Product', 'Pack', 'Unit Cost', 'Qty', 'Subtotal'],
       ...cartItems.map(i => {
         const v = VENDORS.find(v => v.id === i.vendor)
-        return [v?.label, i.sku, i.name, i.pack, i.unitCost, i.qty, (i.qty*i.unitCost).toFixed(2)]
-      })]
+        return [v?.label, i.sku, i.name, i.pack, i.unitCost, i.qty, (i.qty * i.unitCost).toFixed(2)]
+      })
+    ]
     const csv = rows.map(r => r.map(v => `"${v}"`).join(',')).join('\n')
-    const blob = new Blob([csv], { type:'text/csv' })
+    const blob = new Blob([csv], { type: 'text/csv' })
     const url = URL.createObjectURL(blob)
-    Object.assign(document.createElement('a'), { href:url, download:`order-multi-${new Date().toISOString().slice(0,10)}.csv` }).click()
+    Object.assign(document.createElement('a'), {
+      href: url,
+      download: `order-multi-${new Date().toISOString().slice(0, 10)}.csv`
+    }).click()
     URL.revokeObjectURL(url)
-  }
+  }, [cartItems])
 
   // Kanban data
   const ordersByStatus = useMemo(() => {
@@ -275,17 +366,27 @@ export default function OrderHub() {
   }, [pastOrders])
 
   // Load past orders on mount for kanban
-  useEffect(() => { loadPastOrders() }, [])
+  useEffect(() => {
+    if (orgId) loadPastOrders()
+  }, [orgId, loadPastOrders])
+
+  // ─── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div className={styles.page}>
       {/* View Toggle + Toolbar */}
       <div className={styles.toolbar}>
         <div className={styles.viewToggle}>
-          <button className={`${styles.viewBtn} ${view === 'order' ? styles.viewActive : ''}`} onClick={() => setView('order')}>
+          <button 
+            className={`${styles.viewBtn} ${view === 'order' ? styles.viewActive : ''}`} 
+            onClick={() => setView('order')}
+          >
             <List size={14}/> Order
           </button>
-          <button className={`${styles.viewBtn} ${view === 'kanban' ? styles.viewActive : ''}`} onClick={() => setView('kanban')}>
+          <button 
+            className={`${styles.viewBtn} ${view === 'kanban' ? styles.viewActive : ''}`} 
+            onClick={() => setView('kanban')}
+          >
             <LayoutGrid size={14}/> Board
           </button>
         </div>
@@ -294,7 +395,11 @@ export default function OrderHub() {
           <>
             <div className={styles.toolGroup}>
               <span className={styles.toolLabel}>Vendor</span>
-              <select value={vendorFilter} onChange={e => setVendorFilter(e.target.value)} className={styles.sel}>
+              <select 
+                value={vendorFilter} 
+                onChange={e => setVendorFilter(e.target.value)} 
+                className={styles.sel}
+              >
                 <option value="all">All Vendors (Multi-Cart)</option>
                 {VENDORS.map(v => <option key={v.id} value={v.id}>{v.label}</option>)}
               </select>
@@ -302,12 +407,22 @@ export default function OrderHub() {
             <div className={styles.toolDivider}/>
             <div className={styles.toolGroup}>
               <span className={styles.toolLabel}>Delivery date</span>
-              <input type="date" value={deliveryDate} onChange={e => setDeliveryDate(e.target.value)} className={styles.dateInput}/>
+              <input 
+                type="date" 
+                value={deliveryDate} 
+                onChange={e => setDeliveryDate(e.target.value)} 
+                className={styles.dateInput}
+              />
             </div>
             <div className={styles.toolDivider}/>
             <div className={styles.searchWrap}>
               <Search size={13} className={styles.searchIcon}/>
-              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search products or SKU..." className={styles.searchInput}/>
+              <input 
+                value={search} 
+                onChange={e => setSearch(e.target.value)} 
+                placeholder="Search products or SKU..." 
+                className={styles.searchInput}
+              />
             </div>
             <div className={styles.toolRight}>
               {belowParCnt > 0 && (
@@ -315,11 +430,24 @@ export default function OrderHub() {
                   ⚠ {belowParCnt} below par — add all
                 </button>
               )}
-              <button className={styles.pastOrdersBtn} onClick={() => { setShowPast(v=>!v); loadPastOrders() }}>
+              <button 
+                className={styles.pastOrdersBtn} 
+                onClick={() => { setShowPast(v => !v); loadPastOrders() }}
+              >
                 <Clock size={13}/> Past Orders
               </button>
             </div>
           </>
+        )}
+
+        {view === 'kanban' && (
+          <button 
+            className={styles.pastOrdersBtn} 
+            onClick={loadPastOrders}
+            disabled={pastOrdersLoading}
+          >
+            <RefreshCw size={13} className={pastOrdersLoading ? styles.spin : ''}/> Refresh
+          </button>
         )}
       </div>
 
@@ -328,23 +456,45 @@ export default function OrderHub() {
         <div className={styles.pastPanel}>
           <div className={styles.pastHeader}>
             <span>Past Orders</span>
-            <button className={styles.pastClose} onClick={()=>setShowPast(false)}>✕</button>
+            <button className={styles.pastClose} onClick={() => setShowPast(false)}>✕</button>
           </div>
-          {pastOrders.length === 0 ? (
+          {pastOrdersLoading ? (
+            <div className={styles.pastEmpty}>Loading orders...</div>
+          ) : pastOrders.length === 0 ? (
             <div className={styles.pastEmpty}>No orders submitted yet</div>
           ) : (
             <table className={styles.pastTable}>
-              <thead><tr><th>Order #</th><th>Vendor</th><th>Location</th><th>Date</th><th>Items</th><th>Total</th><th>Status</th></tr></thead>
+              <thead>
+                <tr>
+                  <th>Order #</th>
+                  <th>Vendor</th>
+                  <th>Location</th>
+                  <th>Date</th>
+                  <th>Items</th>
+                  <th>Total</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
               <tbody>
                 {pastOrders.map(o => (
                   <tr key={o.id}>
-                    <td style={{fontWeight:600,fontFamily:'monospace'}}>{o.orderNum}</td>
+                    <td style={{ fontWeight: 600, fontFamily: 'monospace' }}>{o.orderNum}</td>
                     <td>{o.vendor}</td>
-                    <td>{cleanLocName(o.location||'')}</td>
+                    <td>{cleanLocName(o.location || '')}</td>
                     <td>{o.createdAt?.toDate?.()?.toLocaleDateString?.() || '—'}</td>
                     <td>{o.items?.length || 0} lines</td>
-                    <td style={{fontWeight:700,color:'#185FA5'}}>${(o.total||0).toFixed(2)}</td>
-                    <td><span className={styles.statusBadge} style={{background: STATUS_CONFIG[o.status]?.bg, color: STATUS_CONFIG[o.status]?.color}}>{o.status}</span></td>
+                    <td style={{ fontWeight: 700, color: '#185FA5' }}>${(o.total || 0).toFixed(2)}</td>
+                    <td>
+                      <span 
+                        className={styles.statusBadge} 
+                        style={{ 
+                          background: STATUS_CONFIG[o.status]?.bg, 
+                          color: STATUS_CONFIG[o.status]?.color 
+                        }}
+                      >
+                        {o.status}
+                      </span>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -356,22 +506,30 @@ export default function OrderHub() {
       {/* KANBAN VIEW */}
       {view === 'kanban' && (
         <div className={styles.kanban}>
+          {pastOrdersLoading && (
+            <div className={styles.kanbanLoading}>Loading orders...</div>
+          )}
           {Object.entries(ordersByStatus).map(([status, orders]) => {
             const config = STATUS_CONFIG[status] || {}
             const Icon = config.icon || Package
             return (
               <div key={status} className={styles.kanbanCol}>
-                <div className={styles.kanbanHeader} style={{borderBottomColor: config.color}}>
-                  <Icon size={14} style={{color: config.color}}/>
+                <div className={styles.kanbanHeader} style={{ borderBottomColor: config.color }}>
+                  <Icon size={14} style={{ color: config.color }}/>
                   <span>{status}</span>
-                  <span className={styles.kanbanCount} style={{background: config.bg, color: config.color}}>{orders.length}</span>
+                  <span 
+                    className={styles.kanbanCount} 
+                    style={{ background: config.bg, color: config.color }}
+                  >
+                    {orders.length}
+                  </span>
                 </div>
                 <div className={styles.kanbanCards}>
                   {orders.map(order => (
                     <div key={order.id} className={styles.kanbanCard}>
                       <div className={styles.kanbanCardHeader}>
                         <span className={styles.kanbanOrderNum}>{order.orderNum}</span>
-                        <span className={styles.kanbanTotal}>${(order.total||0).toFixed(2)}</span>
+                        <span className={styles.kanbanTotal}>${(order.total || 0).toFixed(2)}</span>
                       </div>
                       <div className={styles.kanbanCardMeta}>
                         <span>{order.vendor}</span>
@@ -382,7 +540,9 @@ export default function OrderHub() {
                       </div>
                     </div>
                   ))}
-                  {orders.length === 0 && <div className={styles.kanbanEmpty}>No orders</div>}
+                  {orders.length === 0 && !pastOrdersLoading && (
+                    <div className={styles.kanbanEmpty}>No orders</div>
+                  )}
                 </div>
               </div>
             )
@@ -400,25 +560,49 @@ export default function OrderHub() {
               {CATS.map(c => {
                 const count = c === 'All' ? visibleItems.length : visibleItems.filter(i => i.cat === c).length
                 return (
-                  <button key={c}
+                  <button 
+                    key={c}
                     className={`${styles.sideItem} ${cat === c ? styles.sideActive : ''}`}
                     onClick={() => setCat(c)}
-                    style={cat === c && CAT_COLORS[c] ? {background: CAT_COLORS[c].light, color: CAT_COLORS[c].color, borderLeft: `3px solid ${CAT_COLORS[c].color}`} : {}}>
+                    style={cat === c && CAT_COLORS[c] ? {
+                      background: CAT_COLORS[c].light, 
+                      color: CAT_COLORS[c].color, 
+                      borderLeft: `3px solid ${CAT_COLORS[c].color}`
+                    } : {}}
+                  >
                     <span>{c}</span>
-                    <span className={styles.sideCount} style={cat === c && CAT_COLORS[c] ? {background: CAT_COLORS[c].bg, color: CAT_COLORS[c].color} : {}}>{count}</span>
+                    <span 
+                      className={styles.sideCount} 
+                      style={cat === c && CAT_COLORS[c] ? {
+                        background: CAT_COLORS[c].bg, 
+                        color: CAT_COLORS[c].color
+                      } : {}}
+                    >
+                      {count}
+                    </span>
                   </button>
                 )
               })}
             </div>
             <div className={styles.sideSection}>
               <div className={styles.sideLabel}>Filter</div>
-              <button className={`${styles.sideItem} ${filterBelowPar ? styles.sideActive : ''}`} onClick={() => setFilterBelowPar(v => !v)}>
+              <button 
+                className={`${styles.sideItem} ${filterBelowPar ? styles.sideActive : ''}`} 
+                onClick={() => setFilterBelowPar(v => !v)}
+              >
                 <span>Below par</span>
-                <span className={`${styles.sideCount} ${filterBelowPar ? styles.sideCountActive : ''}`}>{belowParCnt}</span>
+                <span className={`${styles.sideCount} ${filterBelowPar ? styles.sideCountActive : ''}`}>
+                  {belowParCnt}
+                </span>
               </button>
-              <button className={`${styles.sideItem} ${filterInCart ? styles.sideActive : ''}`} onClick={() => setFilterInCart(v => !v)}>
+              <button 
+                className={`${styles.sideItem} ${filterInCart ? styles.sideActive : ''}`} 
+                onClick={() => setFilterInCart(v => !v)}
+              >
                 <span>In order</span>
-                <span className={`${styles.sideCount} ${filterInCart ? styles.sideCountActive : ''}`}>{cartLines}</span>
+                <span className={`${styles.sideCount} ${filterInCart ? styles.sideCountActive : ''}`}>
+                  {cartLines}
+                </span>
               </button>
             </div>
           </div>
@@ -435,7 +619,7 @@ export default function OrderHub() {
                   <th className={`${styles.th} ${styles.r}`}>Unit cost</th>
                   <th className={`${styles.th} ${styles.r}`}>Par</th>
                   <th className={`${styles.th} ${styles.r}`}>On hand</th>
-                  <th className={`${styles.th} ${styles.r}`} style={{width:120}}>Order qty</th>
+                  <th className={`${styles.th} ${styles.r}`} style={{ width: 120 }}>Order qty</th>
                   <th className={`${styles.th} ${styles.r}`}>Subtotal</th>
                 </tr>
               </thead>
@@ -443,8 +627,11 @@ export default function OrderHub() {
                 {Object.entries(grouped).map(([catName, items]) => (
                   <Fragment key={catName}>
                     <tr className={styles.catRow}>
-                      <td colSpan={vendorFilter === 'all' ? 9 : 8} className={styles.catLabel}
-                        style={{background: CAT_COLORS[catName]?.bg, color: CAT_COLORS[catName]?.color}}>
+                      <td 
+                        colSpan={vendorFilter === 'all' ? 9 : 8} 
+                        className={styles.catLabel}
+                        style={{ background: CAT_COLORS[catName]?.bg, color: CAT_COLORS[catName]?.color }}
+                      >
                         {catName}
                       </td>
                     </tr>
@@ -456,20 +643,45 @@ export default function OrderHub() {
                       return (
                         <tr key={item.id} className={`${styles.row} ${q > 0 ? styles.rowOrdered : ''}`}>
                           {vendorFilter === 'all' && <td className={styles.tdVendor}>{vendor?.label}</td>}
-                          <td className={styles.tdProduct}><div className={styles.itemName}>{item.name}</div></td>
+                          <td className={styles.tdProduct}>
+                            <div className={styles.itemName}>{item.name}</div>
+                          </td>
                           <td className={styles.tdSku}>{item.sku}</td>
                           <td><span className={styles.packBadge}>{item.pack}</span></td>
                           <td className={`${styles.td} ${styles.r}`}>${item.unitCost.toFixed(2)}</td>
-                          <td className={`${styles.td} ${styles.r}`} style={{color: belowPar ? '#854F0B' : undefined}}>{item.par}</td>
-                          <td className={`${styles.td} ${styles.r}`} style={{fontWeight: belowPar ? 600 : 400, color: item.onHand === 0 ? '#A32D2D' : belowPar ? '#854F0B' : undefined}}>{item.onHand}</td>
+                          <td 
+                            className={`${styles.td} ${styles.r}`} 
+                            style={{ color: belowPar ? '#854F0B' : undefined }}
+                          >
+                            {item.par}
+                          </td>
+                          <td 
+                            className={`${styles.td} ${styles.r}`} 
+                            style={{ 
+                              fontWeight: belowPar ? 600 : 400, 
+                              color: item.onHand === 0 ? '#A32D2D' : belowPar ? '#854F0B' : undefined 
+                            }}
+                          >
+                            {item.onHand}
+                          </td>
                           <td className={styles.tdQty}>
                             <div className={`${styles.qtyWrap} ${q > 0 ? styles.qtyActive : ''}`}>
                               <button className={styles.qtyBtn} onClick={() => adj(item.id, -1)}>−</button>
-                              <input type="number" min="0" value={q || ''} onChange={e => setItemQty(item.id, e.target.value)} className={styles.qtyInput} placeholder="0"/>
+                              <input 
+                                type="number" 
+                                min="0" 
+                                value={q || ''} 
+                                onChange={e => setItemQty(item.id, e.target.value)} 
+                                className={styles.qtyInput} 
+                                placeholder="0"
+                              />
                               <button className={styles.qtyBtn} onClick={() => adj(item.id, 1)}>+</button>
                             </div>
                           </td>
-                          <td className={`${styles.td} ${styles.r}`} style={{fontWeight: q > 0 ? 600 : 400, color: q > 0 ? '#185FA5' : '#ccc'}}>
+                          <td 
+                            className={`${styles.td} ${styles.r}`} 
+                            style={{ fontWeight: q > 0 ? 600 : 400, color: q > 0 ? '#185FA5' : '#ccc' }}
+                          >
                             {q > 0 ? `$${subtotal.toFixed(2)}` : '—'}
                           </td>
                         </tr>
@@ -478,7 +690,11 @@ export default function OrderHub() {
                   </Fragment>
                 ))}
                 {Object.keys(grouped).length === 0 && (
-                  <tr><td colSpan={vendorFilter === 'all' ? 9 : 8} className={styles.emptyRow}>No products match your filter</td></tr>
+                  <tr>
+                    <td colSpan={vendorFilter === 'all' ? 9 : 8} className={styles.emptyRow}>
+                      No products match your filter
+                    </td>
+                  </tr>
                 )}
               </tbody>
             </table>
@@ -494,12 +710,13 @@ export default function OrderHub() {
 
             {cartLines === 0 ? (
               <div className={styles.sumEmpty}>
-                <div style={{fontSize:13,color:'var(--text-muted)'}}>No items added yet</div>
-                <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>Set quantities in the table</div>
+                <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>No items added yet</div>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                  Set quantities in the table
+                </div>
               </div>
             ) : (
               <div className={styles.sumItems}>
-                {/* Group by vendor in summary */}
                 {Object.entries(cartByVendor).map(([vendorId, items]) => {
                   const vendor = VENDORS.find(v => v.id === vendorId)
                   const vendorTotal = items.reduce((s, i) => s + i.qty * i.unitCost, 0)
@@ -511,12 +728,17 @@ export default function OrderHub() {
                       </div>
                       {items.map(item => (
                         <div key={item.id} className={styles.sumItem}>
-                          <div style={{flex:1}}>
+                          <div style={{ flex: 1 }}>
                             <div className={styles.sumItemName}>{item.name}</div>
                             <div className={styles.sumItemSub}>{item.qty} × ${item.unitCost.toFixed(2)}</div>
                           </div>
                           <div className={styles.sumItemPrice}>${(item.qty * item.unitCost).toFixed(2)}</div>
-                          <button className={styles.removeBtn} onClick={() => setItemQty(item.id, 0)}><X size={12}/></button>
+                          <button 
+                            className={styles.removeBtn} 
+                            onClick={() => setItemQty(item.id, 0)}
+                          >
+                            <X size={12}/>
+                          </button>
                         </div>
                       ))}
                     </div>
@@ -527,38 +749,56 @@ export default function OrderHub() {
 
             {cartLines > 0 && (
               <div className={styles.sumTotals}>
-                <div className={styles.sumRow}><span>Subtotal</span><span>${cartTotal.toFixed(2)}</span></div>
-                <div className={styles.sumGrand}><span>Order total</span><span>${cartTotal.toFixed(2)}</span></div>
+                <div className={styles.sumRow}>
+                  <span>Subtotal</span>
+                  <span>${cartTotal.toFixed(2)}</span>
+                </div>
+                <div className={styles.sumGrand}>
+                  <span>Order total</span>
+                  <span>${cartTotal.toFixed(2)}</span>
+                </div>
               </div>
             )}
 
             {/* Budget Impact Preview */}
             {cartLines > 0 && (
               <div className={styles.budgetPreview}>
-                <button className={styles.budgetToggle} onClick={() => setShowBudgetPreview(v => !v)}>
+                <button 
+                  className={styles.budgetToggle} 
+                  onClick={() => setShowBudgetPreview(v => !v)}
+                >
                   <TrendingUp size={13}/> Budget Impact {showBudgetPreview ? '▲' : '▼'}
                 </button>
                 {showBudgetPreview && (
                   <div className={styles.budgetDetails}>
                     <div className={styles.budgetRow}>
                       <span>Weekly COGS budget</span>
-                      <span>${WEEKLY_BUDGET.cogs.toFixed(2)}</span>
+                      <span>${weeklyBudget.cogs.toFixed(2)}</span>
                     </div>
                     <div className={styles.budgetRow}>
                       <span>Already spent</span>
-                      <span>${WEEKLY_BUDGET.spent.toFixed(2)}</span>
+                      <span>${weeklyBudget.spent.toFixed(2)}</span>
                     </div>
-                    <div className={styles.budgetRow} style={{color:'#1e40af', fontWeight:600}}>
+                    <div className={styles.budgetRow} style={{ color: '#1e40af', fontWeight: 600 }}>
                       <span>This order</span>
                       <span>+${cartTotal.toFixed(2)}</span>
                     </div>
                     <div className={styles.budgetBar}>
-                      <div className={styles.budgetBarFill} style={{width: `${Math.min(100, ((WEEKLY_BUDGET.spent + cartTotal) / WEEKLY_BUDGET.cogs) * 100)}%`}}/>
+                      <div 
+                        className={styles.budgetBarFill} 
+                        style={{ 
+                          width: `${Math.min(100, ((weeklyBudget.spent + cartTotal) / weeklyBudget.cogs) * 100)}%` 
+                        }}
+                      />
                     </div>
-                    <div className={styles.budgetRow} style={{fontWeight:700}}>
+                    <div className={styles.budgetRow} style={{ fontWeight: 700 }}>
                       <span>Remaining</span>
-                      <span style={{color: (WEEKLY_BUDGET.cogs - WEEKLY_BUDGET.spent - cartTotal) < 0 ? '#991b1b' : '#065f46'}}>
-                        ${(WEEKLY_BUDGET.cogs - WEEKLY_BUDGET.spent - cartTotal).toFixed(2)}
+                      <span 
+                        style={{ 
+                          color: (weeklyBudget.cogs - weeklyBudget.spent - cartTotal) < 0 ? '#991b1b' : '#065f46' 
+                        }}
+                      >
+                        ${(weeklyBudget.cogs - weeklyBudget.spent - cartTotal).toFixed(2)}
                       </span>
                     </div>
                   </div>
@@ -569,12 +809,33 @@ export default function OrderHub() {
             <div className={styles.sumFooter}>
               <div className={styles.sumField}>
                 <label className={styles.sumLabel}>Notes</label>
-                <textarea value={note} onChange={e => setNote(e.target.value)} placeholder="Delivery instructions, special requests..." className={styles.sumTextarea} rows={2}/>
+                <textarea 
+                  value={note} 
+                  onChange={e => setNote(e.target.value)} 
+                  placeholder="Delivery instructions, special requests..." 
+                  className={styles.sumTextarea} 
+                  rows={2}
+                />
               </div>
               <div className={styles.sumActions}>
-                {cartLines > 0 && <button className={styles.exportBtn} onClick={exportCSV}><Download size={13}/> Export</button>}
-                <button className={styles.submitBtn} onClick={submitOrders} disabled={submitted || cartLines === 0}>
-                  {submitted ? '✓ Submitted' : vendorCount > 1 ? `Submit ${vendorCount} Orders` : 'Submit Order'}
+                {cartLines > 0 && (
+                  <button className={styles.exportBtn} onClick={exportCSV}>
+                    <Download size={13}/> Export
+                  </button>
+                )}
+                <button 
+                  className={styles.submitBtn} 
+                  onClick={submitOrders} 
+                  disabled={submitting || submitted || cartLines === 0}
+                >
+                  {submitted 
+                    ? '✓ Submitted' 
+                    : submitting 
+                      ? 'Submitting...' 
+                      : vendorCount > 1 
+                        ? `Submit ${vendorCount} Orders` 
+                        : 'Submit Order'
+                  }
                 </button>
               </div>
             </div>

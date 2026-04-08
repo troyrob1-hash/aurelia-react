@@ -1,30 +1,58 @@
-// src/hooks/useVendors.js
+// src/hooks/useVendorsProducts.js
+// Vendors and Products hooks with Firestore integration
+
 import { useState, useEffect, useCallback } from 'react'
-import { collection, query, where, orderBy, onSnapshot, addDoc, updateDoc, doc, serverTimestamp } from 'firebase/firestore'
+import { 
+  collection, query, where, orderBy, onSnapshot, 
+  addDoc, updateDoc, doc, serverTimestamp, writeBatch 
+} from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { useAuthStore } from '@/store/authStore'
 
+// ═══════════════════════════════════════════════════════════════════════════
+// useVendors Hook
+// ═══════════════════════════════════════════════════════════════════════════
+
 export function useVendors() {
-  const { orgId } = useAuthStore()
+  const { user } = useAuthStore()
+  const orgId = user?.tenantId || null
   const [vendors, setVendors] = useState([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
 
   useEffect(() => {
-    if (!orgId) return
+    if (!orgId) {
+      setLoading(false)
+      return
+    }
+
+    setLoading(true)
+    setError(null)
+
     const q = query(
       collection(db, 'tenants', orgId, 'vendors'),
       where('active', '==', true),
       orderBy('name')
-    )import { collection, query, where, orderBy, onSnapshot, addDoc, updateDoc, doc, serverTimestamp, writeBatch } from 'firebase/firestore'
-    const unsub = onSnapshot(q, snap => {
-      setVendors(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-      setLoading(false)
-    })
+    )
+
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        setVendors(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+        setLoading(false)
+      },
+      (err) => {
+        console.error('Vendors subscription error:', err)
+        setError(err.message)
+        setLoading(false)
+      }
+    )
+
     return unsub
   }, [orgId])
 
   const addVendor = useCallback(async (data) => {
-    if (!orgId) return
+    if (!orgId) throw new Error('No organization ID')
     return addDoc(collection(db, 'tenants', orgId, 'vendors'), {
       ...data,
       active: true,
@@ -32,23 +60,38 @@ export function useVendors() {
     })
   }, [orgId])
 
-  return { vendors, loading, addVendor }
+  const updateVendor = useCallback(async (vendorId, data) => {
+    if (!orgId) throw new Error('No organization ID')
+    return updateDoc(doc(db, 'tenants', orgId, 'vendors', vendorId), {
+      ...data,
+      updatedAt: serverTimestamp(),
+    })
+  }, [orgId])
+
+  return { vendors, loading, error, addVendor, updateVendor }
 }
 
-// src/hooks/useProducts.js
+// ═══════════════════════════════════════════════════════════════════════════
+// useProducts Hook
+// ═══════════════════════════════════════════════════════════════════════════
+
 export function useProducts(vendorId = null) {
-  const { orgId } = useAuthStore()
+  const { user } = useAuthStore()
+  const orgId = user?.tenantId || null
   const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
 
   useEffect(() => {
-    if (!orgId) return
-    let q = query(
-      collection(db, 'tenants', orgId, 'products'),
-      where('active', '==', true),
-      orderBy('category'),
-      orderBy('name')
-    )
+    if (!orgId) {
+      setLoading(false)
+      return
+    }
+
+    setLoading(true)
+    setError(null)
+
+    let q
     if (vendorId) {
       q = query(
         collection(db, 'tenants', orgId, 'products'),
@@ -57,49 +100,95 @@ export function useProducts(vendorId = null) {
         orderBy('category'),
         orderBy('name')
       )
+    } else {
+      q = query(
+        collection(db, 'tenants', orgId, 'products'),
+        where('active', '==', true),
+        orderBy('category'),
+        orderBy('name')
+      )
     }
-    const unsub = onSnapshot(q, snap => {
-      setProducts(snap.docs.map(d => ({ id: d.id, ...d.data() })))
-      setLoading(false)
-    })
+
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        setProducts(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+        setLoading(false)
+      },
+      (err) => {
+        console.error('Products subscription error:', err)
+        setError(err.message)
+        setLoading(false)
+      }
+    )
+
     return unsub
   }, [orgId, vendorId])
 
-  return { products, loading }
+  const addProduct = useCallback(async (data) => {
+    if (!orgId) throw new Error('No organization ID')
+    return addDoc(collection(db, 'tenants', orgId, 'products'), {
+      ...data,
+      active: true,
+      createdAt: serverTimestamp(),
+    })
+  }, [orgId])
+
+  return { products, loading, error, addProduct }
 }
 
-// src/hooks/useInventory.js  
-export function useInventory(locationId) {
-  const { orgId } = useAuthStore()
+// ═══════════════════════════════════════════════════════════════════════════
+// useLocationInventory Hook (renamed to avoid conflict with useInventory.js)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export function useLocationInventory(locationId) {
+  const { user } = useAuthStore()
+  const orgId = user?.tenantId || null
   const [inventory, setInventory] = useState({})
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
 
   useEffect(() => {
-    if (!orgId || !locationId) return
-    // Inventory keyed as locationId__productId
+    if (!orgId || !locationId) {
+      setLoading(false)
+      return
+    }
+
+    setLoading(true)
+    setError(null)
+
     const q = query(
       collection(db, 'tenants', orgId, 'inventory'),
       where('locationId', '==', locationId)
     )
-    const unsub = onSnapshot(q, snap => {
-      const inv = {}
-      snap.docs.forEach(d => {
-        const data = d.data()
-        inv[data.productId] = data
-      })
-      setInventory(inv)
-      setLoading(false)
-    })
+
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const inv = {}
+        snap.docs.forEach(d => {
+          const data = d.data()
+          inv[data.productId] = data
+        })
+        setInventory(inv)
+        setLoading(false)
+      },
+      (err) => {
+        console.error('Inventory subscription error:', err)
+        setError(err.message)
+        setLoading(false)
+      }
+    )
+
     return unsub
   }, [orgId, locationId])
 
-  return { inventory, loading }
+  return { inventory, loading, error }
 }
 
-// ============================================
-// SEED DATA MIGRATION SCRIPT
-// Run once to populate Firestore from hardcoded data
-// ============================================
+// ═══════════════════════════════════════════════════════════════════════════
+// SEED DATA
+// ═══════════════════════════════════════════════════════════════════════════
 
 export const SEED_VENDORS = [
   { id:'sysco', name:'Sysco', url:'https://shop.sysco.com', accountNum:'', terms:'Net 30', defaultGlCode:'50100', active:true },
@@ -153,8 +242,13 @@ export const SEED_PRODUCTS = [
   { vendorId:'davidrio', category:'Barista', name:'Masala chai concentrate', sku:'DR-20003', pack:'case/4', unitCost:6.75, par:1, glCode:'50200', active:true },
 ]
 
+// ═══════════════════════════════════════════════════════════════════════════
 // Migration function - run once from admin console
+// ═══════════════════════════════════════════════════════════════════════════
+
 export async function seedVendorsAndProducts(orgId) {
+  if (!orgId) throw new Error('orgId required')
+  
   const batch = writeBatch(db)
   
   // Seed vendors
@@ -170,5 +264,7 @@ export async function seedVendorsAndProducts(orgId) {
   }
   
   await batch.commit()
-  console.log('✓ Seeded vendors and products')
+  console.log('✓ Seeded vendors and products for', orgId)
 }
+
+export default { useVendors, useProducts, useLocationInventory }

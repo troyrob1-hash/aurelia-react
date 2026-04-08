@@ -4,7 +4,7 @@ import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { usePeriod } from '@/store/PeriodContext'
 import { useInventory, fmt$, sanitizeDocId } from '@/hooks/useInventory'
 import { getTopVarianceIssues, calcParStatus } from '@/lib/variance'
-import { Search, Download, RefreshCw, Eye, EyeOff, TrendingUp, TrendingDown, Minus, Mic, AlertTriangle } from 'lucide-react'
+import { Search, Download, RefreshCw, Eye, EyeOff, TrendingUp, TrendingDown, Minus, AlertTriangle } from 'lucide-react'
 import { useToast } from '@/components/ui/Toast'
 import styles from './Inventory.module.css'
 
@@ -15,7 +15,10 @@ import styles from './Inventory.module.css'
 export default function Inventory() {
   const toast = useToast()
   const { user } = useAuthStore()
-  const orgId = user?.tenantId || 'fooda'
+  
+  // FIXED: Consistent orgId pattern
+  const orgId = user?.tenantId || null
+  
   const { selectedLocation } = useLocations()
   const { periodKey } = usePeriod()
 
@@ -52,19 +55,34 @@ export default function Inventory() {
 
   // ─── Handlers ──────────────────────────────────────────────────────────────
   const handleSave = useCallback(async () => {
-    const success = await save()
-    if (success) {
-      toast.success('Inventory saved & COGS posted to P&L')
-    } else {
-      toast.error('Save failed. Please try again.')
+    if (!orgId) {
+      toast.error('No organization found. Please log in again.')
+      return
     }
-  }, [save, toast])
+    
+    try {
+      const success = await save()
+      if (success) {
+        toast.success('Inventory saved & COGS posted to P&L')
+      } else {
+        toast.error('Save failed. Please try again.')
+      }
+    } catch (err) {
+      console.error('Save error:', err)
+      toast.error('Save failed: ' + err.message)
+    }
+  }, [save, toast, orgId])
 
   const toggleCollapse = useCallback((key) => {
     setCollapsed(prev => ({ ...prev, [key]: !prev[key] }))
   }, [])
 
   const handleExport = useCallback(async () => {
+    if (!location) {
+      toast.error('Please select a location first')
+      return
+    }
+    
     try {
       const XLSX = await import('xlsx')
       const wb = XLSX.utils.book_new()
@@ -72,21 +90,21 @@ export default function Inventory() {
       // Summary sheet
       const summaryRows = [
         ['Aurelia FMS — Inventory Count Report'],
-        ['Location:', cleanLocName(location)],
-        ['Period:', periodKey],
+        ['Location:', cleanLocName(location) || 'Unknown'],
+        ['Period:', periodKey || 'N/A'],
         ['Date:', new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })],
         [],
         ['COGS CALCULATION'],
-        ['Opening Inventory', totals.openingValue.toFixed(2)],
-        ['+ Purchases', totals.purchases.toFixed(2)],
-        ['- Closing Inventory', totals.closingValue.toFixed(2)],
-        ['= COGS (Inventory Usage)', totals.liveCOGS.toFixed(2)],
+        ['Opening Inventory', (totals.openingValue || 0).toFixed(2)],
+        ['+ Purchases', (totals.purchases || 0).toFixed(2)],
+        ['- Closing Inventory', (totals.closingValue || 0).toFixed(2)],
+        ['= COGS (Inventory Usage)', (totals.liveCOGS || 0).toFixed(2)],
         [],
         ['SUMMARY'],
         ['Total Items', items.length],
-        ['Items Counted', totals.counted],
-        ['Inventory Value', totals.closingValue.toFixed(2)],
-        ['Progress', totals.progress + '%'],
+        ['Items Counted', totals.counted || 0],
+        ['Inventory Value', (totals.closingValue || 0).toFixed(2)],
+        ['Progress', (totals.progress || 0) + '%'],
       ]
       const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows)
       XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary')
@@ -94,24 +112,39 @@ export default function Inventory() {
       // Detail sheet
       const header = ['#', 'Item', 'Vendor', 'Category', 'Pack Size', 'Unit Cost', 'Count', 'Prior Count', 'Variance', 'Total Value', 'Par Level', 'Days On Hand']
       const detailRows = items.map((item, idx) => [
-        idx + 1, item.name, item.vendor || '',
+        idx + 1, 
+        item.name || '', 
+        item.vendor || '',
         categories.find(c => c.key === item._cat)?.label || 'General',
-        item.packSize || '', item.unitCost || 0, item.qty || 0,
-        item._priorQty || 0, item._variance || 0, 
+        item.packSize || '', 
+        item.unitCost || 0, 
+        item.qty || 0,
+        item._priorQty || 0, 
+        item._variance || 0, 
         +((item.qty || 0) * (item.unitCost || 0)).toFixed(2),
-        item.parLevel || '', item._daysOnHand || ''
+        item.parLevel || '', 
+        item._daysOnHand || ''
       ])
       const wsDetail = XLSX.utils.aoa_to_sheet([header, ...detailRows])
-      wsDetail['!cols'] = [{ wch: 4 }, { wch: 40 }, { wch: 15 }, { wch: 18 }, { wch: 10 }, { wch: 10 }, { wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 12 }]
+      wsDetail['!cols'] = [
+        { wch: 4 }, { wch: 40 }, { wch: 15 }, { wch: 18 }, { wch: 10 }, 
+        { wch: 10 }, { wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, 
+        { wch: 10 }, { wch: 12 }
+      ]
       XLSX.utils.book_append_sheet(wb, wsDetail, 'All Items')
 
       XLSX.writeFile(wb, `inventory-${sanitizeDocId(location)}-${periodKey}.xlsx`)
       toast.success('Exported to Excel')
     } catch (err) {
       console.error('Export failed:', err)
-      toast.error('Export failed.')
+      toast.error('Export failed: ' + err.message)
     }
   }, [items, categories, totals, location, periodKey, toast])
+
+  const handleRefresh = useCallback(() => {
+    load()
+    toast.info('Refreshing inventory...')
+  }, [load, toast])
 
   // ─── Filtered Items ────────────────────────────────────────────────────────
   const q = search.toLowerCase()
@@ -143,6 +176,17 @@ export default function Inventory() {
     )
   }
 
+  // ─── Auth Check ────────────────────────────────────────────────────────────
+  if (!orgId) {
+    return (
+      <div className={styles.empty}>
+        <div className={styles.emptyIcon}>🔒</div>
+        <p className={styles.emptyTitle}>Not authenticated</p>
+        <p className={styles.emptySub}>Please log in to access inventory</p>
+      </div>
+    )
+  }
+
   // ─── Render ────────────────────────────────────────────────────────────────
   return (
     <div className={styles.pageWrap}>
@@ -153,7 +197,7 @@ export default function Inventory() {
           onClick={() => setActiveCat('all')}
         >
           All Items
-          <span className={styles.chipBadge}>{totals.counted}/{totals.total}</span>
+          <span className={styles.chipBadge}>{totals.counted || 0}/{totals.total || 0}</span>
         </button>
         {categories.map(cat => {
           const cc = catStats[cat.key] || { total: 0, counted: 0 }
@@ -194,9 +238,9 @@ export default function Inventory() {
         {/* Header */}
         <div className={styles.header}>
           <div>
-            <h1 className={styles.title}>{cleanLocName(location)}</h1>
+            <h1 className={styles.title}>{cleanLocName(location) || 'Unknown Location'}</h1>
             <p className={styles.subtitle}>
-              Inventory Count · {periodKey}
+              Inventory Count · {periodKey || 'No period selected'}
               {session && (
                 <span className={styles.sessionBadge}>
                   Session active · {session.sectionsCompleted?.length || 0}/{categories.length} sections
@@ -219,7 +263,7 @@ export default function Inventory() {
               title="Par levels"
             >
               <AlertTriangle size={14} />
-              Par ({totals.belowPar})
+              Par ({totals.belowPar || 0})
             </button>
             {dirty && (
               <button className={styles.btnSave} onClick={handleSave} disabled={saving}>
@@ -229,8 +273,8 @@ export default function Inventory() {
             <button className={styles.btnIcon} onClick={handleExport} title="Export Excel">
               <Download size={15} />
             </button>
-            <button className={styles.btnIcon} onClick={load} title="Refresh">
-              <RefreshCw size={15} />
+            <button className={styles.btnIcon} onClick={handleRefresh} title="Refresh">
+              <RefreshCw size={15} className={loading ? styles.spin : ''} />
             </button>
           </div>
         </div>
@@ -257,13 +301,13 @@ export default function Inventory() {
           <div className={styles.kpi}>
             <div className={styles.kpiLabel}>Progress</div>
             <div className={styles.kpiValue}>
-              {totals.counted} <span className={styles.kpiOf}>of {totals.total}</span>
+              {totals.counted || 0} <span className={styles.kpiOf}>of {totals.total || 0}</span>
             </div>
             <div className={styles.progressWrap}>
               <div className={styles.progressBar}>
-                <div className={styles.progressFill} style={{ width: totals.progress + '%' }} />
+                <div className={styles.progressFill} style={{ width: (totals.progress || 0) + '%' }} />
               </div>
-              <span className={styles.kpiPct}>{totals.progress}%</span>
+              <span className={styles.kpiPct}>{totals.progress || 0}%</span>
             </div>
           </div>
           <div className={styles.kpi}>
@@ -303,7 +347,7 @@ export default function Inventory() {
         )}
 
         {/* Par Level Panel */}
-        {showParPanel && itemsBelowPar.length > 0 && (
+        {showParPanel && itemsBelowPar && itemsBelowPar.length > 0 && (
           <div className={styles.parPanel}>
             <p className={styles.parTitle}>Items below par ({itemsBelowPar.length})</p>
             <div className={styles.parList}>
@@ -319,7 +363,7 @@ export default function Inventory() {
                       <div className={styles.parItemStats}>
                         <span className={styles.parQty}>{item.qty || 0}</span>
                         <span className={styles.parOf}>/ {item.parLevel} par</span>
-                        {par.daysOnHand && (
+                        {par?.daysOnHand && (
                           <span className={`${styles.parDays} ${par.status === 'critical' ? styles.parDaysCrit : ''}`}>
                             {par.daysOnHand} days
                           </span>
@@ -328,13 +372,15 @@ export default function Inventory() {
                     </div>
                     <div className={styles.parBar}>
                       <div 
-                        className={`${styles.parFill} ${styles['parFill_' + par.status]}`}
-                        style={{ width: par.fillPct + '%' }}
+                        className={`${styles.parFill} ${styles['parFill_' + (par?.status || 'normal')]}`}
+                        style={{ width: (par?.fillPct || 0) + '%' }}
                       />
-                      <div 
-                        className={styles.parReorderMark}
-                        style={{ left: par.reorderPct + '%' }}
-                      />
+                      {par?.reorderPct > 0 && (
+                        <div 
+                          className={styles.parReorderMark}
+                          style={{ left: par.reorderPct + '%' }}
+                        />
+                      )}
                     </div>
                   </div>
                 )
@@ -368,7 +414,22 @@ export default function Inventory() {
         {loading && <div className={styles.loading}>Loading inventory...</div>}
 
         {/* Error State */}
-        {error && <div className={styles.error}>{error}</div>}
+        {error && (
+          <div className={styles.error}>
+            {error}
+            <button onClick={handleRefresh} style={{ marginLeft: 12 }}>Retry</button>
+          </div>
+        )}
+
+        {/* Empty Items State */}
+        {!loading && !error && items.length === 0 && (
+          <div className={styles.emptyItems}>
+            <p>No inventory items found for this location.</p>
+            <p style={{ fontSize: 12, color: '#888', marginTop: 4 }}>
+              Items may need to be seeded or assigned to this location.
+            </p>
+          </div>
+        )}
 
         {/* Category Sections */}
         {!loading && displayGroups.map(cat => (
@@ -387,7 +448,7 @@ export default function Inventory() {
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <div className={styles.catTotal} style={{ color: cat.color }}>
-                  {fmt$(cat.items.reduce((s, i) => s + i._value, 0))}
+                  {fmt$(cat.items.reduce((s, i) => s + (i._value || 0), 0))}
                 </div>
                 <span style={{ color: cat.color, fontSize: 11 }}>
                   {collapsed[cat.key] ? '▶' : '▼'}
@@ -412,7 +473,7 @@ export default function Inventory() {
                 <tbody>
                   {cat.items.map((item, idx) => {
                     const isCounted = item.qty != null && item.qty > 0
-                    const varDir = item._variance > 0 ? 'up' : item._variance < 0 ? 'down' : 'neutral'
+                    const varDir = (item._variance || 0) > 0 ? 'up' : (item._variance || 0) < 0 ? 'down' : 'neutral'
 
                     return (
                       <tr key={item.id} className={`${styles.row} ${idx % 2 === 0 ? '' : styles.rowAlt}`}>
@@ -420,7 +481,7 @@ export default function Inventory() {
                         <td className={styles.tdName}>
                           <div className={styles.nameRow}>
                             <div 
-                              className={`${styles.heatDot} ${isCounted ? styles['heat_' + item._varClass] : styles.heat_empty}`} 
+                              className={`${styles.heatDot} ${isCounted ? styles['heat_' + (item._varClass || 'neutral')] : styles.heat_empty}`} 
                               title={isCounted 
                                 ? `${item._varClass === 'good' ? 'Within 10%' : item._varClass === 'warn' ? '10-25% variance' : '>25% variance'}` 
                                 : 'Not counted'
@@ -441,7 +502,7 @@ export default function Inventory() {
                         <td className={styles.tdRight}>${(item.unitCost || 0).toFixed(2)}</td>
                         {!blindMode && showVariance && (
                           <td className={styles.tdCenter} style={{ color: '#bbb', fontSize: 12 }}>
-                            {item._priorQty > 0 ? item._priorQty : '—'}
+                            {(item._priorQty || 0) > 0 ? item._priorQty : '—'}
                           </td>
                         )}
                         <td className={styles.tdCount}>
@@ -454,8 +515,8 @@ export default function Inventory() {
                               value={item.qty ?? ''}
                               onChange={e => setQty(item.id, e.target.value)}
                               onDoubleClick={() => !blindMode && copyPrior(item.id)}
-                              className={`${styles.countInput} ${isCounted ? styles['counted_' + item._varClass] : ''}`}
-                              placeholder={blindMode ? '0' : item._priorQty > 0 ? String(item._priorQty) : '0'}
+                              className={`${styles.countInput} ${isCounted ? styles['counted_' + (item._varClass || 'neutral')] : ''}`}
+                              placeholder={blindMode ? '0' : (item._priorQty || 0) > 0 ? String(item._priorQty) : '0'}
                               title="Double-click to copy prior count"
                             />
                             <button className={styles.adjBtn} onClick={() => adjust(item.id, 1)}>+</button>
@@ -463,16 +524,16 @@ export default function Inventory() {
                         </td>
                         {showVariance && !blindMode && (
                           <td className={styles.tdCenter}>
-                            {isCounted && item._priorQty > 0 ? (
+                            {isCounted && (item._priorQty || 0) > 0 ? (
                               <span className={`${styles.varBadge} ${styles['var_' + varDir]}`}>
                                 {varDir === 'up' ? <TrendingUp size={10} /> : varDir === 'down' ? <TrendingDown size={10} /> : <Minus size={10} />}
-                                {item._variance > 0 ? '+' : ''}{item._variance.toFixed(1)}
+                                {(item._variance || 0) > 0 ? '+' : ''}{(item._variance || 0).toFixed(1)}
                               </span>
                             ) : <span style={{ color: '#ddd' }}>—</span>}
                           </td>
                         )}
-                        <td className={styles.tdRight} style={{ fontWeight: 700, color: item._value > 0 ? '#059669' : '#bbb' }}>
-                          {item._value > 0 ? fmt$(item._value) : '—'}
+                        <td className={styles.tdRight} style={{ fontWeight: 700, color: (item._value || 0) > 0 ? '#059669' : '#bbb' }}>
+                          {(item._value || 0) > 0 ? fmt$(item._value) : '—'}
                         </td>
                       </tr>
                     )
