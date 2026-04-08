@@ -6,12 +6,48 @@ const { onDocumentWritten }     = require("firebase-functions/v2/firestore");
 const { onSchedule }            = require("firebase-functions/v2/scheduler");
 const admin                     = require("firebase-admin");
 const { v4: uuid }              = require("uuid");
+const jwt                       = require("jsonwebtoken");
+const jwksClient                = require("jwks-rsa");
 
 admin.initializeApp();
 const db = admin.firestore();
 
-const POOL_ID     = process.env.COGNITO_USER_POOL_ID;
-const CLIENT_ID   = process.env.COGNITO_CLIENT_ID;
+const POOL_ID        = process.env.COGNITO_USER_POOL_ID;
+const CLIENT_ID      = process.env.COGNITO_CLIENT_ID;
+const COGNITO_REGION = "us-east-2";
+const COGNITO_ISSUER = `https://cognito-idp.${COGNITO_REGION}.amazonaws.com/${POOL_ID}`;
+
+
+// ============================================================
+// COGNITO TOKEN VERIFICATION
+// ============================================================
+const client = jwksClient({
+  jwksUri: `${COGNITO_ISSUER}/.well-known/jwks.json`,
+  cache: true,
+  cacheMaxEntries: 5,
+  cacheMaxAge: 600000,
+});
+
+function getSigningKey(header, callback) {
+  client.getSigningKey(header.kid, (err, key) => {
+    if (err) return callback(err);
+    callback(null, key.getPublicKey());
+  });
+}
+
+function verifyCognitoToken(idToken) {
+  return new Promise((resolve, reject) => {
+    jwt.verify(
+      idToken,
+      getSigningKey,
+      { issuer: COGNITO_ISSUER, algorithms: ["RS256"] },
+      (err, decoded) => {
+        if (err) reject(err);
+        else resolve(decoded);
+      }
+    );
+  });
+}
 
 
 // ============================================================
@@ -33,6 +69,42 @@ async function writeAuditLog(orgId, actor, action, resource, before = null, afte
 }
 
 const SYSTEM_ACTOR = { uid: "system", email: "system@aurelia-fms", displayName: "System", ip: null, userAgent: null };
+
+
+// ============================================================
+// CALLABLE: mintFirebaseToken
+// Verifies Cognito ID token and returns a Firebase custom token
+// ============================================================
+exports.mintFirebaseToken = onCall(
+  { invoker: "public" },
+  async (request) => {
+    const { idToken } = request.data;
+    if (!idToken) {
+      throw new HttpsError("invalid-argument", "Missing idToken");
+    }
+    try {
+      const decoded = await verifyCognitoToken(idToken);
+
+    const uid = decoded.sub;
+    const email = decoded.email || "";
+    const tenantId = decoded["custom:tenantId"] || "fooda";
+    const role = decoded["custom:role"] || "viewer";
+    const name = decoded["custom:managerName"] || decoded.name || email;
+
+    // Create custom token with claims embedded
+    const firebaseToken = await admin.auth().createCustomToken(uid, {
+      "custom:tenantId": tenantId,
+      "custom:role": role,
+      "custom:name": name,
+      email,
+    });
+
+    return { firebaseToken };
+  } catch (err) {
+    console.error("mintFirebaseToken error:", err);
+    throw new HttpsError("unauthenticated", "Invalid Cognito token: " + err.message);
+  }
+});
 
 
 // ============================================================

@@ -2,69 +2,71 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ── Helper functions ──────────────────────────────────────
-
-    // Is the user authenticated?
     function isAuth() {
       return request.auth != null;
     }
 
-    // Get the user's tenantId from their Cognito token claims
     function tenantId() {
-      return request.auth.token.get('custom:tenantId', null);
+      return request.auth.token["custom:tenantId"];
     }
 
-    // Get the user's role from their Cognito token claims
     function role() {
-      return request.auth.token.get('custom:role', 'viewer');
+      return request.auth.token["custom:role"];
     }
 
     function isAdmin()    { return role() == 'admin'    || role() == 'Admin'; }
     function isDirector() { return role() == 'director' || role() == 'Director' || isAdmin(); }
     function isManager()  { return role() == 'manager'  || role() == 'Manager'  || isDirector(); }
 
-    // Does the request belong to the correct tenant?
     function ownsTenant(tid) {
       return isAuth() && tenantId() == tid;
     }
 
-    // ── Tenant-scoped data ────────────────────────────────────
-    // All app data lives under /tenants/{tenantId}/...
-    // Only authenticated users whose tenantId matches can read/write
+    match /aurelia/{doc} {
+      allow read: if isAuth();
+      allow write: if false;
+    }
 
     match /tenants/{tenantId} {
-
-      // Tenant doc itself — directors can read, admins can write
       allow read:  if ownsTenant(tenantId);
       allow write: if ownsTenant(tenantId) && isAdmin();
 
-      // ── Config (GL map, vendors, budget schema, integrations)
       match /config/{doc} {
         allow read:  if ownsTenant(tenantId);
         allow write: if ownsTenant(tenantId) && isDirector();
       }
 
-      // ── P&L data — all authenticated users can read
-      //    Only the app (via module saves) can write — managers+
+      match /settings/{doc} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isDirector();
+      }
+
+      match /inventory/{locationId}/items/{itemId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isManager();
+      }
+
+      match /inventorySessions/{sessionId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isManager();
+      }
+
       match /pnl/{locationId}/periods/{periodId} {
         allow read:  if ownsTenant(tenantId);
         allow write: if ownsTenant(tenantId) && isManager();
       }
 
-      // ── Budgets — managers submit, directors approve/write
       match /budgets/{budgetId} {
         allow read:  if ownsTenant(tenantId);
         allow write: if ownsTenant(tenantId) && isManager();
       }
 
-      // ── Budget unlock requests
       match /budgetUnlockRequests/{reqId} {
         allow read:  if ownsTenant(tenantId) && isDirector();
         allow create: if ownsTenant(tenantId) && isManager();
         allow update: if ownsTenant(tenantId) && isDirector();
       }
 
-      // ── Invoices / Purchasing
       match /invoices/{invoiceId} {
         allow read:   if ownsTenant(tenantId);
         allow create: if ownsTenant(tenantId) && isManager();
@@ -72,41 +74,34 @@ service cloud.firestore {
         allow delete: if ownsTenant(tenantId) && isDirector();
       }
 
-      // ── Transfers
       match /transfers/{transferId} {
         allow read:   if ownsTenant(tenantId);
         allow create: if ownsTenant(tenantId) && isManager();
-        // Only directors can approve (status change)
         allow update: if ownsTenant(tenantId) && (
           isDirector() ||
-          // Managers can only mark as Received — not Approved
           (isManager() && request.resource.data.status == 'Received')
         );
         allow delete: if ownsTenant(tenantId) && isDirector();
       }
 
-      // ── Labor submissions
       match /laborSubmissions/{subId} {
         allow read:   if ownsTenant(tenantId);
         allow create: if ownsTenant(tenantId) && isManager();
         allow update: if ownsTenant(tenantId) && isDirector();
       }
 
-      // ── Sales submissions
       match /salesSubmissions/{subId} {
         allow read:   if ownsTenant(tenantId);
         allow create: if ownsTenant(tenantId) && isManager();
         allow update: if ownsTenant(tenantId) && isDirector();
       }
 
-      // ── Waste submissions
       match /wasteSubmissions/{subId} {
         allow read:   if ownsTenant(tenantId);
         allow create: if ownsTenant(tenantId) && isManager();
         allow update: if ownsTenant(tenantId) && isDirector();
       }
 
-      // ── Location-scoped data (inventory, sales, waste)
       match /locations/{locationId} {
         allow read:  if ownsTenant(tenantId);
         allow write: if ownsTenant(tenantId) && isManager();
@@ -128,26 +123,22 @@ service cloud.firestore {
         }
       }
 
-      // ── Legacy path (inv_locs etc)
       match /legacy/{doc} {
         allow read:  if ownsTenant(tenantId);
         allow write: if ownsTenant(tenantId) && isAdmin();
       }
 
-      // ── Audit log — read only for directors, written by Cloud Functions
       match /auditLog/{logId} {
         allow read:  if ownsTenant(tenantId) && isDirector();
-        allow write: if false; // Cloud Functions only
+        allow write: if false;
       }
 
-      // ── Users — admins manage users
       match /users/{userId} {
         allow read:  if ownsTenant(tenantId) && isManager();
         allow write: if ownsTenant(tenantId) && isAdmin();
       }
     }
 
-    // ── Block everything else ─────────────────────────────────
     match /{document=**} {
       allow read, write: if false;
     }

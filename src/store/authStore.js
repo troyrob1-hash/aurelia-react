@@ -1,6 +1,6 @@
 import { create } from 'zustand'
-import { loadSession, clearSession, getUser, refreshSession } from '@/lib/auth'
-
+import { loadSession, clearSession, getUser, refreshSession, signOut as authSignOut } from '@/lib/auth'
+import { signInWithCognito } from '@/lib/firebase'
 
 export const useAuthStore = create((set, get) => ({
   user:    null,
@@ -8,7 +8,6 @@ export const useAuthStore = create((set, get) => ({
   loading: true,
   error:   null,
 
-  // Called on app init — restore session from sessionStorage
   init: async () => {
     const session = loadSession()
     if (!session) {
@@ -16,7 +15,6 @@ export const useAuthStore = create((set, get) => ({
       return
     }
 
-    // Refresh if expiring within 5 minutes
     if (session.expiresAt - Date.now() < 5 * 60 * 1000) {
       try {
         const newSession = await refreshSession(session.refreshToken)
@@ -32,6 +30,7 @@ export const useAuthStore = create((set, get) => ({
 
     try {
       const attrs = await getUser(session.accessToken)
+      await signInWithCognito(session.idToken)
       set({ session, user: mapUser(attrs), loading: false })
     } catch {
       clearSession()
@@ -43,8 +42,8 @@ export const useAuthStore = create((set, get) => ({
     set({ session, user: mapUser(attrs), error: null })
   },
 
-  signOut: () => {
-    clearSession()
+  signOut: async () => {
+    await authSignOut()
     set({ user: null, session: null })
   },
 
