@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, Fragment } from 'react'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { useToast } from '@/components/ui/Toast'
 import { Search, Download, X, Clock, LayoutGrid, List, TrendingUp, Package, CheckCircle, AlertTriangle, Truck } from 'lucide-react'
@@ -441,8 +441,8 @@ export default function OrderHub() {
               </thead>
               <tbody>
                 {Object.entries(grouped).map(([catName, items]) => (
-                  <>
-                    <tr key={catName} className={styles.catRow}>
+                  <Fragment key={catName}>
+                    <tr className={styles.catRow}>
                       <td colSpan={vendorFilter === 'all' ? 9 : 8} className={styles.catLabel}
                         style={{background: CAT_COLORS[catName]?.bg, color: CAT_COLORS[catName]?.color}}>
                         {catName}
@@ -475,7 +475,7 @@ export default function OrderHub() {
                         </tr>
                       )
                     })}
-                  </>
+                  </Fragment>
                 ))}
                 {Object.keys(grouped).length === 0 && (
                   <tr><td colSpan={vendorFilter === 'all' ? 9 : 8} className={styles.emptyRow}>No products match your filter</td></tr>

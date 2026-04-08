@@ -1,7 +1,6 @@
 import { create } from 'zustand'
 import { loadSession, clearSession, getUser, refreshSession } from '@/lib/auth'
 
-
 export const useAuthStore = create((set, get) => ({
   user:    null,
   session: null,
