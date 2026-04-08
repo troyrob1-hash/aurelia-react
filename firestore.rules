@@ -44,6 +44,24 @@ service cloud.firestore {
         allow write: if ownsTenant(tenantId) && isDirector();
       }
 
+      // ── Settings (inventory categories, etc)
+      match /settings/{doc} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isDirector();
+      }
+
+      // ── Inventory items (new structure)
+      match /inventory/{locationId}/items/{itemId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isManager();
+      }
+
+      // ── Inventory count sessions
+      match /inventorySessions/{sessionId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isManager();
+      }
+
       // ── P&L data — all authenticated users can read
       //    Only the app (via module saves) can write — managers+
       match /pnl/{locationId}/periods/{periodId} {
