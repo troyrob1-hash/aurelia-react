@@ -22,6 +22,11 @@ service cloud.firestore {
       return isAuth() && tenantId() == tid;
     }
 
+    match /aurelia/{doc} {
+      allow read: if isAuth();
+      allow write: if false;
+    }
+
     match /tenants/{tenantId} {
       allow read:  if ownsTenant(tenantId);
       allow write: if ownsTenant(tenantId) && isAdmin();
