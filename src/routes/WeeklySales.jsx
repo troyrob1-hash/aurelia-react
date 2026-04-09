@@ -12,7 +12,6 @@ import styles from './WeeklySales.module.css'
 const TENANT = 'fooda'
 const DAYS   = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']
 
-// ── Fix: keys and labels were swapped in original ────────────
 const CATS = [
   { key: 'popup',    label: 'Popup',    color: '#059669' },
   { key: 'catering', label: 'Catering', color: '#7c3aed' },
@@ -25,7 +24,6 @@ const fmt$ = v => v ? '$' + Number(v).toLocaleString('en-US', { minimumFractionD
 const fmtPct = v => v > 0 ? `▲ ${v.toFixed(1)}%` : v < 0 ? `▼ ${Math.abs(v).toFixed(1)}%` : '—'
 const fmtPctRaw = v => v !== null ? (v * 100).toFixed(1) + '%' : '—'
 
-// Compute prior period key using same logic as Dashboard
 function getPriorKey(key) {
   const parts = key.match(/(\d+)-P(\d+)-W(\d+)/)
   if (!parts) return null
@@ -35,7 +33,6 @@ function getPriorKey(key) {
   return `${yr-1}-P12-W4`
 }
 
-// Get same week last year key
 function getYoYKey(key) {
   const parts = key.match(/(\d+)-P(\d+)-W(\d+)/)
   if (!parts) return null
@@ -53,9 +50,9 @@ export default function WeeklySales() {
   const [entries,      setEntries]      = useState({})
   const [priorEntries, setPriorEntries] = useState({})
   const [yoyEntries,   setYoyEntries]   = useState({})
-  const [forecast,     setForecast]     = useState({}) // { dateKey: { popup, catering, retail } }
+  const [forecast,     setForecast]     = useState({})
   const [budgetData,   setBudgetData]   = useState({})
-  const [commRate,     setCommRate]     = useState(0.18) // loaded per org
+  const [commRate,     setCommRate]     = useState(0.18)
   const [lastSaved,    setLastSaved]    = useState(null)
   const [savedBy,      setSavedBy]      = useState('')
   const [loading,      setLoading]      = useState(false)
@@ -65,8 +62,9 @@ export default function WeeklySales() {
   const [submissionId,   setSubmissionId] = useState(null)
   const [showRejectModal, setShowRejectModal] = useState(false)
   const [rejectNote,   setRejectNote]   = useState(false)
-  const [anomalies,    setAnomalies]    = useState({}) // { dateKey_catKey: true }
-  const [allLocData,   setAllLocData]   = useState([]) // for all-locations view
+  const [anomalies,    setAnomalies]    = useState({})
+  const [allLocData,   setAllLocData]   = useState([])
+  const [isDragging,   setIsDragging]   = useState(false)
 
   const location = selectedLocation === 'all' ? null : selectedLocation
   const isAll    = selectedLocation === 'all'
@@ -88,7 +86,6 @@ export default function WeeklySales() {
     }
   }, [currentWeek, periodKey, period, weekNum])
 
-  // ── Fix: use PeriodContext-derived prior key ─────────────────
   const priorKey = getPriorKey(periodKey)
   const yoyKey   = getYoYKey(periodKey)
 
@@ -102,11 +99,9 @@ export default function WeeklySales() {
   async function loadData() {
     setLoading(true)
     try {
-      // Load org commission rate
       const cfgSnap = await getDoc(doc(db, 'tenants', orgId, 'config', 'sales'))
       if (cfgSnap.exists()) setCommRate(cfgSnap.data().commissionRate || 0.18)
 
-      // Current week entries
       const ref  = doc(db, 'tenants', TENANT, 'locations', locId(location), 'sales', periodKey)
       const snap = await getDoc(ref)
       const data = snap.exists() ? (snap.data().entries || {}) : {}
@@ -114,27 +109,23 @@ export default function WeeklySales() {
       setLastSaved(snap.exists() ? snap.data().updatedAt : null)
       setSavedBy(snap.exists() ? snap.data().updatedBy || '' : '')
 
-      // Prior week entries — using correct periodKey
       if (priorKey) {
         const pRef  = doc(db, 'tenants', TENANT, 'locations', locId(location), 'sales', priorKey)
         const pSnap = await getDoc(pRef)
         setPriorEntries(pSnap.exists() ? (pSnap.data().entries || {}) : {})
       }
 
-      // Year-over-year entries
       if (yoyKey) {
         const yRef  = doc(db, 'tenants', TENANT, 'locations', locId(location), 'sales', yoyKey)
         const ySnap = await getDoc(yRef)
         setYoyEntries(ySnap.exists() ? (ySnap.data().entries || {}) : {})
       }
 
-      // Budget — prorate monthly to weekly (÷ 4.33)
       const bRef  = doc(db, 'tenants', TENANT, 'budgets', `${locId(location)}-${year}`)
       const bSnap = await getDoc(bRef)
       if (bSnap.exists()) {
         const months = bSnap.data().months || {}
         const monthly = months[period] || {}
-        // Prorate: monthly ÷ 4.33 weeks
         setBudgetData({
           gfs:      (monthly.gfs      || 0) / 4.33,
           popup:    (monthly.popup    || 0) / 4.33,
@@ -143,10 +134,8 @@ export default function WeeklySales() {
         })
       }
 
-      // Load 8-week history for forecasting + anomaly detection
       await loadHistoryAndForecast(data)
 
-      // Load pending approval submission
       const q = query(
         collection(db, 'tenants', orgId, 'salesSubmissions'),
         where('period', '==', periodKey),
@@ -173,12 +162,10 @@ export default function WeeklySales() {
   async function loadHistoryAndForecast(currentEntries) {
     if (!week || !location) return
     try {
-      // Load last 8 weeks for each day-of-week to build forecast
       const history = {}
       for (let i = 1; i <= 8; i++) {
         const d = new Date(currentWeek.start)
         d.setDate(d.getDate() - (i * 7))
-        // Build approximate period key for historical week
         const histYear = d.getFullYear()
         const histMo   = d.getMonth() + 1
         const histKey  = `${histYear}-P${String(histMo).padStart(2,'0')}-W1`
@@ -189,10 +176,9 @@ export default function WeeklySales() {
         } catch { /* skip */ }
       }
 
-      // Build forecast: 4-week rolling average per day-of-week per category
       const fc = {}
       week.days.forEach(day => {
-        const dow = day.date.getDay() // 0=Sun, 1=Mon...
+        const dow = day.date.getDay()
         const samples = { popup: [], catering: [], retail: [] }
 
         Object.values(history).forEach(weekEntries => {
@@ -209,13 +195,12 @@ export default function WeeklySales() {
 
         fc[day.key] = {}
         CATS.forEach(c => {
-          const arr = samples[c.key].slice(-4) // last 4 samples
+          const arr = samples[c.key].slice(-4)
           fc[day.key][c.key] = arr.length > 0 ? arr.reduce((s, v) => s + v, 0) / arr.length : 0
         })
       })
       setForecast(fc)
 
-      // Anomaly detection: flag if current entry > 2.5 stddev from history
       const flags = {}
       week.days.forEach(day => {
         CATS.forEach(c => {
@@ -268,7 +253,6 @@ export default function WeeklySales() {
 
   async function handleSave() {
     if (!location || !week) return
-    // Block re-entry if approved
     if (approvalStatus === 'approved') {
       toast.error('This period is already approved. Contact a director to unlock.')
       return
@@ -284,7 +268,6 @@ export default function WeeklySales() {
         updatedBy: user?.name || user?.email || 'unknown',
       }, { merge: true })
 
-      // Create/update pending submission
       const subData = {
         period:      periodKey,
         location,
@@ -317,7 +300,6 @@ export default function WeeklySales() {
         approvedBy: user?.name || user?.email,
         approvedAt: serverTimestamp(),
       })
-      // Now post to P&L
       const popup    = Object.values(entries).reduce((s, d) => s + (parseFloat(d?.popup)    || 0), 0)
       const catering = Object.values(entries).reduce((s, d) => s + (parseFloat(d?.catering) || 0), 0)
       const retail   = Object.values(entries).reduce((s, d) => s + (parseFloat(d?.retail)   || 0), 0)
@@ -344,7 +326,6 @@ export default function WeeklySales() {
   }
 
   function setVal(dateKey, cat, val) {
-    // Validate — no negatives, no unrealistic values
     const num = parseFloat(val) || 0
     if (num < 0) { toast.error('Sales cannot be negative'); return }
     if (num > 999999) { toast.error('Value seems too large — please verify'); return }
@@ -366,12 +347,11 @@ export default function WeeklySales() {
     return ((curr - prev) / prev) * 100
   }
 
-  async function handleImport(e) {
-    const file = e.target.files[0]
+  // Shared parser used by both file picker and drag-drop
+  async function processSalesFile(file) {
     if (!file) return
     if (approvalStatus === 'approved') {
       toast.error('This period is already approved.')
-      e.target.value = ''
       return
     }
     try {
@@ -385,7 +365,39 @@ export default function WeeklySales() {
     } catch (err) {
       toast.error('Import failed. Try exporting as CSV from Excel first.')
     }
+  }
+
+  async function handleImport(e) {
+    const file = e.target.files[0]
+    await processSalesFile(file)
     e.target.value = ''
+  }
+
+  function handleDragOver(e) {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!isDragging) setIsDragging(true)
+  }
+
+  function handleDragLeave(e) {
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.currentTarget === e.target) setIsDragging(false)
+  }
+
+  async function handleDrop(e) {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(false)
+    const file = e.dataTransfer.files?.[0]
+    if (!file) return
+    const validExts = ['.xlsx', '.xls', '.csv']
+    const isValid = validExts.some(ext => file.name.toLowerCase().endsWith(ext))
+    if (!isValid) {
+      toast.error('Please drop a .xlsx, .xls, or .csv file')
+      return
+    }
+    await processSalesFile(file)
   }
 
   function parseSalesRows(rows) {
@@ -442,7 +454,6 @@ export default function WeeklySales() {
     URL.revokeObjectURL(url)
   }
 
-  // ── Derived totals ────────────────────────────────────────────
   const catTotals = CATS.reduce((acc, c) => {
     acc[c.key] = week ? week.days.reduce((s, d) => s + (parseFloat(entries[d.key]?.[c.key]) || 0), 0) : 0
     return acc
@@ -458,7 +469,6 @@ export default function WeeklySales() {
   const weekVsLW       = pctChange(weekTotal, priorWeekTotal)
   const weekVsYoY      = pctChange(weekTotal, yoyWeekTotal)
 
-  // Daily pace — through today, are we on track for budget?
   const today       = new Date(); today.setHours(12, 0, 0, 0)
   const daysElapsed = week ? week.days.filter(d => d.date <= today).length : 0
   const daysTotal   = week?.days.length || 7
@@ -466,12 +476,41 @@ export default function WeeklySales() {
   const paceStatus  = paceTarget ? (weekTotal >= paceTarget ? 'ahead' : 'behind') : null
   const paceGap     = paceTarget ? weekTotal - paceTarget : null
 
-  // Category mix
   const catMix = CATS.map(c => ({
     ...c,
     total: catTotals[c.key],
     pct:   weekTotal > 0 ? catTotals[c.key] / weekTotal : 0,
   }))
+
+  const dropOverlay = isDragging && (
+    <div style={{
+      position: 'fixed',
+      top: 0, left: 0, right: 0, bottom: 0,
+      background: 'rgba(15, 23, 42, 0.85)',
+      zIndex: 9999,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      pointerEvents: 'none',
+    }}>
+      <div style={{
+        background: '#fff',
+        border: '3px dashed #F15D3B',
+        borderRadius: 16,
+        padding: '48px 64px',
+        textAlign: 'center',
+        maxWidth: 480,
+      }}>
+        <Upload size={48} style={{color:'#F15D3B',marginBottom:16}} />
+        <div style={{fontSize:20,fontWeight:600,color:'#0f172a',marginBottom:8}}>
+          Drop sales file here
+        </div>
+        <div style={{fontSize:14,color:'#6b7280'}}>
+          Accepts .xlsx, .xls, or .csv
+        </div>
+      </div>
+    </div>
+  )
 
   if (!location && !isAll) return (
     <div className={styles.empty}>
@@ -483,7 +522,6 @@ export default function WeeklySales() {
 
   if (!week) return <div className={styles.loading}>Loading...</div>
 
-  // ── All Locations view ───────────────────────────────────────
   if (isAll) {
     const allTotal      = allLocData.reduce((s, l) => s + l.total, 0)
     const allPriorTotal = allLocData.reduce((s, l) => s + l.priorTotal, 0)
@@ -550,7 +588,12 @@ export default function WeeklySales() {
   }
 
   return (
-    <div className={styles.page}>
+    <div
+      className={styles.page}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
 
       {/* ── Header ── */}
       <div className={styles.header}>
@@ -802,6 +845,8 @@ export default function WeeklySales() {
           </button>
         )}
       </div>
+
+      {dropOverlay}
     </div>
   )
 }
