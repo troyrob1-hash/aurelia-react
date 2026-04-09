@@ -1,11 +1,8 @@
 import { useEffect } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuthStore } from '@/store/authStore'
-
 import LoginPage      from '@/routes/auth/LoginPage'
-import SignUpPage     from '@/routes/auth/SignUpPage'
 import ForgotPage     from '@/routes/auth/ForgotPage'
-
 import { lazy, Suspense } from 'react'
 import AppShell from '@/components/layout/AppShell'
 import { LocationProvider } from '@/store/LocationContext'
@@ -13,7 +10,6 @@ import { PeriodProvider } from '@/store/PeriodContext'
 import { ToastProvider } from '@/components/ui/Toast'
 import OfflineBanner from '@/components/ui/OfflineBanner'
 import LoadingScreen from '@/components/ui/LoadingScreen'
-
 const Dashboard   = lazy(() => import('@/routes/Dashboard'))
 const OrderHub    = lazy(() => import('@/routes/OrderHub'))
 const Inventory   = lazy(() => import('@/routes/Inventory'))
@@ -25,33 +21,28 @@ const Transfers   = lazy(() => import('@/routes/Transfers'))
 const LaborPlanner = lazy(() => import('@/routes/LaborPlanner'))
 const Settings    = lazy(() => import('@/routes/Settings'))
 const Home = lazy(() => import('@/routes/Home'))
-
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuthStore()
   if (loading) return <LoadingScreen />
   if (!user) return <Navigate to="/login" replace />
   return children
 }
-
 function PublicRoute({ children }) {
   const { user, loading } = useAuthStore()
   if (loading) return <LoadingScreen />
   if (user) return <Navigate to="/" replace />
   return children
 }
-
 export default function App() {
   const init = useAuthStore(s => s.init)
   useEffect(() => { init() }, [init])
-
   return (
     <ToastProvider>
       <OfflineBanner />
       <Routes>
         <Route path="/login"  element={<PublicRoute><LoginPage /></PublicRoute>} />
-        <Route path="/signup" element={<PublicRoute><SignUpPage /></PublicRoute>} />
+        <Route path="/signup" element={<Navigate to="/login" replace />} />
         <Route path="/forgot" element={<PublicRoute><ForgotPage /></PublicRoute>} />
-
         <Route path="/" element={
           <ProtectedRoute>
             <PeriodProvider>
