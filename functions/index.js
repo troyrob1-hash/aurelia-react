@@ -307,6 +307,61 @@ exports.cleanExpiredSessions = onSchedule("every 60 minutes", async () => {
 // ============================================================
 // HELPER: generate secure temp password
 // ============================================================
+
+// ============================================================
+// CALLABLE: submitAccessRequest
+// Public — accepts access requests from unauthenticated visitors
+// ============================================================
+exports.submitAccessRequest = onCall(
+  { invoker: "public" },
+  async (request) => {
+    const { name, email, message } = request.data || {};
+
+    // Validate input
+    if (typeof name !== "string" || typeof email !== "string") {
+      throw new HttpsError("invalid-argument", "Name and email are required.");
+    }
+
+    const trimmedName  = name.trim();
+    const trimmedEmail = email.trim().toLowerCase();
+    const trimmedMsg   = (typeof message === "string" ? message.trim() : "");
+
+    if (!trimmedName || trimmedName.length > 100) {
+      throw new HttpsError("invalid-argument", "Invalid name.");
+    }
+    if (!trimmedEmail || trimmedEmail.length > 200 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+      throw new HttpsError("invalid-argument", "Invalid email.");
+    }
+    if (trimmedMsg.length > 1000) {
+      throw new HttpsError("invalid-argument", "Message too long.");
+    }
+
+    // Hardcoded to fooda for now — multi-tenant intake comes with the proper feature
+    const tenantId = "fooda";
+
+    // Capture metadata for review
+    const ip        = request.rawRequest?.ip ?? null;
+    const userAgent = request.rawRequest?.headers?.["user-agent"] ?? null;
+
+    const requestId = uuid();
+    await db
+      .collection("tenants").doc(tenantId)
+      .collection("accessRequests").doc(requestId)
+      .set({
+        requestId,
+        tenantId,
+        name:    trimmedName,
+        email:   trimmedEmail,
+        message: trimmedMsg,
+        status:  "pending",
+        ip,
+        userAgent,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+    return { success: true };
+  }
+);
 function generateTempPassword() {
   const chars = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$";
   return Array.from({ length: 16 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");

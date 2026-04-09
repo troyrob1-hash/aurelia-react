@@ -1,8 +1,9 @@
 import { useEffect } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuthStore } from '@/store/authStore'
-import LoginPage      from '@/routes/auth/LoginPage'
-import ForgotPage     from '@/routes/auth/ForgotPage'
+import LoginPage         from '@/routes/auth/LoginPage'
+import RequestAccessPage from '@/routes/auth/RequestAccessPage'
+import ForgotPage        from '@/routes/auth/ForgotPage'
 import { lazy, Suspense } from 'react'
 import AppShell from '@/components/layout/AppShell'
 import { LocationProvider } from '@/store/LocationContext'
@@ -41,7 +42,8 @@ export default function App() {
       <OfflineBanner />
       <Routes>
         <Route path="/login"  element={<PublicRoute><LoginPage /></PublicRoute>} />
-        <Route path="/signup" element={<Navigate to="/login" replace />} />
+        <Route path="/signup" element={<PublicRoute><RequestAccessPage /></PublicRoute>} />
+        <Route path="/request-access" element={<PublicRoute><RequestAccessPage /></PublicRoute>} />
         <Route path="/forgot" element={<PublicRoute><ForgotPage /></PublicRoute>} />
         <Route path="/" element={
           <ProtectedRoute>
