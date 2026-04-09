@@ -9,14 +9,19 @@
 // (tenantId, role) and verifies that the rules allow or deny operations
 // the way we expect.
 
-const {
+import {
   initializeTestEnvironment,
   assertSucceeds,
   assertFails,
-} = require('@firebase/rules-unit-testing')
+} from '@firebase/rules-unit-testing'
 
-const fs   = require('fs')
-const path = require('path')
+import fs from 'fs'
+import path from 'path'
+import { fileURLToPath } from 'url'
+import { describe, test, beforeAll, afterAll, beforeEach } from 'vitest'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname  = path.dirname(__filename)
 
 const PROJECT_ID = 'aurelia-rules-test'
 
