@@ -1,5 +1,9 @@
 {
   "projects": {
-    "default": "the-grove-70180"
-  }
+    "default": "the-grove-70180",
+    "staging": "the-grove-staging",
+    "prod": "the-grove-70180"
+  },
+  "targets": {},
+  "etags": {}
 }

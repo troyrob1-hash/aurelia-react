@@ -22,11 +22,17 @@ service cloud.firestore {
       return isAuth() && tenantId() == tid;
     }
 
+    // ============================================================
+    // aurelia/ — global config catalog (read-only from clients)
+    // ============================================================
     match /aurelia/{doc} {
       allow read: if isAuth();
       allow write: if false;
     }
 
+    // ============================================================
+    // tenants/{tenantId}/... — application data
+    // ============================================================
     match /tenants/{tenantId} {
       allow read:  if ownsTenant(tenantId);
       allow write: if ownsTenant(tenantId) && isAdmin();
@@ -74,6 +80,14 @@ service cloud.firestore {
         allow delete: if ownsTenant(tenantId) && isDirector();
       }
 
+      // NEW: orders rule (was missing)
+      match /orders/{orderId} {
+        allow read:   if ownsTenant(tenantId);
+        allow create: if ownsTenant(tenantId) && isManager();
+        allow update: if ownsTenant(tenantId) && isManager();
+        allow delete: if ownsTenant(tenantId) && isDirector();
+      }
+
       match /transfers/{transferId} {
         allow read:   if ownsTenant(tenantId);
         allow create: if ownsTenant(tenantId) && isManager();
@@ -100,6 +114,21 @@ service cloud.firestore {
         allow read:   if ownsTenant(tenantId);
         allow create: if ownsTenant(tenantId) && isManager();
         allow update: if ownsTenant(tenantId) && isDirector();
+      }
+
+      // Vendors and products — managers can create/update, directors can delete
+      match /vendors/{vendorId} {
+        allow read:   if ownsTenant(tenantId);
+        allow create: if ownsTenant(tenantId) && isManager();
+        allow update: if ownsTenant(tenantId) && isManager();
+        allow delete: if ownsTenant(tenantId) && isDirector();
+      }
+
+      match /products/{productId} {
+        allow read:   if ownsTenant(tenantId);
+        allow create: if ownsTenant(tenantId) && isManager();
+        allow update: if ownsTenant(tenantId) && isManager();
+        allow delete: if ownsTenant(tenantId) && isDirector();
       }
 
       match /locations/{locationId} {
@@ -137,8 +166,58 @@ service cloud.firestore {
         allow read:  if ownsTenant(tenantId) && isManager();
         allow write: if ownsTenant(tenantId) && isAdmin();
       }
+
+      // NEW: access requests — admins read in Settings, never written from client
+      // (submitAccessRequest Cloud Function uses admin SDK and bypasses rules)
+      match /accessRequests/{requestId} {
+        allow read:  if ownsTenant(tenantId) && isAdmin();
+        allow write: if false;
+      }
     }
 
+    // ============================================================
+    // NEW: orgs/{orgId}/... — admin and settings data
+    // (Settings UI reads/writes here. Cloud Functions also write here
+    // via admin SDK which bypasses rules.)
+    // ============================================================
+    match /orgs/{orgId} {
+      allow read:  if ownsTenant(orgId);
+      allow write: if ownsTenant(orgId) && isAdmin();
+
+      match /users/{uid} {
+        allow read:  if ownsTenant(orgId) && isManager();
+        allow write: if ownsTenant(orgId) && isAdmin();
+      }
+
+      match /userLocations/{joinId} {
+        allow read:  if ownsTenant(orgId) && isManager();
+        allow write: if ownsTenant(orgId) && isAdmin();
+      }
+
+      match /locations/{locationId} {
+        allow read:  if ownsTenant(orgId);
+        allow write: if ownsTenant(orgId) && isAdmin();
+      }
+
+      match /apiKeys/{keyId} {
+        allow read:  if ownsTenant(orgId) && isAdmin();
+        allow write: if ownsTenant(orgId) && isAdmin();
+      }
+
+      match /auditLog/{logId} {
+        allow read:  if ownsTenant(orgId) && isDirector();
+        allow write: if false;
+      }
+
+      match /sessions/{sessionId} {
+        allow read:  if ownsTenant(orgId);
+        allow write: if false;
+      }
+    }
+
+    // ============================================================
+    // DEFAULT DENY — anything not matched above is rejected
+    // ============================================================
     match /{document=**} {
       allow read, write: if false;
     }

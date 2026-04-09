@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:staging": "dotenv -e .env.staging -- vite",
     "build": "vite build",
+    "build:staging": "dotenv -e .env.staging -- vite build",
     "preview": "vite preview",
     "lint": "eslint src --ext .js,.jsx",
     "test": "vitest run",
