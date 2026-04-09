@@ -83,6 +83,7 @@ export default function Purchasing() {
   const [expandVendor,  setExpandVendor]  = useState({})
   const [dupWarning,    setDupWarning]    = useState(null)
   const [spendTrend,    setSpendTrend]    = useState([])
+  const [isDragging,    setIsDragging]    = useState(false)
   const fileRef = useRef()
 
   const location   = selectedLocation === 'all' ? null : selectedLocation
@@ -235,9 +236,8 @@ export default function Purchasing() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
-  // CSV import
-  async function handleImport(e) {
-    const file = e.target.files[0]
+  // CSV import — shared parser used by both file picker and drag-drop
+  async function processInvoiceFile(file) {
     if (!file) return
     try {
       const XLSX = await import('xlsx')
@@ -274,7 +274,39 @@ export default function Purchasing() {
       }
       toast.success(`Imported ${imported} invoices`)
     } catch { toast.error('Import failed — check file format') }
+  }
+
+  async function handleImport(e) {
+    const file = e.target.files[0]
+    await processInvoiceFile(file)
     e.target.value = ''
+  }
+
+  function handleDragOver(e) {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!isDragging) setIsDragging(true)
+  }
+
+  function handleDragLeave(e) {
+    e.preventDefault()
+    e.stopPropagation()
+    if (e.currentTarget === e.target) setIsDragging(false)
+  }
+
+  async function handleDrop(e) {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(false)
+    const file = e.dataTransfer.files?.[0]
+    if (!file) return
+    const validExts = ['.xlsx', '.xls', '.csv']
+    const isValid = validExts.some(ext => file.name.toLowerCase().endsWith(ext))
+    if (!isValid) {
+      toast.error('Please drop a .xlsx, .xls, or .csv file')
+      return
+    }
+    await processInvoiceFile(file)
   }
 
   function exportCSV() {
@@ -345,7 +377,12 @@ export default function Purchasing() {
   }, [invoices])
 
   return (
-    <div className={styles.page}>
+    <div
+      className={styles.page}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
 
       {/* ── Header ── */}
       <div className={styles.header}>
@@ -694,6 +731,36 @@ export default function Purchasing() {
               <p className={styles.emptySub}>Add an invoice or import from a CSV/Excel file</p>
             </div>
           )}
+        </div>
+      )}
+
+      {isDragging && (
+        <div style={{
+          position: 'fixed',
+          top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(15, 23, 42, 0.85)',
+          zIndex: 9999,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          pointerEvents: 'none',
+        }}>
+          <div style={{
+            background: '#fff',
+            border: '3px dashed #F15D3B',
+            borderRadius: 16,
+            padding: '48px 64px',
+            textAlign: 'center',
+            maxWidth: 480,
+          }}>
+            <Upload size={48} style={{color:'#F15D3B',marginBottom:16}} />
+            <div style={{fontSize:20,fontWeight:600,color:'#0f172a',marginBottom:8}}>
+              Drop invoice file here
+            </div>
+            <div style={{fontSize:14,color:'#6b7280'}}>
+              Accepts .xlsx, .xls, or .csv
+            </div>
+          </div>
         </div>
       )}
     </div>
