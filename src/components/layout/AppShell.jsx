@@ -42,10 +42,18 @@ export default function AppShell() {
             {sidebarOpen ? <X size={18}/> : <Menu size={18}/>}
           </button>
           <div className={styles.brand} onClick={() => navigate('/')} style={{cursor:'pointer'}}>
-            <div className={styles.foodaLogo}>fooda</div>
+            <div className={styles.foodaLogo} style={{background:'#0f172a',borderRadius:'50%',padding:0,width:32,height:32,display:'flex',alignItems:'center',justifyContent:'center',position:'relative'}}>
+              <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" style={{position:'absolute',top:0,left:0}}>
+                <circle cx="16" cy="16" r="14" fill="none" stroke="#F15D3B" strokeWidth="2"/>
+                <circle cx="16" cy="16" r="11" fill="none" stroke="#F15D3B" strokeWidth="1" opacity="0.5"/>
+              </svg>
+              <svg width="18" height="18" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" style={{position:'relative',zIndex:1}}>
+                <path d="M16 6 L26 27 L21 27 L19 22.5 L13 22.5 L11 27 L6 27 Z M14.3 18.5 L17.7 18.5 L16 14.8 Z" fill="#ffffff"/>
+              </svg>
+            </div>
             <div className={styles.brandText}>
               <span className={styles.brandName}>Aurelia</span>
-              <span className={styles.brandSub}>A Fooda Management Suite</span>
+              <span className={styles.brandSub}>Operations Management Suite</span>
             </div>
           </div>
         </div>

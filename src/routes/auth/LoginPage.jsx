@@ -63,10 +63,18 @@ export default function LoginPage() {
       <div className={styles.page}>
         <div className={styles.card}>
           <div className={styles.logo}>
-            <div className={styles.logoBox}>fooda</div>
+            <div className={styles.logoBox} style={{background:'#0f172a',borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',position:'relative',padding:0,width:48,height:48}}>
+              <svg width="48" height="48" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" style={{position:'absolute',top:0,left:0}}>
+                <circle cx="16" cy="16" r="14" fill="none" stroke="#F15D3B" strokeWidth="2"/>
+                <circle cx="16" cy="16" r="11" fill="none" stroke="#F15D3B" strokeWidth="1" opacity="0.5"/>
+              </svg>
+              <svg width="28" height="28" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" style={{position:'relative',zIndex:1}}>
+                <path d="M16 6 L26 27 L21 27 L19 22.5 L13 22.5 L11 27 L6 27 Z M14.3 18.5 L17.7 18.5 L16 14.8 Z" fill="#ffffff"/>
+              </svg>
+            </div>
             <div>
               <div className={styles.appName}>Aurelia</div>
-              <div className={styles.appSub}>A Fooda Management Suite</div>
+              <div className={styles.appSub}>Operations Management Suite</div>
             </div>
           </div>
           <h1 className={styles.heading}>Set your password</h1>
@@ -98,10 +106,18 @@ export default function LoginPage() {
     <div className={styles.page}>
       <div className={styles.card}>
         <div className={styles.logo}>
-          <div className={styles.logoBox}>fooda</div>
+          <div className={styles.logoBox} style={{background:'#0f172a',borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',position:'relative',padding:0,width:48,height:48}}>
+            <svg width="48" height="48" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" style={{position:'absolute',top:0,left:0}}>
+              <circle cx="16" cy="16" r="14" fill="none" stroke="#F15D3B" strokeWidth="2"/>
+              <circle cx="16" cy="16" r="11" fill="none" stroke="#F15D3B" strokeWidth="1" opacity="0.5"/>
+            </svg>
+            <svg width="28" height="28" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg" style={{position:'relative',zIndex:1}}>
+              <path d="M16 6 L26 27 L21 27 L19 22.5 L13 22.5 L11 27 L6 27 Z M14.3 18.5 L17.7 18.5 L16 14.8 Z" fill="#ffffff"/>
+            </svg>
+          </div>
           <div>
             <div className={styles.appName}>Aurelia</div>
-            <div className={styles.appSub}>A Fooda Management Suite</div>
+            <div className={styles.appSub}>Operations Management Suite</div>
           </div>
         </div>
         <h1 className={styles.heading}>Sign in</h1>
@@ -110,7 +126,7 @@ export default function LoginPage() {
           <div className={styles.field}>
             <label className={styles.label}>Email</label>
             <input type="email" value={email} onChange={e=>setEmail(e.target.value)}
-              placeholder="you@fooda.com" className={styles.input} autoComplete="email" required/>
+              placeholder="you@company.com" className={styles.input} autoComplete="email" required/>
           </div>
           <div className={styles.field}>
             <label className={styles.label}>Password</label>
