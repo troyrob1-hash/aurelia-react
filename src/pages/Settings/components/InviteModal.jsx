@@ -17,6 +17,12 @@ export default function InviteModal({ orgId, onClose, onSuccess }) {
       .then(snap => setLocations(snap.docs.map(d => d.data())));
   }, [orgId]);
 
+  useEffect(() => {
+    const handleEsc = (e) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", handleEsc);
+    return () => document.removeEventListener("keydown", handleEsc);
+  }, [onClose]);
+
   const toggleLocation = (id) => {
     setForm(f => ({
       ...f,

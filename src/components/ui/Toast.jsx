@@ -1,53 +1,68 @@
-import { useState, useEffect, useCallback } from 'react'
-import { createContext, useContext } from 'react'
-import { CheckCircle, XCircle, AlertTriangle, Info, X } from 'lucide-react'
-import styles from './Toast.module.css'
+// src/components/ui/Toast.jsx
+import { createContext, useContext, useState, useCallback } from "react";
 
-const ToastContext = createContext(null)
+const ToastContext = createContext(null);
+
+export function useToast() {
+  const ctx = useContext(ToastContext);
+  if (!ctx) throw new Error("useToast must be used within ToastProvider");
+  return ctx;
+}
 
 export function ToastProvider({ children }) {
-  const [toasts, setToasts] = useState([])
+  const [toasts, setToasts] = useState([]);
 
-  const add = useCallback((message, type = 'info', duration = 4000) => {
-    const id = Date.now()
-    setToasts(prev => [...prev, { id, message, type }])
-    if (duration > 0) setTimeout(() => remove(id), duration)
-  }, [])
-
-  const remove = useCallback((id) => {
-    setToasts(prev => prev.filter(t => t.id !== id))
-  }, [])
+  const addToast = useCallback((message, type = "success") => {
+    const id = Date.now() + Math.random();
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 3500);
+  }, []);
 
   const toast = {
-    success: (msg) => add(msg, 'success'),
-    error:   (msg) => add(msg, 'error', 6000),
-    warning: (msg) => add(msg, 'warning'),
-    info:    (msg) => add(msg, 'info'),
-  }
+    success: (msg) => addToast(msg, "success"),
+    error:   (msg) => addToast(msg, "error"),
+    info:    (msg) => addToast(msg, "info"),
+  };
 
   return (
     <ToastContext.Provider value={toast}>
       {children}
-      <div className={styles.container}>
+      <div style={{ position: "fixed", bottom: 24, right: 24, zIndex: 2000, display: "flex", flexDirection: "column-reverse", gap: 8 }}>
         {toasts.map(t => (
-          <div key={t.id} className={`${styles.toast} ${styles[t.type]}`}>
-            <span className={styles.icon}>
-              {t.type === 'success' && <CheckCircle size={16}/>}
-              {t.type === 'error'   && <XCircle size={16}/>}
-              {t.type === 'warning' && <AlertTriangle size={16}/>}
-              {t.type === 'info'    && <Info size={16}/>}
-            </span>
-            <span className={styles.message}>{t.message}</span>
-            <button className={styles.close} onClick={() => remove(t.id)}><X size={13}/></button>
-          </div>
+          <ToastItem key={t.id} message={t.message} type={t.type} onDismiss={() => setToasts(prev => prev.filter(x => x.id !== t.id))} />
         ))}
       </div>
     </ToastContext.Provider>
-  )
+  );
 }
 
-export function useToast() {
-  const ctx = useContext(ToastContext)
-  if (!ctx) throw new Error('useToast must be used within ToastProvider')
-  return ctx
+function ToastItem({ message, type, onDismiss }) {
+  const colors = {
+    success: { bg: "#EAF3DE", color: "#3B6D11", border: "#C0DD97", icon: "✓" },
+    error:   { bg: "#FCEBEB", color: "#A32D2D", border: "#F7C1C1", icon: "✕" },
+    info:    { bg: "#E6F1FB", color: "#185FA5", border: "#B8D4F0", icon: "ℹ" },
+  };
+  const c = colors[type] || colors.success;
+
+  return (
+    <div
+      onClick={onDismiss}
+      style={{
+        display: "flex", alignItems: "center", gap: 10,
+        padding: "12px 20px", borderRadius: 10, cursor: "pointer",
+        background: c.bg, color: c.color, border: `0.5px solid ${c.border}`,
+        fontSize: 13, fontWeight: 500, fontFamily: "var(--font-sans)",
+        boxShadow: "0 4px 16px rgba(0,0,0,.1)",
+        animation: "toast-in .3s ease",
+      }}
+    >
+      <span style={{ fontSize: 16, lineHeight: 1 }}>{c.icon}</span>
+      {message}
+    </div>
+  );
 }
+
+// Default export for backward compat with direct import
+export default { ToastProvider, useToast };
