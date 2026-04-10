@@ -10,6 +10,7 @@ import {
 } from 'firebase/firestore'
 import { Plus, Download, Search, CheckCircle, AlertCircle, Upload, TrendingUp, TrendingDown } from 'lucide-react'
 import { writePurchasingPnL } from '@/lib/pnl'
+import Breadcrumb from '@/components/ui/Breadcrumb'
 import styles from './Purchasing.module.css'
 
 // ── Fallback vendors — overridden by Firestore per org ───────
@@ -417,11 +418,42 @@ export default function Purchasing() {
 
       {/* ── Header ── */}
       <div className={styles.header}>
-        <div>
-          <h1 className={styles.title}>Purchasing / AP</h1>
-          <p className={styles.subtitle}>
-            {location ? cleanLocName(location) : 'All Locations'} · {periodKey}
-          </p>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <Breadcrumb items={['Operations', 'Purchasing / AP']} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 2, flexWrap: 'wrap' }}>
+            <h1 className={styles.title} style={{ margin: 0 }}>Purchasing / AP</h1>
+            <span style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '4px 10px',
+              background: '#f1f5f9',
+              border: '0.5px solid #e2e8f0',
+              borderRadius: 20,
+              fontSize: 12,
+              color: '#475569',
+              fontWeight: 500,
+            }}>
+              📍 {location ? cleanLocName(location) : 'All Locations'}
+            </span>
+            <span style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '4px 10px',
+              background: '#f1f5f9',
+              border: '0.5px solid #e2e8f0',
+              borderRadius: 20,
+              fontSize: 12,
+              color: '#475569',
+              fontWeight: 500,
+            }}>
+              📅 {periodKey}
+            </span>
+          </div>
+          <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 6 }}>
+            {invoices.length} total invoice{invoices.length !== 1 ? 's' : ''} · {invoices.filter(i => i.status === 'Pending').length} pending approval · {fmt$(totalOwed)} outstanding
+          </div>
         </div>
         <div className={styles.actions}>
           <div className={styles.viewToggle}>
