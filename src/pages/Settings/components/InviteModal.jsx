@@ -1,5 +1,5 @@
 // src/pages/Settings/components/InviteModal.jsx
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { db, functions } from "@/lib/firebase";
 import { httpsCallable } from "firebase/functions";
 import { collection, getDocs } from "firebase/firestore";
@@ -12,7 +12,7 @@ export default function InviteModal({ orgId, onClose, onSuccess }) {
   const [loading,   setLoading]   = useState(false);
   const [error,     setError]     = useState(null);
 
-  useState(() => {
+  useEffect(() => {
     getDocs(collection(db, "orgs", orgId, "locations"))
       .then(snap => setLocations(snap.docs.map(d => d.data())));
   }, [orgId]);

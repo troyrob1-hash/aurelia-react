@@ -28,6 +28,7 @@ export default function SSOTab() {
   const [oidcConfig, setOidcConfig] = useState({ clientId: "", clientSecret: "", issuerUrl: "" });
   const [ssoOnly,    setSsoOnly]    = useState(false);
   const [requireMFA, setRequireMFA] = useState(false);
+  const [isConnected, setIsConnected] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -43,9 +44,11 @@ export default function SSOTab() {
             if (d.ssoConfig.entryPoint) {
               setProtocol("saml");
               setSamlConfig({ entryPoint: d.ssoConfig.entryPoint ?? "", certificate: d.ssoConfig.certificate ?? "" });
-            } else {
+              setIsConnected(!!(d.ssoConfig.entryPoint && d.ssoConfig.certificate));
+            } else if (d.ssoConfig.clientId) {
               setProtocol("oidc");
               setOidcConfig({ clientId: d.ssoConfig.clientId ?? "", clientSecret: "", issuerUrl: d.ssoConfig.issuerUrl ?? "" });
+              setIsConnected(!!(d.ssoConfig.clientId && d.ssoConfig.issuerUrl));
             }
           }
         }
@@ -88,6 +91,12 @@ export default function SSOTab() {
         "settings.ssoOnly": ssoOnly, "settings.requireMFA": requireMFA,
         updatedAt: serverTimestamp(),
       });
+      if (ssoEnabled) {
+        if (protocol === "saml") setIsConnected(!!(samlConfig.entryPoint.trim() && samlConfig.certificate.trim()));
+        else setIsConnected(!!(oidcConfig.clientId.trim() && oidcConfig.issuerUrl.trim()));
+      } else {
+        setIsConnected(false);
+      }
       setSuccess(true);
       setTimeout(() => setSuccess(false), 3000);
     } catch (e) {
@@ -97,10 +106,34 @@ export default function SSOTab() {
     }
   };
 
+  const handleCopySP = (text) => {
+    navigator.clipboard.writeText(text);
+  };
+
   if (loading) return <Spinner />;
 
   return (
     <div className="tab-content" style={{ maxWidth: 640 }}>
+      {/* Connection status banner */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: 10,
+        padding: "10px 14px", borderRadius: 8, marginBottom: "1rem",
+        fontSize: 13,
+        background: ssoEnabled && isConnected ? "#EAF3DE" : ssoEnabled ? "#FEF3CD" : "var(--color-background-secondary)",
+        color: ssoEnabled && isConnected ? "#3B6D11" : ssoEnabled ? "#856404" : "var(--color-text-secondary)",
+        border: `0.5px solid ${ssoEnabled && isConnected ? "#C0DD97" : ssoEnabled ? "#FFEEBA" : "var(--color-border-tertiary)"}`,
+      }}>
+        <span style={{
+          width: 8, height: 8, borderRadius: "50%", flexShrink: 0,
+          background: ssoEnabled && isConnected ? "#3B6D11" : ssoEnabled ? "#856404" : "var(--color-text-tertiary)",
+        }} />
+        {ssoEnabled && isConnected
+          ? "Connected — SSO is configured and ready. Complete the IdP app registration to activate."
+          : ssoEnabled
+            ? "Awaiting configuration — enter your IdP credentials below, then coordinate with IT to complete the app registration."
+            : "SSO is disabled. Enable it to allow users to log in with your identity provider."}
+      </div>
+
       {/* SSO toggle */}
       <div className="sso-card">
         <div className="sso-card-head">
@@ -142,9 +175,28 @@ export default function SSOTab() {
               <textarea rows={5} placeholder="-----BEGIN CERTIFICATE-----" value={samlConfig.certificate} onChange={setSaml("certificate")} disabled={!isAdmin}
                 style={{ width: "100%", padding: "9px 12px", fontSize: 12, fontFamily: "var(--font-mono)", border: "0.5px solid var(--color-border-secondary)", borderRadius: 8, resize: "vertical", background: "var(--color-background-primary)", color: "var(--color-text-primary)" }} />
               <div className="sp-info">
-                <div className="sso-section-label" style={{ marginBottom: ".5rem" }}>Your service provider details</div>
-                <div className="sp-row"><span>ACS URL</span><code>https://aurelia-fms.com/auth/saml/callback</code></div>
-                <div className="sp-row"><span>Entity ID</span><code>aurelia-fms-{orgId}</code></div>
+                <div className="sso-section-label" style={{ marginBottom: ".5rem" }}>Service provider details — share with your IT team</div>
+                <div className="sp-row">
+                  <span>ACS URL</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <code>https://aureliafms.com/auth/saml/callback</code>
+                    <button className="action-btn" style={{ padding: "2px 8px", fontSize: 10 }} onClick={() => handleCopySP("https://aureliafms.com/auth/saml/callback")}>Copy</button>
+                  </div>
+                </div>
+                <div className="sp-row">
+                  <span>Entity ID</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <code>aurelia-fms-{orgId}</code>
+                    <button className="action-btn" style={{ padding: "2px 8px", fontSize: 10 }} onClick={() => handleCopySP(`aurelia-fms-${orgId}`)}>Copy</button>
+                  </div>
+                </div>
+                <div className="sp-row">
+                  <span>Name ID format</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <code>urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress</code>
+                    <button className="action-btn" style={{ padding: "2px 8px", fontSize: 10 }} onClick={() => handleCopySP("urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress")}>Copy</button>
+                  </div>
+                </div>
               </div>
             </div>
           )}
@@ -159,6 +211,16 @@ export default function SSOTab() {
               <label className="field-label">Client secret</label>
               <input type="password" placeholder="••••••••••••" value={oidcConfig.clientSecret} onChange={setOidc("clientSecret")} disabled={!isAdmin} />
               <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 4 }}>Stored encrypted. Leave blank to keep existing secret.</div>
+              <div className="sp-info">
+                <div className="sso-section-label" style={{ marginBottom: ".5rem" }}>Service provider details — share with your IT team</div>
+                <div className="sp-row">
+                  <span>Redirect URI</span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <code>https://aureliafms.com/auth/oidc/callback</code>
+                    <button className="action-btn" style={{ padding: "2px 8px", fontSize: 10 }} onClick={() => handleCopySP("https://aureliafms.com/auth/oidc/callback")}>Copy</button>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
         </>

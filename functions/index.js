@@ -368,3 +368,178 @@ function generateTempPassword() {
   const chars = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$";
   return Array.from({ length: 16 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
 }
+// ============================================================
+// CALLABLE: createAPIKey
+// ============================================================
+exports.createAPIKey = onCall(async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Must be signed in.");
+
+  const { orgId, label, service, rawKey, locationId } = request.data;
+  const callerUid = request.auth.uid;
+
+  if (!orgId || !label || !rawKey) {
+    throw new HttpsError("invalid-argument", "orgId, label, and rawKey are required.");
+  }
+
+  const callerSnap = await db.collection("orgs").doc(orgId).collection("users").doc(callerUid).get();
+  if (!callerSnap.exists || callerSnap.data().role !== "admin" || !callerSnap.data().active) {
+    throw new HttpsError("permission-denied", "Only admins can create API keys.");
+  }
+
+  const { SecretManagerServiceClient } = require("@google-cloud/secret-manager");
+  const smClient = new SecretManagerServiceClient();
+  const projectId = process.env.GCP_PROJECT_ID || process.env.GCLOUD_PROJECT;
+
+  const keyId = uuid();
+  const secretId = `apikey_${orgId}_${keyId}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const maskedValue = "••••" + rawKey.slice(-4);
+
+  // Create secret in Secret Manager
+  try {
+    await smClient.createSecret({
+      parent: `projects/${projectId}`,
+      secretId,
+      secret: { replication: { automatic: {} } },
+    });
+
+    await smClient.addSecretVersion({
+      parent: `projects/${projectId}/secrets/${secretId}`,
+      payload: { data: Buffer.from(rawKey, "utf8") },
+    });
+  } catch (e) {
+    console.error("Secret Manager error:", e);
+    throw new HttpsError("internal", "Failed to store key securely.");
+  }
+
+  // Write metadata to Firestore
+  const now = admin.firestore.FieldValue.serverTimestamp();
+  await db.collection("orgs").doc(orgId).collection("apiKeys").doc(keyId).set({
+    keyId,
+    orgId,
+    label: label.trim(),
+    service: service || "other",
+    locationId: locationId || null,
+    maskedValue,
+    secretId,
+    active: true,
+    lastUsedAt: null,
+    createdAt: now,
+    createdBy: callerUid,
+  });
+
+  const caller = callerSnap.data();
+  await writeAuditLog(orgId,
+    { uid: callerUid, email: caller.email, displayName: caller.displayName, ip: null, userAgent: null },
+    "apikey.created", { type: "apiKey", id: keyId },
+    null, { label: label.trim(), service: service || "other", locationId: locationId || null }
+  );
+
+  return { success: true, keyId, maskedValue };
+});
+
+// ============================================================
+// CALLABLE: getAPIKeyValue
+// ============================================================
+exports.getAPIKeyValue = onCall(async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Must be signed in.");
+
+  const { orgId, keyId } = request.data;
+  const callerUid = request.auth.uid;
+
+  if (!orgId || !keyId) {
+    throw new HttpsError("invalid-argument", "orgId and keyId are required.");
+  }
+
+  const callerSnap = await db.collection("orgs").doc(orgId).collection("users").doc(callerUid).get();
+  if (!callerSnap.exists || callerSnap.data().role !== "admin" || !callerSnap.data().active) {
+    throw new HttpsError("permission-denied", "Only admins can reveal API keys.");
+  }
+
+  const keySnap = await db.collection("orgs").doc(orgId).collection("apiKeys").doc(keyId).get();
+  if (!keySnap.exists || !keySnap.data().active) {
+    throw new HttpsError("not-found", "API key not found or has been revoked.");
+  }
+
+  const { secretId } = keySnap.data();
+  const { SecretManagerServiceClient } = require("@google-cloud/secret-manager");
+  const smClient = new SecretManagerServiceClient();
+  const projectId = process.env.GCP_PROJECT_ID || process.env.GCLOUD_PROJECT;
+
+  try {
+    const [version] = await smClient.accessSecretVersion({
+      name: `projects/${projectId}/secrets/${secretId}/versions/latest`,
+    });
+    const rawKey = version.payload.data.toString("utf8");
+
+    const caller = callerSnap.data();
+    await writeAuditLog(orgId,
+      { uid: callerUid, email: caller.email, displayName: caller.displayName, ip: null, userAgent: null },
+      "apiKey.accessed", { type: "apiKey", id: keyId },
+      null, null
+    );
+
+    return { rawKey };
+  } catch (e) {
+    console.error("Secret Manager error:", e);
+    throw new HttpsError("internal", "Failed to retrieve key.");
+  }
+});
+
+// ============================================================
+// CALLABLE: revokeAPIKey
+// ============================================================
+exports.revokeAPIKey = onCall(async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Must be signed in.");
+
+  const { orgId, keyId } = request.data;
+  const callerUid = request.auth.uid;
+
+  if (!orgId || !keyId) {
+    throw new HttpsError("invalid-argument", "orgId and keyId are required.");
+  }
+
+  const callerSnap = await db.collection("orgs").doc(orgId).collection("users").doc(callerUid).get();
+  if (!callerSnap.exists || callerSnap.data().role !== "admin" || !callerSnap.data().active) {
+    throw new HttpsError("permission-denied", "Only admins can revoke API keys.");
+  }
+
+  const keySnap = await db.collection("orgs").doc(orgId).collection("apiKeys").doc(keyId).get();
+  if (!keySnap.exists) {
+    throw new HttpsError("not-found", "API key not found.");
+  }
+
+  const keyData = keySnap.data();
+  const now = admin.firestore.FieldValue.serverTimestamp();
+
+  // Mark inactive in Firestore
+  await db.collection("orgs").doc(orgId).collection("apiKeys").doc(keyId).update({
+    active: false,
+    revokedAt: now,
+    revokedBy: callerUid,
+  });
+
+  // Delete secret from Secret Manager (if it exists)
+  if (keyData.secretId) {
+    const { SecretManagerServiceClient } = require("@google-cloud/secret-manager");
+    const smClient = new SecretManagerServiceClient();
+    const projectId = process.env.GCP_PROJECT_ID || process.env.GCLOUD_PROJECT;
+
+    try {
+      await smClient.deleteSecret({
+        name: `projects/${projectId}/secrets/${keyData.secretId}`,
+      });
+    } catch (e) {
+      // Secret may already be deleted — log but don't fail the revocation
+      console.warn("Secret Manager cleanup warning:", e.message);
+    }
+  }
+
+  const caller = callerSnap.data();
+  await writeAuditLog(orgId,
+    { uid: callerUid, email: caller.email, displayName: caller.displayName, ip: null, userAgent: null },
+    "apikey.revoked", { type: "apiKey", id: keyId },
+    { label: keyData.label, active: true }, { active: false, revokedBy: callerUid }
+  );
+
+  return { success: true };
+});

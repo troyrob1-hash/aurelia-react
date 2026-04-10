@@ -11,7 +11,7 @@ const STATUS_MAP  = {
   expired: { label: "Expired", cls: "badge-red"   },
 };
 
-export default function UserRow({ user, orgId, isAdmin, currentUid, onDeactivate, onUpdated }) {
+export default function UserRow({ user, orgId, isAdmin, currentUid, onDeactivate, onUpdated, locationNames = [] }) {
   const [editingRole, setEditingRole] = useState(false);
   const [saving,      setSaving]      = useState(false);
   const isSelf    = user.uid === currentUid;
@@ -66,7 +66,11 @@ export default function UserRow({ user, orgId, isAdmin, currentUid, onDeactivate
         )}
       </td>
       <td className="text-secondary">
-        {user.role === "admin" ? "All locations" : "—"}
+        {user.role === "admin"
+          ? "All locations"
+          : locationNames.length > 0
+            ? locationNames.join(", ")
+            : "None assigned"}
       </td>
       <td><span className={`badge ${statusCfg.cls}`}>{statusCfg.label}</span></td>
       <td className="text-secondary">

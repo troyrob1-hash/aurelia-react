@@ -1,3 +1,4 @@
+cat > src/pages/Settings/tabs/UsersTab.jsx << 'ENDOFFILE'
 // src/pages/Settings/tabs/UsersTab.jsx
 import { useState, useEffect, useCallback } from "react";
 import { db, functions }   from "@/lib/firebase";
@@ -26,6 +27,8 @@ export default function UsersTab() {
   const [showInvite,  setShowInvite]  = useState(false);
   const [filter,      setFilter]      = useState("all");
   const [error,       setError]       = useState(null);
+  const [userLocs,    setUserLocs]    = useState({});
+  const [locNames,    setLocNames]    = useState({});
 
   const fetchUsers = useCallback(async (cursor = null) => {
     cursor ? setLoadingMore(true) : setLoading(true);
@@ -55,6 +58,27 @@ export default function UsersTab() {
   }, [orgId, filter]);
 
   useEffect(() => { fetchUsers(); }, [fetchUsers]);
+
+  useEffect(() => {
+    Promise.all([
+      getDocs(collection(db, "orgs", orgId, "userLocations")),
+      getDocs(collection(db, "orgs", orgId, "locations")),
+    ]).then(([ulSnap, locSnap]) => {
+      const map = {};
+      ulSnap.docs.forEach(d => {
+        const data = d.data();
+        if (!map[data.uid]) map[data.uid] = [];
+        map[data.uid].push(data.locationId);
+      });
+      setUserLocs(map);
+      const names = {};
+      locSnap.docs.forEach(d => {
+        const data = d.data();
+        names[data.locationId] = data.name;
+      });
+      setLocNames(names);
+    });
+  }, [orgId]);
 
   const handleInviteSent = () => {
     setShowInvite(false);
@@ -127,6 +151,7 @@ export default function UsersTab() {
                   currentUid={user.uid}
                   onDeactivate={handleDeactivate}
                   onUpdated={fetchUsers}
+                  locationNames={(userLocs[u.uid] || []).map(id => locNames[id] || id)}
                 />
               ))}
             </tbody>
@@ -154,3 +179,4 @@ export default function UsersTab() {
     </div>
   );
 }
+ENDOFFILE
