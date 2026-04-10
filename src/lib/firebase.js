@@ -1,6 +1,7 @@
 import { initializeApp } from 'firebase/app'
 import { getFunctions, httpsCallable } from 'firebase/functions'
 import { getAuth, signInWithCustomToken, signOut as firebaseSignOut } from 'firebase/auth'
+import { getStorage } from 'firebase/storage'
 import { getFirestore, doc, getDoc, setDoc, collection, query, where, getDocs, onSnapshot } from 'firebase/firestore'
 
 const firebaseConfig = {
@@ -16,6 +17,7 @@ const app = initializeApp(firebaseConfig)
 export const db = getFirestore(app)
 export const functions = getFunctions(app)
 export const auth = getAuth(app)
+export const storage = getStorage(app)
 
 // ── Firebase Auth with Cognito Token ──────────────────────────
 

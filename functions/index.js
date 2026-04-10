@@ -543,3 +543,203 @@ exports.revokeAPIKey = onCall(async (request) => {
 
   return { success: true };
 });
+
+
+// ============================================================
+// SCHEDULED: process scheduled invoice payments
+// Runs every hour. Finds invoices where scheduledPaymentDate <= today
+// and flips them from Approved to Paid, writing to the P&L.
+// ============================================================
+exports.processScheduledPayments = onSchedule("every 60 minutes", async () => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayISO = today.toISOString().slice(0, 10);
+
+  console.log(`Running scheduled payment processor for ${todayISO}`);
+
+  // Find all tenants
+  const tenantsSnap = await db.collection("tenants").get();
+
+  for (const tenantDoc of tenantsSnap.docs) {
+    const orgId = tenantDoc.id;
+
+    // Find invoices scheduled for today or earlier that are still Approved
+    const invoicesSnap = await db
+      .collection("tenants").doc(orgId)
+      .collection("invoices")
+      .where("status", "==", "Approved")
+      .where("scheduledPaymentDate", "<=", todayISO)
+      .get();
+
+    if (invoicesSnap.empty) continue;
+
+    console.log(`Found ${invoicesSnap.size} scheduled invoices to process for ${orgId}`);
+
+    for (const invDoc of invoicesSnap.docs) {
+      const inv = invDoc.data();
+      try {
+        await invDoc.ref.update({
+          status: "Paid",
+          amountPaid: inv.amount,
+          paidBy: "scheduled-payment-processor",
+          paidAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          syncStatus: null,
+          scheduledPaymentDate: admin.firestore.FieldValue.delete(),
+        });
+
+        // Write to audit log — this uses a 'system' actor since there's no user
+        await writeAuditLog(orgId,
+          { uid: "system", email: "scheduled-payment-processor@aurelia-fms", displayName: "Scheduled Payment Processor", ip: null, userAgent: null },
+          "invoice.auto_paid",
+          { type: "invoice", id: invDoc.id },
+          { status: "Approved", scheduledPaymentDate: inv.scheduledPaymentDate },
+          { status: "Paid", paidAt: todayISO }
+        );
+
+        console.log(`Auto-paid invoice ${invDoc.id} (${inv.vendor} · $${inv.amount})`);
+      } catch (e) {
+        console.error(`Failed to auto-pay invoice ${invDoc.id}:`, e);
+      }
+    }
+  }
+
+  console.log("Scheduled payment processor finished");
+});
+
+
+// ============================================================
+// SCHEDULED: process recurring invoices
+// Runs daily. Finds invoices with recurrence.nextDate <= today
+// and creates a new invoice copy with the next scheduled date.
+// ============================================================
+exports.processRecurringInvoices = onSchedule("every 24 hours", async () => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayISO = today.toISOString().slice(0, 10);
+
+  console.log(`Running recurring invoice processor for ${todayISO}`);
+
+  const tenantsSnap = await db.collection("tenants").get();
+
+  for (const tenantDoc of tenantsSnap.docs) {
+    const orgId = tenantDoc.id;
+
+    // Find invoices with recurrence.nextDate <= today that are still active
+    const invoicesSnap = await db
+      .collection("tenants").doc(orgId)
+      .collection("invoices")
+      .where("recurrence.active", "==", true)
+      .where("recurrence.nextDate", "<=", todayISO)
+      .get();
+
+    if (invoicesSnap.empty) continue;
+
+    console.log(`Found ${invoicesSnap.size} recurring invoices to process for ${orgId}`);
+
+    for (const invDoc of invoicesSnap.docs) {
+      const parent = invDoc.data();
+      try {
+        // Compute next date based on frequency
+        const nextDate = computeNextRecurrenceDate(parent.recurrence.nextDate, parent.recurrence.frequency);
+        const endDate = parent.recurrence.endDate;
+
+        // Check if we've passed the end date
+        const shouldContinue = !endDate || nextDate <= endDate;
+
+        // Create the new child invoice (Pending status — requires human approval each cycle)
+        const childData = {
+          vendor: parent.vendor,
+          vendorId: parent.vendorId,
+          invoiceNum: `${parent.invoiceNum || 'REC'}-${parent.recurrence.nextDate}`,
+          amount: parent.amount,
+          amountPaid: 0,
+          invoiceDate: parent.recurrence.nextDate,
+          dueDate: parent.dueDate ? addDaysToDate(parent.recurrence.nextDate, daysBetween(parent.invoiceDate, parent.dueDate)) : null,
+          glCode: parent.glCode || '',
+          location: parent.location || '',
+          periodKey: computePeriodKey(parent.recurrence.nextDate),
+          notes: parent.notes || '',
+          status: 'Pending',
+          syncStatus: null,
+          poNumber: parent.poNumber || '',
+          recurrence: null,
+          parentRecurringId: invDoc.id,
+          createdBy: 'recurring-invoice-processor',
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+
+        const childRef = await db
+          .collection("tenants").doc(orgId)
+          .collection("invoices")
+          .add(childData);
+
+        // Update the parent: advance nextDate, or deactivate if past endDate
+        if (shouldContinue) {
+          await invDoc.ref.update({
+            "recurrence.nextDate": nextDate,
+            "recurrence.lastGeneratedAt": admin.firestore.FieldValue.serverTimestamp(),
+            "recurrence.lastGeneratedId": childRef.id,
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        } else {
+          await invDoc.ref.update({
+            "recurrence.active": false,
+            "recurrence.endedAt": admin.firestore.FieldValue.serverTimestamp(),
+            "recurrence.endReason": "reached end date",
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        }
+
+        await writeAuditLog(orgId,
+          { uid: "system", email: "recurring-invoice-processor@aurelia-fms", displayName: "Recurring Invoice Processor", ip: null, userAgent: null },
+          "invoice.recurring_generated",
+          { type: "invoice", id: childRef.id },
+          null,
+          { parentId: invDoc.id, amount: parent.amount, vendor: parent.vendor }
+        );
+
+        console.log(`Generated recurring invoice ${childRef.id} from parent ${invDoc.id}`);
+      } catch (e) {
+        console.error(`Failed to process recurring invoice ${invDoc.id}:`, e);
+      }
+    }
+  }
+
+  console.log("Recurring invoice processor finished");
+});
+
+// Helper: compute next recurrence date based on frequency
+function computeNextRecurrenceDate(currentDate, frequency) {
+  const d = new Date(currentDate + "T00:00:00");
+  switch (frequency) {
+    case "weekly":    d.setDate(d.getDate() + 7); break;
+    case "biweekly":  d.setDate(d.getDate() + 14); break;
+    case "monthly":   d.setMonth(d.getMonth() + 1); break;
+    case "quarterly": d.setMonth(d.getMonth() + 3); break;
+    case "yearly":    d.setFullYear(d.getFullYear() + 1); break;
+    default:          d.setMonth(d.getMonth() + 1); // default to monthly
+  }
+  return d.toISOString().slice(0, 10);
+}
+
+function daysBetween(d1, d2) {
+  if (!d1 || !d2) return 0;
+  return Math.round((new Date(d2) - new Date(d1)) / 86400000);
+}
+
+function addDaysToDate(dateStr, days) {
+  const d = new Date(dateStr + "T00:00:00");
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function computePeriodKey(dateStr) {
+  // YYYY-PMM-WN format
+  const d = new Date(dateStr + "T00:00:00");
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const weekOfMonth = Math.ceil(d.getDate() / 7);
+  return `${year}-P${month}-W${weekOfMonth}`;
+}
