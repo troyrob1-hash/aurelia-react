@@ -271,6 +271,8 @@ exports.deactivateUser = onCall(async (request) => {
     active: false, deactivatedAt: now, deactivatedBy: callerUid, updatedAt: now,
   });
 
+  await admin.auth().revokeRefreshTokens(targetUid);
+
   const caller = callerSnap.data();
   await writeAuditLog(orgId,
     { uid: callerUid, email: caller.email, displayName: caller.displayName, ip: null, userAgent: null },
