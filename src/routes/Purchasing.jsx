@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef, Fragment } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { useToast } from '@/components/ui/Toast'
@@ -86,6 +86,7 @@ export default function Purchasing() {
   const [spendTrend,    setSpendTrend]    = useState([])
   const [isDragging,    setIsDragging]    = useState(false)
   const [backfillMode,  setBackfillMode]  = useState(false)
+  const [expandedInvoice, setExpandedInvoice] = useState(null)
   const fileRef = useRef()
 
   const location   = selectedLocation === 'all' ? null : selectedLocation
@@ -762,45 +763,118 @@ export default function Purchasing() {
                       const meta        = STATUS_META[inv.status] || STATUS_META.Pending
                       const daysOverdue = inv.dueDate ? Math.floor((new Date() - new Date(inv.dueDate)) / 86400000) : 0
                       const needsDirector = inv.amount >= APPROVAL_THRESHOLD
+                      const isExpanded = expandedInvoice === inv.id
+                      const fmtTs = (ts) => {
+                        if (!ts) return null
+                        const d = ts.toDate ? ts.toDate() : new Date(ts)
+                        return d.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })
+                      }
                       return (
-                        <tr key={inv.id}>
-                          <td className={styles.invNum}>{inv.invoiceNum || '—'}</td>
-                          <td className={styles.muted}>{inv.invoiceDate}</td>
-                          <td>
-                            <span style={{ color: daysOverdue > 0 && inv.status !== 'Paid' ? '#dc2626' : 'inherit' }}>
-                              {inv.dueDate || '—'}
-                              {daysOverdue > 0 && inv.status !== 'Paid' && <span className={styles.overdueBadge}>+{daysOverdue}d</span>}
-                            </span>
-                          </td>
-                          <td className={styles.amtCell}>{fmt$(inv.amount || 0)}</td>
-                          <td style={{ color: '#059669' }}>{fmt$(inv.amountPaid || 0)}</td>
-                          <td style={{ fontWeight: 700, color: balance > 0 ? '#dc2626' : '#059669' }}>{fmt$(balance)}</td>
-                          <td className={styles.glCell}>{inv.glCode || '—'}</td>
-                          <td className={styles.muted}>{inv.poNumber || '—'}</td>
-                          <td>
-                            <span className={styles.statusBadge} style={{ background: meta.bg, color: meta.color, border: `1px solid ${meta.border}` }}>
-                              {inv.status}
-                            </span>
-                          </td>
-                          <td>
-                            <div className={styles.actionRow}>
-                              {inv.status === 'Pending' && isDirector && (
-                                <button className={styles.btnApprove} onClick={() => approve(inv.id)}>
-                                  <CheckCircle size={12} /> Approve
+                        <Fragment key={inv.id}>
+                          <tr>
+                            <td className={styles.invNum}>{inv.invoiceNum || '—'}</td>
+                            <td className={styles.muted}>{inv.invoiceDate}</td>
+                            <td>
+                              <span style={{ color: daysOverdue > 0 && inv.status !== 'Paid' ? '#dc2626' : 'inherit' }}>
+                                {inv.dueDate || '—'}
+                                {daysOverdue > 0 && inv.status !== 'Paid' && <span className={styles.overdueBadge}>+{daysOverdue}d</span>}
+                              </span>
+                            </td>
+                            <td className={styles.amtCell}>{fmt$(inv.amount || 0)}</td>
+                            <td style={{ color: '#059669' }}>{fmt$(inv.amountPaid || 0)}</td>
+                            <td style={{ fontWeight: 700, color: balance > 0 ? '#dc2626' : '#059669' }}>{fmt$(balance)}</td>
+                            <td className={styles.glCell}>{inv.glCode || '—'}</td>
+                            <td className={styles.muted}>{inv.poNumber || '—'}</td>
+                            <td>
+                              <span className={styles.statusBadge} style={{ background: meta.bg, color: meta.color, border: `1px solid ${meta.border}` }}>
+                                {inv.status}
+                              </span>
+                            </td>
+                            <td>
+                              <div className={styles.actionRow}>
+                                {inv.status === 'Pending' && isDirector && (
+                                  <button className={styles.btnApprove} onClick={() => approve(inv.id)}>
+                                    <CheckCircle size={12} /> Approve
+                                  </button>
+                                )}
+                                {inv.status === 'Pending' && !isDirector && needsDirector && (
+                                  <span className={styles.awaitingTag}>Awaiting director</span>
+                                )}
+                                {inv.status === 'Approved' && (
+                                  <button className={styles.btnPay} onClick={() => markPaid(inv.id)}>
+                                    <CheckCircle size={12} /> Pay
+                                  </button>
+                                )}
+                                <button className={styles.btnEdit} onClick={() => handleEdit(inv)}>Edit</button>
+                                <button
+                                  className={styles.btnEdit}
+                                  onClick={() => setExpandedInvoice(p => p === inv.id ? null : inv.id)}
+                                  title="View approval chain"
+                                  style={{ padding: '4px 8px' }}
+                                >
+                                  {isExpanded ? '▲' : '▼'}
                                 </button>
-                              )}
-                              {inv.status === 'Pending' && !isDirector && needsDirector && (
-                                <span className={styles.awaitingTag}>Awaiting director</span>
-                              )}
-                              {inv.status === 'Approved' && (
-                                <button className={styles.btnPay} onClick={() => markPaid(inv.id)}>
-                                  <CheckCircle size={12} /> Pay
-                                </button>
-                              )}
-                              <button className={styles.btnEdit} onClick={() => handleEdit(inv)}>Edit</button>
-                            </div>
-                          </td>
-                        </tr>
+                              </div>
+                            </td>
+                          </tr>
+                          {isExpanded && (
+                            <tr>
+                              <td colSpan={10} style={{ background: '#f8fafc', padding: '16px 20px', borderBottom: '1px solid #e2e8f0' }}>
+                                <div style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', color: '#64748b', marginBottom: 12 }}>
+                                  Approval Chain
+                                </div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                  {inv.createdBy && (
+                                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: 12 }}>
+                                      <div style={{ width: 22, height: 22, borderRadius: '50%', background: '#dbeafe', color: '#1e40af', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 600, flexShrink: 0 }}>1</div>
+                                      <div style={{ flex: 1 }}>
+                                        <div style={{ color: '#0f172a', fontWeight: 500 }}>Submitted by {inv.createdBy}</div>
+                                        <div style={{ color: '#64748b', fontSize: 11, marginTop: 2 }}>{fmtTs(inv.createdAt) || '—'}</div>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {inv.approvedBy ? (
+                                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: 12 }}>
+                                      <div style={{ width: 22, height: 22, borderRadius: '50%', background: '#dcfce7', color: '#166534', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 600, flexShrink: 0 }}>2</div>
+                                      <div style={{ flex: 1 }}>
+                                        <div style={{ color: '#0f172a', fontWeight: 500 }}>Approved by {inv.approvedBy}</div>
+                                        <div style={{ color: '#64748b', fontSize: 11, marginTop: 2 }}>{fmtTs(inv.approvedAt) || '—'}</div>
+                                      </div>
+                                    </div>
+                                  ) : inv.status === 'Pending' && (
+                                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: 12 }}>
+                                      <div style={{ width: 22, height: 22, borderRadius: '50%', background: '#fef3c7', color: '#854d0e', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 600, flexShrink: 0 }}>2</div>
+                                      <div style={{ flex: 1 }}>
+                                        <div style={{ color: '#64748b', fontStyle: 'italic' }}>Awaiting approval{needsDirector ? ' (director required)' : ''}</div>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {inv.paidBy ? (
+                                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: 12 }}>
+                                      <div style={{ width: 22, height: 22, borderRadius: '50%', background: '#dcfce7', color: '#166534', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 600, flexShrink: 0 }}>3</div>
+                                      <div style={{ flex: 1 }}>
+                                        <div style={{ color: '#0f172a', fontWeight: 500 }}>Paid by {inv.paidBy}</div>
+                                        <div style={{ color: '#64748b', fontSize: 11, marginTop: 2 }}>{fmtTs(inv.paidAt) || '—'}</div>
+                                      </div>
+                                    </div>
+                                  ) : inv.status === 'Approved' && (
+                                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: 12 }}>
+                                      <div style={{ width: 22, height: 22, borderRadius: '50%', background: '#fef3c7', color: '#854d0e', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 600, flexShrink: 0 }}>3</div>
+                                      <div style={{ flex: 1 }}>
+                                        <div style={{ color: '#64748b', fontStyle: 'italic' }}>Awaiting payment</div>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {inv.updatedBy && inv.updatedBy !== inv.createdBy && (
+                                    <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4, paddingTop: 8, borderTop: '1px solid #e2e8f0' }}>
+                                      Last edited by {inv.updatedBy} · {fmtTs(inv.updatedAt) || '—'}
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
                       )
                     })}
                   </tbody>
