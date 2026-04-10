@@ -84,10 +84,12 @@ export default function Purchasing() {
   const [dupWarning,    setDupWarning]    = useState(null)
   const [spendTrend,    setSpendTrend]    = useState([])
   const [isDragging,    setIsDragging]    = useState(false)
+  const [backfillMode,  setBackfillMode]  = useState(false)
   const fileRef = useRef()
 
   const location   = selectedLocation === 'all' ? null : selectedLocation
-  const isDirector = user?.role === 'Admin' || user?.role === 'Director'
+  const isDirector = user?.role === 'admin' || user?.role === 'director'
+  const isAdmin    = user?.role === 'admin'
 
   useEffect(() => { loadAll() }, [selectedLocation, periodKey])
 
@@ -159,11 +161,11 @@ export default function Purchasing() {
     return dup || null
   }
 
-  async function handleSave(e) {
+  async function handleSave(e, skipDupCheck = false) {
     e.preventDefault()
     // Duplicate check
     const dup = checkDuplicate(form)
-    if (dup && !dupWarning) {
+    if (dup && !skipDupCheck) {
       setDupWarning(`Possible duplicate: ${fmt$(dup.amount)} from same vendor on ${dup.invoiceDate}. Save anyway?`)
       return
     }
@@ -188,6 +190,7 @@ export default function Purchasing() {
       } else {
         entry.createdBy = user?.name || user?.email
         entry.createdAt = serverTimestamp()
+        entry.syncStatus = null  // ready for external sync (e.g. NetSuite)
         const ref = await addDoc(collection(db, 'tenants', orgId, 'invoices'), entry)
         setInvoices(prev => [{ id: ref.id, ...entry }, ...prev])
         toast.success('Invoice added — pending approval')
@@ -208,17 +211,39 @@ export default function Purchasing() {
 
   async function markPaid(id) {
     const inv = invoices.find(i => i.id === id)
+    if (!inv) return
+
+    // Update the invoice to Paid status
     await updateDoc(doc(db, 'tenants', orgId, 'invoices', id), {
-      status: 'Paid', amountPaid: inv.amount,
-      paidBy: user?.name || user?.email, paidAt: serverTimestamp(), updatedAt: serverTimestamp()
+      status: 'Paid',
+      amountPaid: inv.amount,
+      paidBy: user?.name || user?.email,
+      paidAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      syncStatus: null,  // ready for external sync (e.g. NetSuite) — see INTEGRATIONS_ARCHITECTURE.md
     })
-    // Write to P&L — only paid invoices post
-    const paidInvoices = invoices.filter(i => (i.status === 'Paid' || i.id === id) && i.periodKey === periodKey)
-    const invoiceTotal = paidInvoices.reduce((s, i) => s + (i.amount || 0), 0) + (inv.status !== 'Paid' ? inv.amount : 0)
-    const paidTotal    = invoiceTotal
-    await writePurchasingPnL(inv.location || location || 'all', inv.periodKey || periodKey, {
-      invoiceTotal, paidTotal, pendingTotal: 0,
+
+    // Recalculate P&L totals for the invoice's own period (not the current period — they may differ)
+    const targetPeriod = inv.periodKey || periodKey
+    const targetLocation = inv.location || location || 'all'
+
+    // Build the period's invoice list AS IF this invoice were already paid (no double-counting)
+    const periodInvoices = invoices
+      .filter(i => i.periodKey === targetPeriod && i.status !== 'Void')
+      .map(i => i.id === id ? { ...i, status: 'Paid', amountPaid: inv.amount } : i)
+
+    const invoiceTotal = periodInvoices.reduce((s, i) => s + (i.amount || 0), 0)
+    const paidTotal    = periodInvoices.filter(i => i.status === 'Paid').reduce((s, i) => s + (i.amount || 0), 0)
+    const pendingTotal = periodInvoices.filter(i => i.status === 'Pending' || i.status === 'Approved').reduce((s, i) => s + (i.amount || 0), 0)
+
+    await writePurchasingPnL(targetLocation, targetPeriod, {
+      invoiceTotal, paidTotal, pendingTotal,
     })
+
+    // EXTENSION POINT: post-payment hooks (NetSuite sync, notifications, etc.)
+    // See INTEGRATIONS_ARCHITECTURE.md section 2 for the NetSuite integration plan.
+    // Implementation pattern: Cloud Function trigger on this invoice doc's status change to 'Paid'.
+
     setInvoices(prev => prev.map(i => i.id === id ? { ...i, status: 'Paid', amountPaid: i.amount } : i))
     toast.success('Marked as paid — P&L updated')
   }
@@ -260,10 +285,16 @@ export default function Purchasing() {
           dueDate:     row['Due Date'] || row['due_date'] || '',
           amount,
           amountPaid:  parseFloat(row['Paid'] || 0),
-          status:      row['Status'] || 'Pending',
+          // Status validation: only admins in backfill mode can preserve CSV-provided statuses.
+          // All other imports are forced to 'Pending' to prevent bypass of the approval workflow.
+          // EXTENSION POINT: invoices created via the future Order Hub → Purchasing flow
+          // will run through a Cloud Function with admin credentials and bypass this validation.
+          // See INTEGRATIONS_ARCHITECTURE.md section 1.
+          status:      (isAdmin && backfillMode && row['Status']) ? row['Status'] : 'Pending',
           location:    row['Location'] || location || '',
           periodKey,
           notes:       row['Notes'] || '',
+          syncStatus:  null,  // ready for external sync (e.g. NetSuite)
           createdBy:   user?.name || user?.email,
           createdAt:   serverTimestamp(),
           updatedAt:   serverTimestamp(),
@@ -402,6 +433,12 @@ export default function Purchasing() {
             <Upload size={13} /> Import
             <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }} onChange={handleImport} />
           </label>
+          {isAdmin && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#6b7280', cursor: 'pointer', padding: '0 8px' }} title="Admin only: preserve original statuses from CSV (for historical backfill). When off, all imports are forced to Pending.">
+              <input type="checkbox" checked={backfillMode} onChange={e => setBackfillMode(e.target.checked)} style={{ width: 13, height: 13 }} />
+              Backfill mode
+            </label>
+          )}
           <button className={styles.btnPrimary} onClick={() => { setForm({ ...EMPTY_FORM, location: location || '', periodKey }); setEditId(null); setShowForm(v => !v) }}>
             <Plus size={15} /> Add Invoice
           </button>
@@ -481,7 +518,7 @@ export default function Purchasing() {
         <div className={styles.dupWarning}>
           <AlertCircle size={14} />
           <span>{dupWarning}</span>
-          <button className={styles.btnDupConfirm} onClick={() => { setDupWarning(null); handleSave({ preventDefault: () => {} }) }}>Save Anyway</button>
+          <button className={styles.btnDupConfirm} onClick={() => { setDupWarning(null); handleSave({ preventDefault: () => {} }, true) }}>Save Anyway</button>
           <button className={styles.btnDupCancel} onClick={() => setDupWarning(null)}>Cancel</button>
         </div>
       )}
@@ -611,8 +648,23 @@ export default function Purchasing() {
                           <div className={styles.kanbanAmt}>{fmt$(inv.amount)}</div>
                         </div>
                         {inv.glCode && <div className={styles.kanbanGL}>GL {inv.glCode}</div>}
-                        {daysOverdue > 0 && status !== 'Paid' && (
-                          <div className={styles.kanbanOverdue}>+{daysOverdue}d overdue</div>
+                        {inv.dueDate && (
+                          <div className={styles.kanbanDue} style={{
+                            fontSize: 10,
+                            color: daysOverdue > 0 && status !== 'Paid' ? '#dc2626' : daysOverdue >= -3 && status !== 'Paid' ? '#d97706' : '#6b7280',
+                            marginTop: 4,
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 4,
+                          }}>
+                            <span>Due {new Date(inv.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+                            {status !== 'Paid' && daysOverdue > 0 && (
+                              <span style={{ fontWeight: 600 }}>· +{daysOverdue}d overdue</span>
+                            )}
+                            {status !== 'Paid' && daysOverdue <= 0 && daysOverdue >= -3 && (
+                              <span style={{ fontWeight: 600 }}>· due in {Math.abs(daysOverdue)}d</span>
+                            )}
+                          </div>
                         )}
                         <div className={styles.kanbanCardFooter}>
                           {status === 'Pending' && isDirector && (
