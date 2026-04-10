@@ -12,6 +12,8 @@ import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from 'fi
 import { Plus, Download, Search, CheckCircle, AlertCircle, Upload, TrendingUp, TrendingDown, Paperclip, FileText, Image as ImageIcon, Trash2 } from 'lucide-react'
 import { writePurchasingPnL } from '@/lib/pnl'
 import Breadcrumb from '@/components/ui/Breadcrumb'
+import { useDragDropUpload } from '@/hooks/useDragDropUpload'
+import DropZoneOverlay from '@/components/ui/DropZoneOverlay'
 import styles from './Purchasing.module.css'
 
 // ── Fallback vendors — overridden by Firestore per org ───────
@@ -85,7 +87,6 @@ export default function Purchasing() {
   const [expandVendor,  setExpandVendor]  = useState({})
   const [dupWarning,    setDupWarning]    = useState(null)
   const [spendTrend,    setSpendTrend]    = useState([])
-  const [isDragging,    setIsDragging]    = useState(false)
   const [backfillMode,  setBackfillMode]  = useState(false)
   const [expandedInvoice, setExpandedInvoice] = useState(null)
   const [showImportModal, setShowImportModal] = useState(false)
@@ -106,6 +107,14 @@ export default function Purchasing() {
   const location   = selectedLocation === 'all' ? null : selectedLocation
   const isDirector = user?.role === 'admin' || user?.role === 'director'
   const isAdmin    = user?.role === 'admin'
+
+  // Drag-and-drop file upload (shared hook handles enter/leave counting,
+  // escape-to-dismiss, and drag-end cleanup)
+  const { isDragging, dragHandlers, dismiss: dismissDropZone } = useDragDropUpload({
+    acceptedExtensions: ['.xlsx', '.xls', '.csv'],
+    onFile: async (file) => { await processInvoiceFile(file, false) },
+    onInvalidFile: () => toast.error('Please drop a .xlsx, .xls, or .csv file'),
+  })
 
   useEffect(() => { loadAll() }, [selectedLocation, periodKey])
 
@@ -342,33 +351,6 @@ export default function Purchasing() {
     const file = pendingImportFile
     setPendingImportFile(null)
     if (file) await processInvoiceFile(file, useBackfillMode)
-  }
-
-  function handleDragOver(e) {
-    e.preventDefault()
-    e.stopPropagation()
-    if (!isDragging) setIsDragging(true)
-  }
-
-  function handleDragLeave(e) {
-    e.preventDefault()
-    e.stopPropagation()
-    if (e.currentTarget === e.target) setIsDragging(false)
-  }
-
-  async function handleDrop(e) {
-    e.preventDefault()
-    e.stopPropagation()
-    setIsDragging(false)
-    const file = e.dataTransfer.files?.[0]
-    if (!file) return
-    const validExts = ['.xlsx', '.xls', '.csv']
-    const isValid = validExts.some(ext => file.name.toLowerCase().endsWith(ext))
-    if (!isValid) {
-      toast.error('Please drop a .xlsx, .xls, or .csv file')
-      return
-    }
-    await processInvoiceFile(file, false)  // drag-drop always uses standard mode
   }
 
   function exportCSV() {
@@ -789,10 +771,15 @@ export default function Purchasing() {
   return (
     <div
       className={styles.page}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
+      {...dragHandlers}
     >
+      {isDragging && (
+        <DropZoneOverlay
+          title="Drop invoice file here"
+          subtitle="Accepts .xlsx, .xls, or .csv"
+          onClose={dismissDropZone}
+        />
+      )}
 
       {/* ── Header ── */}
       <div className={styles.header}>

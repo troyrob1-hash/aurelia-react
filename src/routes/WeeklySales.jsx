@@ -1,16 +1,42 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { db } from '@/lib/firebase'
-import { doc, getDoc, setDoc, addDoc, updateDoc, collection, query, where, orderBy, limit, getDocs, serverTimestamp } from 'firebase/firestore'
+import { doc, getDoc, setDoc, addDoc, updateDoc, collection, query, where, orderBy, limit, getDocs, serverTimestamp, writeBatch } from 'firebase/firestore'
 import { Download, Upload, CheckCircle, Clock, AlertCircle, TrendingUp, TrendingDown } from 'lucide-react'
 import { useToast } from '@/components/ui/Toast'
 import { usePeriod } from '@/store/PeriodContext'
 import { writeSalesPnL } from '@/lib/pnl'
+import Breadcrumb from '@/components/ui/Breadcrumb'
+import { useDragDropUpload } from '@/hooks/useDragDropUpload'
+import DropZoneOverlay from '@/components/ui/DropZoneOverlay'
+import {
+  ResponsiveContainer, ComposedChart, Area, Line, ReferenceLine,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+} from 'recharts'
 import styles from './WeeklySales.module.css'
 
-const TENANT = 'fooda'
-const DAYS   = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']
+// Full list of weekday names — used for iterating over a week. Individual
+// locations can customize which days they operate via the operatingDays
+// field on their location doc (falls back to Mon-Fri if unset).
+const DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']
+const DAY_ABBR = { Monday: 'Mon', Tuesday: 'Tue', Wednesday: 'Wed', Thursday: 'Thu', Friday: 'Fri', Saturday: 'Sat', Sunday: 'Sun' }
+const DEFAULT_OPERATING_DAYS = ['Mon','Tue','Wed','Thu','Fri']
+
+/**
+ * Returns the list of weekday abbreviations this location operates on.
+ * Reads from the location config if present, otherwise returns the default.
+ *
+ * NOTE: Location configs currently live at tenants/{orgId}/legacy/inv_locs
+ * as part of a single document's `value` map. This is tracked in FOLLOWUPS.md
+ * under "reconcile locations two-path split" — post-pilot migration to
+ * proper subcollection.
+ */
+function getOperatingDays(locationData) {
+  const days = locationData?.operatingDays
+  if (Array.isArray(days) && days.length > 0) return days
+  return DEFAULT_OPERATING_DAYS
+}
 
 const CATS = [
   { key: 'popup',    label: 'Popup',    color: '#059669' },
@@ -43,7 +69,7 @@ function getYoYKey(key) {
 export default function WeeklySales() {
   const { user }             = useAuthStore()
   const orgId                = user?.tenantId || 'fooda'
-  const { selectedLocation, visibleLocations } = useLocations()
+  const { selectedLocation, visibleLocations, currentLocation } = useLocations()
   const { year, period, week: weekNum, currentWeek, periodKey, prevWeek, nextWeek } = usePeriod()
   const toast                = useToast()
 
@@ -62,29 +88,49 @@ export default function WeeklySales() {
   const [submissionId,   setSubmissionId] = useState(null)
   const [showRejectModal, setShowRejectModal] = useState(false)
   const [rejectNote,   setRejectNote]   = useState(false)
+  const [approving, setApproving] = useState(false)
+  const [submissionEvents, setSubmissionEvents] = useState([])
+  const [rejectNoteFromDoc, setRejectNoteFromDoc] = useState('')
   const [anomalies,    setAnomalies]    = useState({})
   const [allLocData,   setAllLocData]   = useState([])
-  const [isDragging,   setIsDragging]   = useState(false)
+  const [historyChart, setHistoryChart] = useState([])  // trailing 12 weeks for chart
+
+  // Request counter to cancel stale loadData calls when user rapidly switches
+  // locations or weeks. Each loadData bumps this and captures its own ID;
+  // if the ID doesn't match by the time an await resolves, bail silently.
+  const loadRequestId = useRef(0)
+
+  // Drag-and-drop file upload (shared hook handles enter/leave counting,
+  // escape-to-dismiss, and drag-end cleanup)
+  const { isDragging, dragHandlers, dismiss: dismissDropZone } = useDragDropUpload({
+    acceptedExtensions: ['.xlsx', '.xls', '.csv'],
+    onFile: async (file) => { await processSalesFile(file) },
+    onInvalidFile: () => toast.error('Please drop a .xlsx, .xls, or .csv file'),
+  })
 
   const location = selectedLocation === 'all' ? null : selectedLocation
   const isAll    = selectedLocation === 'all'
-  const isDirector = user?.role === 'Admin' || user?.role === 'Director'
+  const isDirector = user?.role === 'admin' || user?.role === 'director'
 
   const week = useMemo(() => {
     if (!currentWeek) return null
     const start = currentWeek.start
     const end   = currentWeek.end
+    const operatingDays = getOperatingDays(currentLocation)
     return {
       weekKey: periodKey,
       label: `P${period} Wk ${weekNum} · ${start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`,
+      operatingDays,
       days: DAYS.map((name, i) => {
         const d = new Date(start)
         d.setDate(start.getDate() + i)
         d.setHours(12, 0, 0, 0)
-        return d <= end ? { name, date: d, key: d.toISOString().slice(0, 10) } : null
+        if (d > end) return null
+        if (!operatingDays.includes(DAY_ABBR[name])) return null
+        return { name, date: d, key: d.toISOString().slice(0, 10) }
       }).filter(Boolean)
     }
-  }, [currentWeek, periodKey, period, weekNum])
+  }, [currentWeek, periodKey, period, weekNum, currentLocation])
 
   const priorKey = getPriorKey(periodKey)
   const yoyKey   = getYoYKey(periodKey)
@@ -97,31 +143,43 @@ export default function WeeklySales() {
   }, [location, week?.weekKey, isAll])
 
   async function loadData() {
+    // Bump the request counter and capture this call's ID
+    const requestId = ++loadRequestId.current
+    const isStale = () => loadRequestId.current !== requestId
+
     setLoading(true)
+    // Reset all data state so a failed or empty load doesn't show stale data
+    // from a previously-viewed location. Without this, switching locations
+    // can display the wrong location's numbers in the "Prior Week" and "YoY"
+    // comparison columns until the new data loads.
+    setPriorEntries({})
+    setYoyEntries({})
+    setBudgetData({})
     try {
       const cfgSnap = await getDoc(doc(db, 'tenants', orgId, 'config', 'sales'))
       if (cfgSnap.exists()) setCommRate(cfgSnap.data().commissionRate || 0.18)
 
-      const ref  = doc(db, 'tenants', TENANT, 'locations', locId(location), 'sales', periodKey)
+      const ref  = doc(db, 'tenants', orgId, 'locations', locId(location), 'sales', periodKey)
       const snap = await getDoc(ref)
+      if (isStale()) return
       const data = snap.exists() ? (snap.data().entries || {}) : {}
       setEntries(data)
       setLastSaved(snap.exists() ? snap.data().updatedAt : null)
       setSavedBy(snap.exists() ? snap.data().updatedBy || '' : '')
 
       if (priorKey) {
-        const pRef  = doc(db, 'tenants', TENANT, 'locations', locId(location), 'sales', priorKey)
+        const pRef  = doc(db, 'tenants', orgId, 'locations', locId(location), 'sales', priorKey)
         const pSnap = await getDoc(pRef)
         setPriorEntries(pSnap.exists() ? (pSnap.data().entries || {}) : {})
       }
 
       if (yoyKey) {
-        const yRef  = doc(db, 'tenants', TENANT, 'locations', locId(location), 'sales', yoyKey)
+        const yRef  = doc(db, 'tenants', orgId, 'locations', locId(location), 'sales', yoyKey)
         const ySnap = await getDoc(yRef)
         setYoyEntries(ySnap.exists() ? (ySnap.data().entries || {}) : {})
       }
 
-      const bRef  = doc(db, 'tenants', TENANT, 'budgets', `${locId(location)}-${year}`)
+      const bRef  = doc(db, 'tenants', orgId, 'budgets', `${locId(location)}-${year}`)
       const bSnap = await getDoc(bRef)
       if (bSnap.exists()) {
         const months = bSnap.data().months || {}
@@ -134,7 +192,10 @@ export default function WeeklySales() {
         })
       }
 
+      if (isStale()) return  // user moved on; don't overwrite state
       await loadHistoryAndForecast(data)
+      if (isStale()) return
+      await loadHistoryChart()
 
       const q = query(
         collection(db, 'tenants', orgId, 'salesSubmissions'),
@@ -149,12 +210,21 @@ export default function WeeklySales() {
         const d = subSnap.docs[0].data()
         setSubmissionId(subSnap.docs[0].id)
         setApproval(d.status)
+        setSubmissionEvents(d.events || [])
+        setRejectNoteFromDoc(d.rejectNote || '')
       } else {
         setApproval(null)
         setSubmissionId(null)
+        setSubmissionEvents([])
+        setRejectNoteFromDoc('')
       }
 
-    } catch (e) { toast.error('Something went wrong loading sales data.') }
+    } catch (e) {
+      if (isStale()) return  // stale error, ignore
+      console.error('Failed to load sales data:', e)
+      toast.error('Failed to load sales data — ' + (e.message || 'unknown error'))
+    }
+    if (isStale()) return
     setLoading(false)
     setDirty(false)
   }
@@ -170,7 +240,7 @@ export default function WeeklySales() {
         const histMo   = d.getMonth() + 1
         const histKey  = `${histYear}-P${String(histMo).padStart(2,'0')}-W1`
         try {
-          const hRef  = doc(db, 'tenants', TENANT, 'locations', locId(location), 'sales', histKey)
+          const hRef  = doc(db, 'tenants', orgId, 'locations', locId(location), 'sales', histKey)
           const hSnap = await getDoc(hRef)
           if (hSnap.exists()) history[histKey] = hSnap.data().entries || {}
         } catch { /* skip */ }
@@ -226,28 +296,101 @@ export default function WeeklySales() {
         })
       })
       setAnomalies(flags)
-    } catch { /* non-critical */ }
+    } catch (e) { console.warn('Anomaly detection skipped:', e) }
+  }
+
+  // Load trailing 12 weeks of sales for the history chart.
+  // Returns data in shape: [{ weekKey, label, popup, catering, retail, total }, ...]
+  // ordered oldest to newest. Current week is always the last entry.
+  async function loadHistoryChart() {
+    if (!location || !week) return
+    try {
+      const weekKeys = []
+      let key = week.weekKey
+      weekKeys.unshift(key)
+      for (let i = 0; i < 11; i++) {
+        key = getPriorKey(key)
+        if (!key) break
+        weekKeys.unshift(key)
+      }
+
+      // Load all 12 weeks in parallel
+      const results = await Promise.all(weekKeys.map(async (wk) => {
+        try {
+          const ref = doc(db, 'tenants', orgId, 'locations', locId(location), 'sales', wk)
+          const snap = await getDoc(ref)
+          const entries = snap.exists() ? (snap.data().entries || {}) : {}
+          const totals = { popup: 0, catering: 0, retail: 0 }
+          Object.values(entries).forEach(day => {
+            CATS.forEach(c => {
+              totals[c.key] += parseFloat(day?.[c.key]) || 0
+            })
+          })
+          const parts = wk.match(/(\d+)-P(\d+)-W(\d+)/)
+          const label = parts ? `P${parts[2]}W${parts[3]}` : wk
+          return {
+            weekKey: wk,
+            label,
+            ...totals,
+            total: totals.popup + totals.catering + totals.retail,
+            isCurrent: wk === week.weekKey,
+          }
+        } catch {
+          return null
+        }
+      }))
+
+      setHistoryChart(results.filter(Boolean))
+    } catch (e) {
+      console.error('Failed to load sales history chart:', e)
+    }
   }
 
   async function loadAllLocations() {
     setLoading(true)
     try {
       const locNames = Object.keys(visibleLocations)
-      const results  = await Promise.all(locNames.map(async name => {
-        const ref  = doc(db, 'tenants', TENANT, 'locations', locId(name), 'sales', periodKey)
-        const snap = await getDoc(ref)
-        const entries = snap.exists() ? snap.data().entries || {} : {}
-        const total = Object.values(entries).reduce((s, d) =>
-          s + CATS.reduce((ss, c) => ss + (parseFloat(d[c.key] || 0)), 0), 0)
-        const priorRef  = doc(db, 'tenants', TENANT, 'locations', locId(name), 'sales', priorKey)
-        const priorSnap = await getDoc(priorRef)
-        const priorEntries = priorSnap.exists() ? priorSnap.data().entries || {} : {}
-        const priorTotal = Object.values(priorEntries).reduce((s, d) =>
-          s + CATS.reduce((ss, c) => ss + (parseFloat(d[c.key] || 0)), 0), 0)
-        return { name, total, priorTotal, hasData: total > 0 }
+
+      // Build the list of 8 prior week keys once (same for every location)
+      const weekKeys = [periodKey]
+      let k = periodKey
+      for (let i = 0; i < 7; i++) {
+        k = getPriorKey(k)
+        if (!k) break
+        weekKeys.unshift(k)
+      }
+
+      const results = await Promise.all(locNames.map(async name => {
+        // Fetch all 8 weeks for this location in parallel
+        const weekSnaps = await Promise.all(weekKeys.map(async wk => {
+          try {
+            const ref = doc(db, 'tenants', orgId, 'locations', locId(name), 'sales', wk)
+            const snap = await getDoc(ref)
+            const entries = snap.exists() ? (snap.data().entries || {}) : {}
+            const total = Object.values(entries).reduce((s, d) =>
+              s + CATS.reduce((ss, c) => ss + (parseFloat(d?.[c.key] || 0)), 0), 0)
+            return { weekKey: wk, total }
+          } catch {
+            return { weekKey: wk, total: 0 }
+          }
+        }))
+
+        // Current and prior week totals are derived from the sparkline data
+        const current = weekSnaps[weekSnaps.length - 1]
+        const prior   = weekSnaps[weekSnaps.length - 2]
+        const total      = current?.total || 0
+        const priorTotal = prior?.total || 0
+
+        return {
+          name,
+          total,
+          priorTotal,
+          hasData: total > 0,
+          sparkline: weekSnaps.map(w => w.total),
+        }
       }))
       setAllLocData(results.sort((a, b) => b.total - a.total))
-    } catch { toast.error('Failed to load location data.') }
+    } catch (e) { console.error('Failed to load location data:', e); toast.error('Failed to load location data — ' + (e.message || 'unknown')) }
     setLoading(false)
   }
 
@@ -259,70 +402,163 @@ export default function WeeklySales() {
     }
     setSaving(true)
     try {
-      const ref = doc(db, 'tenants', TENANT, 'locations', locId(location), 'sales', week.weekKey)
-      await setDoc(ref, {
+      // Atomic batch write: sales doc + submission doc succeed or fail together.
+      // Previously, a mid-save failure could leave orphaned sales data with no
+      // corresponding submission record, or vice versa.
+      const batch = writeBatch(db)
+
+      const salesRef = doc(db, 'tenants', orgId, 'locations', locId(location), 'sales', week.weekKey)
+      batch.set(salesRef, {
         entries,
         weekKey:   week.weekKey,
         location,
-        updatedAt: new Date().toISOString(),
+        updatedAt: serverTimestamp(),  // use server time for consistency with submission
         updatedBy: user?.name || user?.email || 'unknown',
       }, { merge: true })
+
+      const actor = user?.name || user?.email || 'unknown'
+      const now   = new Date().toISOString()
 
       const subData = {
         period:      periodKey,
         location,
         entries,
-        weekTotal:   weekTotal,
-        submittedBy: user?.name || user?.email,
+        weekTotal,
+        submittedBy: actor,
         status:      'pending',
-        createdAt:   serverTimestamp(),
+        updatedAt:   serverTimestamp(),
       }
+
+      let newSubmissionId = submissionId
       if (submissionId) {
-        await updateDoc(doc(db, 'tenants', orgId, 'salesSubmissions', submissionId), { ...subData, updatedAt: serverTimestamp() })
+        const subRef = doc(db, 'tenants', orgId, 'salesSubmissions', submissionId)
+        // On re-submission (after rejection or edit), append a 'resubmitted' event
+        const { arrayUnion } = await import('firebase/firestore')
+        batch.update(subRef, {
+          ...subData,
+          events: arrayUnion({
+            action: approvalStatus === 'rejected' ? 'resubmitted' : 'updated',
+            actor,
+            timestamp: now,
+            weekTotal,
+          }),
+        })
       } else {
-        const newRef = await addDoc(collection(db, 'tenants', orgId, 'salesSubmissions'), subData)
-        setSubmissionId(newRef.id)
+        // Create a new ref with an auto-generated ID so we can use batch.set()
+        const subRef = doc(collection(db, 'tenants', orgId, 'salesSubmissions'))
+        batch.set(subRef, {
+          ...subData,
+          createdAt: serverTimestamp(),
+          events: [{
+            action: 'submitted',
+            actor,
+            timestamp: now,
+            weekTotal,
+          }],
+        })
+        newSubmissionId = subRef.id
       }
+
+      await batch.commit()
+      if (!submissionId) setSubmissionId(newSubmissionId)
       setApproval('pending')
       toast.success('Sales saved — pending director approval before posting to P&L')
       setDirty(false)
       setLastSaved(new Date().toISOString())
       setSavedBy(user?.name || user?.email || '')
-    } catch { toast.error('Something went wrong. Please try again.') }
+    } catch (e) {
+      console.error('Save failed:', e)
+      toast.error('Save failed — ' + (e.message || 'Please try again.'))
+    }
     setSaving(false)
   }
 
   async function handleApprove() {
     if (!submissionId) return
+    // Confirm with the director before posting to P&L (destructive action)
+    const confirmMsg = `Approve this submission and post ${fmt$(weekTotal)} to the P&L?\n\nLocation: ${cleanLocName(location)}\nPeriod: ${periodKey}\n\nThis cannot be undone without manual P&L adjustment.`
+    if (!window.confirm(confirmMsg)) return
+    setApproving(true)
     try {
-      await updateDoc(doc(db, 'tenants', orgId, 'salesSubmissions', submissionId), {
+      // Read the submission from Firestore to get the ACTUAL submitted data,
+      // not whatever the director currently has on screen. This prevents
+      // a director from approving the wrong period by accident if they
+      // navigated to a different week while reviewing.
+      const subRef  = doc(db, 'tenants', orgId, 'salesSubmissions', submissionId)
+      const subSnap = await getDoc(subRef)
+      if (!subSnap.exists()) {
+        toast.error('Submission not found')
+        return
+      }
+      const submittedData = subSnap.data()
+
+      const { arrayUnion } = await import('firebase/firestore')
+      const actor = user?.name || user?.email || 'unknown'
+
+      // Mark the submission as approved and append an audit event
+      await updateDoc(subRef, {
         status:     'approved',
-        approvedBy: user?.name || user?.email,
+        approvedBy: actor,
         approvedAt: serverTimestamp(),
+        events: arrayUnion({
+          action: 'approved',
+          actor,
+          timestamp: new Date().toISOString(),
+          weekTotal: submittedData.weekTotal || 0,
+        }),
       })
-      const popup    = Object.values(entries).reduce((s, d) => s + (parseFloat(d?.popup)    || 0), 0)
-      const catering = Object.values(entries).reduce((s, d) => s + (parseFloat(d?.catering) || 0), 0)
-      const retail   = Object.values(entries).reduce((s, d) => s + (parseFloat(d?.retail)   || 0), 0)
-      await writeSalesPnL(location, periodKey, { retail, catering, popup })
+
+      // Compute totals from the SUBMITTED entries (not current state)
+      const subEntries = submittedData.entries || {}
+      const popup    = Object.values(subEntries).reduce((s, d) => s + (parseFloat(d?.popup)    || 0), 0)
+      const catering = Object.values(subEntries).reduce((s, d) => s + (parseFloat(d?.catering) || 0), 0)
+      const retail   = Object.values(subEntries).reduce((s, d) => s + (parseFloat(d?.retail)   || 0), 0)
+
+      // Post to P&L using the submitted location and period, not current state
+      await writeSalesPnL(
+        submittedData.location || location,
+        submittedData.period || periodKey,
+        { retail, catering, popup }
+      )
+
       setApproval('approved')
       toast.success('Sales approved and posted to P&L')
-    } catch { toast.error('Approval failed') }
+    } catch (e) {
+      console.error('Approval failed:', e)
+      toast.error('Approval failed — ' + (e.message || 'unknown error'))
+    } finally {
+      setApproving(false)
+    }
   }
 
   async function handleRejectConfirm() {
     if (!rejectNote?.trim()) { toast.error('Please enter a reason'); return }
+    if (!submissionId) { toast.error('No submission to reject'); return }
     try {
+      const { arrayUnion } = await import('firebase/firestore')
+      const actor = user?.name || user?.email || 'unknown'
+      const note = rejectNote.trim()
+
       await updateDoc(doc(db, 'tenants', orgId, 'salesSubmissions', submissionId), {
         status:     'rejected',
-        rejectedBy: user?.name || user?.email,
+        rejectedBy: actor,
         rejectedAt: serverTimestamp(),
-        rejectNote: rejectNote.trim(),
+        rejectNote: note,
+        events: arrayUnion({
+          action: 'rejected',
+          actor,
+          timestamp: new Date().toISOString(),
+          note,
+        }),
       })
       setApproval('rejected')
       setShowRejectModal(false)
       setRejectNote('')
       toast.success('Submission rejected')
-    } catch { toast.error('Action failed') }
+    } catch (e) {
+      console.error('Rejection failed:', e)
+      toast.error('Rejection failed — ' + (e.message || 'unknown error'))
+    }
   }
 
   function setVal(dateKey, cat, val) {
@@ -334,6 +570,97 @@ export default function WeeklySales() {
       [dateKey]: { ...(prev[dateKey] || {}), [cat]: num }
     }))
     setDirty(true)
+  }
+
+  // Keyboard navigation between entry cells.
+  // Arrow keys move to adjacent cells, Enter moves to the next row,
+  // Cmd/Ctrl+Enter saves the week.
+  function handleCellKeyDown(e, rowIdx, colIdx) {
+    const maxRows = week?.days.length || 0
+    const maxCols = CATS.length
+
+    const focusCell = (row, col) => {
+      const target = document.querySelector(`[data-entry-row="${row}"][data-entry-col="${col}"]`)
+      if (target) {
+        target.focus()
+        target.select()
+      }
+    }
+
+    if (e.key === 'ArrowDown' || (e.key === 'Enter' && !e.shiftKey && !e.metaKey && !e.ctrlKey)) {
+      e.preventDefault()
+      focusCell(Math.min(rowIdx + 1, maxRows - 1), colIdx)
+    } else if (e.key === 'ArrowUp' || (e.key === 'Enter' && e.shiftKey)) {
+      e.preventDefault()
+      focusCell(Math.max(rowIdx - 1, 0), colIdx)
+    } else if (e.key === 'ArrowRight' && e.currentTarget.selectionStart === e.currentTarget.value.length) {
+      e.preventDefault()
+      focusCell(rowIdx, Math.min(colIdx + 1, maxCols - 1))
+    } else if (e.key === 'ArrowLeft' && e.currentTarget.selectionStart === 0) {
+      e.preventDefault()
+      focusCell(rowIdx, Math.max(colIdx - 1, 0))
+    } else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault()
+      if (dirty && !saving) handleSave()
+    }
+  }
+
+  // Excel-style bulk paste: paste a grid of numbers (tab-separated cols,
+  // newline-separated rows) and fill the entry table starting from the
+  // focused cell. Parses clipboard text and writes all values in a single
+  // setState call for proper batching.
+  function handleCellPaste(e, rowIdx, colIdx) {
+    const text = e.clipboardData?.getData('text')
+    if (!text) return
+
+    // Parse the clipboard as a grid. Support tab, comma, or semicolon as
+    // column delimiters; newline as row delimiter.
+    const rows = text.trim().split(/\r?\n/).map(row => row.split(/[\t,;]/))
+
+    // If it's a single value, fall through to default paste behavior
+    if (rows.length === 1 && rows[0].length === 1) return
+
+    e.preventDefault()
+    if (approvalStatus === 'approved') {
+      toast.error('This period is locked. Contact a director to unlock.')
+      return
+    }
+
+    const maxRows = week?.days.length || 0
+    const maxCols = CATS.length
+    let cellsWritten = 0
+    let skipped = 0
+
+    setEntries(prev => {
+      const next = { ...prev }
+      rows.forEach((rowVals, rOffset) => {
+        const targetRow = rowIdx + rOffset
+        if (targetRow >= maxRows) return
+        const day = week.days[targetRow]
+        if (!day) return
+
+        rowVals.forEach((rawVal, cOffset) => {
+          const targetCol = colIdx + cOffset
+          if (targetCol >= maxCols) return
+          const cat = CATS[targetCol]
+          // Strip currency symbols and commas, then parse
+          const cleaned = rawVal.replace(/[$,\s]/g, '')
+          const num = parseFloat(cleaned)
+          if (isNaN(num) || num < 0) { skipped++; return }
+          if (num > 999999) { skipped++; return }
+          next[day.key] = { ...(next[day.key] || {}), [cat.key]: num }
+          cellsWritten++
+        })
+      })
+      return next
+    })
+
+    if (cellsWritten > 0) {
+      setDirty(true)
+      toast.success(`Pasted ${cellsWritten} value${cellsWritten !== 1 ? 's' : ''}${skipped > 0 ? ` (${skipped} skipped)` : ''}`)
+    } else if (skipped > 0) {
+      toast.error(`Paste failed — ${skipped} invalid values`)
+    }
   }
 
   function getVal(dateKey, cat) { return entries[dateKey]?.[cat] ?? '' }
@@ -362,7 +689,7 @@ export default function WeeklySales() {
       const ws        = wb.Sheets[sheetName]
       const rows      = XLSX.utils.sheet_to_json(ws, { raw: false, dateNF: 'yyyy-mm-dd' })
       parseSalesRows(rows)
-    } catch (err) {
+    } catch (err) { console.error("Sales import failed:", err);
       toast.error('Import failed. Try exporting as CSV from Excel first.')
     }
   }
@@ -371,33 +698,6 @@ export default function WeeklySales() {
     const file = e.target.files[0]
     await processSalesFile(file)
     e.target.value = ''
-  }
-
-  function handleDragOver(e) {
-    e.preventDefault()
-    e.stopPropagation()
-    if (!isDragging) setIsDragging(true)
-  }
-
-  function handleDragLeave(e) {
-    e.preventDefault()
-    e.stopPropagation()
-    if (e.currentTarget === e.target) setIsDragging(false)
-  }
-
-  async function handleDrop(e) {
-    e.preventDefault()
-    e.stopPropagation()
-    setIsDragging(false)
-    const file = e.dataTransfer.files?.[0]
-    if (!file) return
-    const validExts = ['.xlsx', '.xls', '.csv']
-    const isValid = validExts.some(ext => file.name.toLowerCase().endsWith(ext))
-    if (!isValid) {
-      toast.error('Please drop a .xlsx, .xls, or .csv file')
-      return
-    }
-    await processSalesFile(file)
   }
 
   function parseSalesRows(rows) {
@@ -414,7 +714,13 @@ export default function WeeklySales() {
       if (!dateVal) return
       const d = new Date(dateVal)
       if (isNaN(d)) return
-      const key = d.toISOString().slice(0, 10)
+      // Build the date key from LOCAL components, not UTC.
+      // toISOString() returns UTC which can shift the date by a day for users
+      // west of UTC when the source is a pure date string (Excel dates without time).
+      const yyyy = d.getFullYear()
+      const mm   = String(d.getMonth() + 1).padStart(2, '0')
+      const dd   = String(d.getDate()).padStart(2, '0')
+      const key  = `${yyyy}-${mm}-${dd}`
       if (!weekDates.has(key)) return
 
       const locName = (row['Location Name'] || '').toLowerCase()
@@ -430,12 +736,23 @@ export default function WeeklySales() {
 
     const total = Object.values(newEntries).reduce((s, d) => s + Object.values(d).reduce((ss, v) => ss + (v || 0), 0), 0)
     if (total === 0) {
-      toast.warning('No matching data found. Check that the location name matches.')
-    } else {
-      toast.success(`Imported ${fmt$(total)} in sales`)
-      setEntries(newEntries)
-      setDirty(true)
+      toast.error('No matching data found. Check that the location name matches.')
+      return
     }
+
+    // MERGE with existing entries instead of replacing them. The previous
+    // behavior destroyed manually-entered sales if the CSV didn't contain
+    // the same days/categories. Now we only update the specific (date, category)
+    // pairs that appear in the CSV, leaving everything else intact.
+    setEntries(prev => {
+      const merged = { ...prev }
+      Object.entries(newEntries).forEach(([dateKey, cats]) => {
+        merged[dateKey] = { ...(prev[dateKey] || {}), ...cats }
+      })
+      return merged
+    })
+    setDirty(true)
+    toast.success(`Imported ${fmt$(total)} in sales`)
   }
 
   function exportCSV() {
@@ -482,36 +799,6 @@ export default function WeeklySales() {
     pct:   weekTotal > 0 ? catTotals[c.key] / weekTotal : 0,
   }))
 
-  const dropOverlay = isDragging && (
-    <div style={{
-      position: 'fixed',
-      top: 0, left: 0, right: 0, bottom: 0,
-      background: 'rgba(15, 23, 42, 0.85)',
-      zIndex: 9999,
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      pointerEvents: 'none',
-    }}>
-      <div style={{
-        background: '#fff',
-        border: '3px dashed #F15D3B',
-        borderRadius: 16,
-        padding: '48px 64px',
-        textAlign: 'center',
-        maxWidth: 480,
-      }}>
-        <Upload size={48} style={{color:'#F15D3B',marginBottom:16}} />
-        <div style={{fontSize:20,fontWeight:600,color:'#0f172a',marginBottom:8}}>
-          Drop sales file here
-        </div>
-        <div style={{fontSize:14,color:'#6b7280'}}>
-          Accepts .xlsx, .xls, or .csv
-        </div>
-      </div>
-    </div>
-  )
-
   if (!location && !isAll) return (
     <div className={styles.empty}>
       <div className={styles.emptyIcon}><TrendingUp size={32} strokeWidth={1.5} /></div>
@@ -523,66 +810,199 @@ export default function WeeklySales() {
   if (!week) return <div className={styles.loading}>Loading...</div>
 
   if (isAll) {
-    const allTotal      = allLocData.reduce((s, l) => s + l.total, 0)
-    const allPriorTotal = allLocData.reduce((s, l) => s + l.priorTotal, 0)
+    const allTotal       = allLocData.reduce((s, l) => s + l.total, 0)
+    const allPriorTotal  = allLocData.reduce((s, l) => s + l.priorTotal, 0)
+    const reportingCount = allLocData.filter(l => l.hasData).length
+    const reportingPct   = allLocData.length > 0 ? (reportingCount / allLocData.length) * 100 : 0
+    const wowChange      = allPriorTotal > 0 ? pctChange(allTotal, allPriorTotal) : null
+    const topPerformers  = [...allLocData].filter(l => l.hasData && l.priorTotal > 0).sort((a, b) => {
+      const aChg = (a.total - a.priorTotal) / a.priorTotal
+      const bChg = (b.total - b.priorTotal) / b.priorTotal
+      return bChg - aChg
+    }).slice(0, 3)
+
+    // Mini sparkline renderer — a small SVG showing 8-week trend
+    const Sparkline = ({ data, color = '#1D9E75' }) => {
+      if (!data || data.length === 0) return null
+      const max = Math.max(...data, 1)
+      const min = Math.min(...data)
+      const range = max - min || 1
+      const w = 80
+      const h = 24
+      const points = data.map((v, i) => {
+        const x = (i / (data.length - 1)) * w
+        const y = h - ((v - min) / range) * h
+        return `${x},${y}`
+      }).join(' ')
+      return (
+        <svg width={w} height={h} style={{ display: 'block' }}>
+          <polyline
+            points={points}
+            fill="none"
+            stroke={color}
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <circle
+            cx={(data.length - 1) / (data.length - 1) * w}
+            cy={h - ((data[data.length - 1] - min) / range) * h}
+            r="2.5"
+            fill={color}
+          />
+        </svg>
+      )
+    }
+
     return (
       <div className={styles.page}>
+        {/* ── Header ── */}
         <div className={styles.header}>
-          <div>
-            <h1 className={styles.title}>Weekly Sales</h1>
-            <p className={styles.subtitle}>All Locations · {week.label}</p>
-          </div>
-        </div>
-        <div className={styles.kpiBar} style={{ gridTemplateColumns: 'repeat(3,1fr)' }}>
-          <div className={styles.kpiMain}>
-            <div className={styles.kpiMainLabel}>Total GFS</div>
-            <div className={styles.kpiMainVal}>{fmt$(allTotal)}</div>
-            {allPriorTotal > 0 && <div className={styles.kpiMainSub}>vs {fmt$(allPriorTotal)} prior week</div>}
-          </div>
-          <div className={styles.kpi}>
-            <div className={styles.kpiLabel}>vs Prior Week</div>
-            <div className={styles.kpiVal} style={{ color: weekVsLW != null ? (weekVsLW >= 0 ? '#059669' : '#dc2626') : undefined }}>
-              {allPriorTotal > 0 ? fmtPct(pctChange(allTotal, allPriorTotal)) : '—'}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <Breadcrumb items={['Revenue', 'Weekly Sales']} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 2, flexWrap: 'wrap' }}>
+              <h1 className={styles.title} style={{ margin: 0 }}>Weekly Sales</h1>
+              <span style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                padding: '4px 10px', background: '#f1f5f9', border: '0.5px solid #e2e8f0',
+                borderRadius: 20, fontSize: 12, color: '#475569', fontWeight: 500,
+              }}>
+                📍 All Locations
+              </span>
+              <span style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                padding: '4px 10px', background: '#f1f5f9', border: '0.5px solid #e2e8f0',
+                borderRadius: 20, fontSize: 12, color: '#475569', fontWeight: 500,
+              }}>
+                📅 {periodKey}
+              </span>
+            </div>
+            <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 6 }}>
+              {reportingCount} of {allLocData.length} locations reporting · {fmt$(allTotal)} total this week
             </div>
           </div>
-          <div className={styles.kpi}>
-            <div className={styles.kpiLabel}>Locations reporting</div>
-            <div className={styles.kpiVal}>{allLocData.filter(l => l.hasData).length} / {allLocData.length}</div>
+        </div>
+
+        {/* ── Summary KPI bar ── */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 20 }}>
+          <div style={{ padding: '18px 20px', background: '#0f172a', borderRadius: 12, color: '#fff' }}>
+            <div style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>Total GFS</div>
+            <div style={{ fontSize: 26, fontWeight: 700, marginTop: 6 }}>{fmt$(allTotal)}</div>
+            {allPriorTotal > 0 && (
+              <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+                vs {fmt$(allPriorTotal)} prior week
+              </div>
+            )}
+          </div>
+          <div style={{ padding: '18px 20px', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12 }}>
+            <div style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>vs Prior Week</div>
+            <div style={{ fontSize: 26, fontWeight: 700, marginTop: 6, color: wowChange != null ? (wowChange >= 0 ? '#059669' : '#dc2626') : '#0f172a' }}>
+              {wowChange != null ? fmtPct(wowChange) : '—'}
+            </div>
+            {wowChange != null && (
+              <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+                {wowChange >= 0 ? 'Growing' : 'Declining'}
+              </div>
+            )}
+          </div>
+          <div style={{ padding: '18px 20px', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12 }}>
+            <div style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>Reporting</div>
+            <div style={{ fontSize: 26, fontWeight: 700, marginTop: 6 }}>
+              {reportingCount}<span style={{ fontSize: 16, color: '#94a3b8', fontWeight: 500 }}>/{allLocData.length}</span>
+            </div>
+            <div style={{ position: 'relative', height: 4, background: '#f1f5f9', borderRadius: 2, marginTop: 8, overflow: 'hidden' }}>
+              <div style={{
+                position: 'absolute', top: 0, left: 0, bottom: 0,
+                width: `${reportingPct}%`,
+                background: reportingPct === 100 ? '#10b981' : reportingPct >= 80 ? '#3b82f6' : '#f59e0b',
+                borderRadius: 2,
+                transition: 'width 0.4s ease-out',
+              }} />
+            </div>
+          </div>
+          <div style={{ padding: '18px 20px', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 12 }}>
+            <div style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>Top Performers</div>
+            <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 3 }}>
+              {topPerformers.length > 0 ? topPerformers.map((loc, i) => {
+                const pct = pctChange(loc.total, loc.priorTotal)
+                return (
+                  <div key={loc.name} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11 }}>
+                    <span style={{ color: '#0f172a', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>
+                      {i + 1}. {cleanLocName(loc.name)}
+                    </span>
+                    <span style={{ color: '#059669', fontWeight: 600, flexShrink: 0 }}>+{pct.toFixed(0)}%</span>
+                  </div>
+                )
+              }) : <div style={{ fontSize: 11, color: '#94a3b8' }}>No comparable data yet</div>}
+            </div>
           </div>
         </div>
-        <div className={styles.tableWrap}>
-          <table className={styles.table}>
-            <thead>
-              <tr>
-                <th className={styles.thDay}>#</th>
-                <th className={styles.thDay}>Location</th>
-                <th className={styles.thTotal}>GFS</th>
-                <th className={styles.thVar}>vs LW</th>
-                <th className={styles.thVar}>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {allLocData.map((loc, i) => {
-                const chg = pctChange(loc.total, loc.priorTotal)
-                return (
-                  <tr key={loc.name} className={styles.row}>
-                    <td className={styles.tdDay} style={{ color: '#999', fontWeight: 700 }}>{i + 1}</td>
-                    <td className={styles.tdDay}><div className={styles.dayName}>{cleanLocName(loc.name)}</div></td>
-                    <td className={styles.tdTotal}><span style={{ color: loc.total > 0 ? '#059669' : '#bbb', fontWeight: 600 }}>{fmt$(loc.total)}</span></td>
-                    <td className={styles.tdVar}>
-                      {chg != null && loc.total > 0 ? <span className={chg >= 0 ? styles.varUp : styles.varDown}>{fmtPct(chg)}</span> : <span className={styles.varNeutral}>—</span>}
-                    </td>
-                    <td className={styles.tdVar}>
-                      {loc.hasData
-                        ? <span className={styles.varUp}>✓ Submitted</span>
-                        : <span className={styles.varNeutral}>Not submitted</span>}
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+
+        {/* ── Location heat grid ── */}
+        {loading ? (
+          <div style={{ textAlign: 'center', padding: 60, color: '#94a3b8' }}>Loading locations...</div>
+        ) : allLocData.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: 60, color: '#94a3b8' }}>No locations to display</div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
+            {allLocData.map((loc) => {
+              const chg = pctChange(loc.total, loc.priorTotal)
+              const performanceColor = !loc.hasData ? '#e2e8f0'
+                : chg == null ? '#64748b'
+                : chg >= 10 ? '#10b981'
+                : chg >= 0 ? '#3b82f6'
+                : chg >= -10 ? '#f59e0b'
+                : '#dc2626'
+
+              return (
+                <div
+                  key={loc.name}
+                  onClick={() => setSelectedLocation(loc.name)}
+                  style={{
+                    padding: '16px 18px',
+                    background: '#fff',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: 12,
+                    borderLeft: `3px solid ${performanceColor}`,
+                    cursor: 'pointer',
+                    transition: 'all 0.15s',
+                  }}
+                  onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.06)' }}
+                  onMouseLeave={e => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = 'none' }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '75%' }}>
+                      {cleanLocName(loc.name)}
+                    </div>
+                    {loc.hasData
+                      ? <span style={{ fontSize: 9, padding: '2px 6px', background: '#dcfce7', color: '#166534', borderRadius: 10, fontWeight: 600 }}>●</span>
+                      : <span style={{ fontSize: 9, padding: '2px 6px', background: '#fef3c7', color: '#854d0e', borderRadius: 10, fontWeight: 600 }}>○</span>}
+                  </div>
+
+                  <div style={{ fontSize: 22, fontWeight: 700, color: loc.hasData ? '#0f172a' : '#cbd5e1' }}>
+                    {loc.hasData ? fmt$(loc.total) : '—'}
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
+                    {chg != null && loc.hasData ? (
+                      <span style={{
+                        fontSize: 11, fontWeight: 600,
+                        color: chg >= 0 ? '#059669' : '#dc2626',
+                      }}>
+                        {chg >= 0 ? '▲' : '▼'} {Math.abs(chg).toFixed(1)}%
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: 11, color: '#94a3b8' }}>
+                        {loc.hasData ? 'No prior data' : 'Not submitted'}
+                      </span>
+                    )}
+                    <Sparkline data={loc.sparkline} color={performanceColor !== '#e2e8f0' ? performanceColor : '#94a3b8'} />
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
       </div>
     )
   }
@@ -590,16 +1010,68 @@ export default function WeeklySales() {
   return (
     <div
       className={styles.page}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
+      {...dragHandlers}
     >
+      {isDragging && (
+        <DropZoneOverlay
+          title="Drop sales file here"
+          subtitle="Accepts .xlsx, .xls, or .csv"
+          onClose={dismissDropZone}
+        />
+      )}
+
+      <style>{`
+        @keyframes anomalyPulse {
+          0%, 100% {
+            box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.6);
+          }
+          50% {
+            box-shadow: 0 0 0 4px rgba(245, 158, 11, 0);
+          }
+        }
+        @keyframes pulseDot {
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.4; transform: scale(0.85); }
+        }
+      `}</style>
 
       {/* ── Header ── */}
       <div className={styles.header}>
-        <div>
-          <h1 className={styles.title}>Weekly Sales</h1>
-          <p className={styles.subtitle}>{cleanLocName(location)}</p>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <Breadcrumb items={['Revenue', 'Weekly Sales']} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 2, flexWrap: 'wrap' }}>
+            <h1 className={styles.title} style={{ margin: 0 }}>Weekly Sales</h1>
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              padding: '4px 10px', background: '#f1f5f9', border: '0.5px solid #e2e8f0',
+              borderRadius: 20, fontSize: 12, color: '#475569', fontWeight: 500,
+            }}>
+              📍 {isAll ? 'All Locations' : cleanLocName(location)}
+            </span>
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              padding: '4px 10px', background: '#f1f5f9', border: '0.5px solid #e2e8f0',
+              borderRadius: 20, fontSize: 12, color: '#475569', fontWeight: 500,
+            }}>
+              📅 {periodKey}
+            </span>
+            {approvalStatus && (
+              <span style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                padding: '4px 10px',
+                background: approvalStatus === 'approved' ? '#dcfce7' : approvalStatus === 'pending' ? '#fef3c7' : '#fee2e2',
+                color: approvalStatus === 'approved' ? '#166534' : approvalStatus === 'pending' ? '#854d0e' : '#991b1b',
+                border: `0.5px solid ${approvalStatus === 'approved' ? '#86efac' : approvalStatus === 'pending' ? '#fcd34d' : '#fca5a5'}`,
+                borderRadius: 20, fontSize: 12, fontWeight: 500,
+              }}>
+                {approvalStatus === 'approved' ? '✓ Approved' : approvalStatus === 'pending' ? '⏳ Pending approval' : '✕ Rejected'}
+              </span>
+            )}
+          </div>
+          <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 6 }}>
+            {lastSaved ? `Last saved ${new Date(lastSaved).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}${savedBy ? ` by ${savedBy}` : ''}` : 'No data entered yet'}
+            {weekTotal > 0 && ` · ${fmt$(weekTotal)} week total`}
+          </div>
         </div>
         <div className={styles.headerActions}>
           <button className={styles.btnIcon} onClick={exportCSV} title="Export CSV"><Download size={15} /></button>
@@ -630,8 +1102,10 @@ export default function WeeklySales() {
             </span>
             {approvalStatus === 'pending' && isDirector && (
               <>
-                <button className={styles.btnApprove} onClick={handleApprove}>Approve &amp; Post</button>
-                <button className={styles.btnReject} onClick={() => setShowRejectModal(true)}>Reject</button>
+                <button className={styles.btnApprove} onClick={handleApprove} disabled={approving} style={{ opacity: approving ? 0.5 : 1, cursor: approving ? 'wait' : 'pointer' }}>
+                  {approving ? 'Posting…' : 'Approve & Post'}
+                </button>
+                <button className={styles.btnReject} onClick={() => setShowRejectModal(true)} disabled={approving}>Reject</button>
               </>
             )}
           </div>
@@ -654,16 +1128,311 @@ export default function WeeklySales() {
       )}
 
       {/* ── Week nav ── */}
-      <div className={styles.weekNav}>
-        <button className={styles.weekBtn} onClick={prevWeek}>‹</button>
-        <span className={styles.weekLabel}>{week.label}</span>
-        <button className={styles.weekBtn} onClick={nextWeek}>›</button>
+      {/* ── Sales History Chart (trailing 12 weeks) ── */}
+      {!isAll && historyChart.length > 1 && (
+        <div style={{
+          background: '#fff',
+          border: '1px solid #e5e7eb',
+          borderRadius: 12,
+          padding: '20px 24px 12px',
+          marginBottom: 16,
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+            <div>
+              <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, marginBottom: 2 }}>
+                12-Week Trend
+              </div>
+              <div style={{ fontSize: 14, color: '#0f172a', fontWeight: 600 }}>
+                Sales by category · {cleanLocName(location)}
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 16, fontSize: 11 }}>
+              {CATS.map(cat => (
+                <div key={cat.key} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                  <span style={{ width: 9, height: 9, borderRadius: 2, background: cat.color, display: 'inline-block' }} />
+                  <span style={{ color: '#64748b', fontWeight: 500 }}>{cat.label}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <ResponsiveContainer width="100%" height={220}>
+            <ComposedChart
+              data={historyChart}
+              margin={{ top: 8, right: 8, left: -12, bottom: 0 }}
+            >
+              <defs>
+                <linearGradient id="gradPopup" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#059669" stopOpacity={0.35} />
+                  <stop offset="100%" stopColor="#059669" stopOpacity={0.02} />
+                </linearGradient>
+                <linearGradient id="gradCatering" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#7c3aed" stopOpacity={0.35} />
+                  <stop offset="100%" stopColor="#7c3aed" stopOpacity={0.02} />
+                </linearGradient>
+                <linearGradient id="gradRetail" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#2563eb" stopOpacity={0.35} />
+                  <stop offset="100%" stopColor="#2563eb" stopOpacity={0.02} />
+                </linearGradient>
+              </defs>
+
+              <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+              <XAxis
+                dataKey="label"
+                tick={{ fontSize: 10, fill: '#94a3b8' }}
+                axisLine={{ stroke: '#e5e7eb' }}
+                tickLine={false}
+              />
+              <YAxis
+                tickFormatter={(v) => v >= 1000 ? `$${(v / 1000).toFixed(0)}k` : `$${v}`}
+                tick={{ fontSize: 10, fill: '#94a3b8' }}
+                axisLine={{ stroke: '#e5e7eb' }}
+                tickLine={false}
+                width={44}
+              />
+              <Tooltip
+                contentStyle={{
+                  background: '#0f172a',
+                  border: 'none',
+                  borderRadius: 8,
+                  fontSize: 11,
+                  color: '#fff',
+                  padding: '8px 12px',
+                }}
+                labelStyle={{ color: '#94a3b8', fontSize: 10, marginBottom: 4 }}
+                itemStyle={{ color: '#fff', padding: '1px 0' }}
+                formatter={(value, name) => [fmt$(value), name]}
+              />
+
+              <Area type="monotone" dataKey="retail"   stackId="1" stroke="#2563eb" strokeWidth={1.5} fill="url(#gradRetail)"   name="Retail" />
+              <Area type="monotone" dataKey="catering" stackId="1" stroke="#7c3aed" strokeWidth={1.5} fill="url(#gradCatering)" name="Catering" />
+              <Area type="monotone" dataKey="popup"    stackId="1" stroke="#059669" strokeWidth={1.5} fill="url(#gradPopup)"    name="Popup" />
+
+              <Line
+                type="monotone"
+                dataKey="total"
+                stroke="#0f172a"
+                strokeWidth={2}
+                dot={{ r: 3, fill: '#0f172a', strokeWidth: 0 }}
+                activeDot={{ r: 5, fill: '#0f172a', stroke: '#fff', strokeWidth: 2 }}
+                name="Total"
+              />
+
+              {/* Highlight the current week with a reference line */}
+              {historyChart.some(d => d.isCurrent) && (
+                <ReferenceLine
+                  x={historyChart.find(d => d.isCurrent)?.label}
+                  stroke="#1D9E75"
+                  strokeDasharray="4 4"
+                  strokeWidth={1.5}
+                  label={{
+                    value: 'Now',
+                    position: 'top',
+                    fill: '#1D9E75',
+                    fontSize: 10,
+                    fontWeight: 600,
+                  }}
+                />
+              )}
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* ── Period Pulse ── */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 16,
+        padding: '14px 18px', marginBottom: 16,
+        background: 'linear-gradient(135deg, #0f172a 0%, #1e293b 100%)',
+        borderRadius: 12, color: '#fff',
+        boxShadow: '0 1px 3px rgba(0,0,0,.08)',
+      }}>
+        <button
+          onClick={prevWeek}
+          style={{
+            background: 'rgba(255,255,255,0.08)', color: '#fff',
+            border: '1px solid rgba(255,255,255,0.15)',
+            width: 32, height: 32, borderRadius: 8,
+            cursor: 'pointer', fontSize: 16,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontFamily: 'inherit',
+          }}
+        >‹</button>
+
+        {/* Progress ring (SVG) */}
+        <div style={{ position: 'relative', width: 44, height: 44, flexShrink: 0 }}>
+          <svg width="44" height="44" viewBox="0 0 44 44" style={{ transform: 'rotate(-90deg)' }}>
+            <circle cx="22" cy="22" r="18" fill="none" stroke="rgba(255,255,255,0.12)" strokeWidth="3" />
+            <circle
+              cx="22" cy="22" r="18" fill="none"
+              stroke={paceStatus === 'ahead' ? '#10b981' : paceStatus === 'behind' ? '#f59e0b' : '#94a3b8'}
+              strokeWidth="3"
+              strokeLinecap="round"
+              strokeDasharray={`${2 * Math.PI * 18}`}
+              strokeDashoffset={`${2 * Math.PI * 18 * (1 - daysElapsed / daysTotal)}`}
+              style={{ transition: 'stroke-dashoffset 0.6s ease-out, stroke 0.3s' }}
+            />
+          </svg>
+          <div style={{
+            position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: 11, fontWeight: 700, color: '#fff',
+          }}>
+            {daysElapsed}/{daysTotal}
+          </div>
+        </div>
+
+        {/* Label + progress details */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.2 }}>
+            {week.label}
+          </div>
+          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.6)', marginTop: 3, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span>Day {daysElapsed} of {daysTotal}</span>
+            <span style={{ color: 'rgba(255,255,255,0.3)' }}>·</span>
+            <span>{Math.round((daysElapsed / daysTotal) * 100)}% through</span>
+            {dirty && (
+              <>
+                <span style={{ color: 'rgba(255,255,255,0.3)' }}>·</span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: '#fcd34d' }}>
+                  <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#fcd34d', display: 'inline-block', animation: 'pulseDot 1.4s ease-in-out infinite' }} />
+                  Unsaved
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Pace indicator */}
         {paceStatus && (
-          <span className={`${styles.paceBadge} ${paceStatus === 'ahead' ? styles.paceAhead : styles.paceBehind}`}>
-            {paceStatus === 'ahead' ? '▲' : '▼'} {paceStatus === 'ahead' ? 'Ahead' : 'Behind'} pace by {fmt$(Math.abs(paceGap))}
-          </span>
+          <div style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'flex-end',
+            padding: '8px 14px',
+            background: paceStatus === 'ahead' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.15)',
+            border: `1px solid ${paceStatus === 'ahead' ? 'rgba(16, 185, 129, 0.3)' : 'rgba(245, 158, 11, 0.3)'}`,
+            borderRadius: 8,
+          }}>
+            <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em', color: paceStatus === 'ahead' ? '#6ee7b7' : '#fcd34d', fontWeight: 600 }}>
+              {paceStatus === 'ahead' ? '▲ Ahead of pace' : '▼ Behind pace'}
+            </div>
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#fff', marginTop: 2 }}>
+              {paceStatus === 'ahead' ? '+' : '−'}{fmt$(Math.abs(paceGap))}
+            </div>
+          </div>
         )}
+
+        <button
+          onClick={nextWeek}
+          style={{
+            background: 'rgba(255,255,255,0.08)', color: '#fff',
+            border: '1px solid rgba(255,255,255,0.15)',
+            width: 32, height: 32, borderRadius: 8,
+            cursor: 'pointer', fontSize: 16,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontFamily: 'inherit',
+          }}
+        >›</button>
       </div>
+
+      {/* ── Approval audit trail ── */}
+      {approvalStatus && submissionEvents.length > 0 && (
+        <div style={{
+          background: '#fff',
+          border: '1px solid #e5e7eb',
+          borderRadius: 12,
+          padding: '16px 20px',
+          marginBottom: 16,
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+            <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>
+              Approval Trail
+            </div>
+            <span style={{
+              fontSize: 11, padding: '3px 10px', borderRadius: 20, fontWeight: 500,
+              background: approvalStatus === 'approved' ? '#dcfce7' : approvalStatus === 'pending' ? '#fef3c7' : '#fee2e2',
+              color:      approvalStatus === 'approved' ? '#166534' : approvalStatus === 'pending' ? '#854d0e' : '#991b1b',
+              border: `0.5px solid ${approvalStatus === 'approved' ? '#86efac' : approvalStatus === 'pending' ? '#fcd34d' : '#fca5a5'}`,
+            }}>
+              {approvalStatus === 'approved' ? '✓ Approved' : approvalStatus === 'pending' ? '⏳ Pending' : '✕ Rejected'}
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {submissionEvents.map((event, i) => {
+              const isLast = i === submissionEvents.length - 1
+              const colors = {
+                submitted:   { bg: '#dbeafe', text: '#1e40af', label: 'Submitted' },
+                updated:     { bg: '#e0e7ff', text: '#4338ca', label: 'Updated' },
+                resubmitted: { bg: '#e0e7ff', text: '#4338ca', label: 'Resubmitted' },
+                approved:    { bg: '#dcfce7', text: '#166534', label: 'Approved' },
+                rejected:    { bg: '#fee2e2', text: '#991b1b', label: 'Rejected' },
+              }
+              const c = colors[event.action] || colors.submitted
+              const dt = event.timestamp ? new Date(event.timestamp) : null
+              return (
+                <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 12, position: 'relative' }}>
+                  {/* Timeline connector line */}
+                  {!isLast && (
+                    <div style={{
+                      position: 'absolute',
+                      left: 11,
+                      top: 24,
+                      bottom: -10,
+                      width: 1,
+                      background: '#e5e7eb',
+                    }} />
+                  )}
+
+                  {/* Numbered circle */}
+                  <div style={{
+                    width: 22, height: 22, borderRadius: '50%',
+                    background: c.bg, color: c.text,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 10, fontWeight: 700,
+                    flexShrink: 0, position: 'relative', zIndex: 1,
+                  }}>
+                    {i + 1}
+                  </div>
+
+                  {/* Content */}
+                  <div style={{ flex: 1, fontSize: 12, lineHeight: 1.5 }}>
+                    <div>
+                      <span style={{ color: c.text, fontWeight: 600 }}>{c.label}</span>
+                      <span style={{ color: '#64748b' }}> by </span>
+                      <span style={{ color: '#0f172a', fontWeight: 500 }}>{event.actor}</span>
+                      {event.weekTotal > 0 && (
+                        <>
+                          <span style={{ color: '#64748b' }}> · </span>
+                          <span style={{ color: '#0f172a', fontWeight: 600 }}>{fmt$(event.weekTotal)}</span>
+                        </>
+                      )}
+                    </div>
+                    {dt && (
+                      <div style={{ color: '#94a3b8', fontSize: 11, marginTop: 2 }}>
+                        {dt.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                      </div>
+                    )}
+                    {event.note && (
+                      <div style={{
+                        marginTop: 6,
+                        padding: '8px 10px',
+                        background: '#fef2f2',
+                        borderLeft: '2px solid #fca5a5',
+                        borderRadius: 4,
+                        fontSize: 11,
+                        color: '#7f1d1d',
+                        fontStyle: 'italic',
+                      }}>
+                        "{event.note}"
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* ── KPI strip ── */}
       <div className={styles.kpiBar}>
@@ -745,7 +1514,7 @@ export default function WeeklySales() {
               </tr>
             </thead>
             <tbody>
-              {week.days.map(day => {
+              {week.days.map((day, rowIdx) => {
                 const dt      = dayTotal(day.key)
                 const prior   = dayTotal(day.key, priorEntries)
                 const yoy     = dayTotal(day.key, yoyEntries)
@@ -770,22 +1539,67 @@ export default function WeeklySales() {
                       {isAlert && <div className={styles.alertMsg}>↓ 10%+ below last week</div>}
                     </td>
 
-                    {CATS.map(cat => {
-                      const isAnomaly = !!anomalies[`${day.key}_${cat.key}`]
+                    {CATS.map((cat, colIdx) => {
+                      const anomaly   = anomalies[`${day.key}_${cat.key}`]
+                      const isAnomaly = !!anomaly
                       const hasValue  = !!entries[day.key]?.[cat.key]
+                      const currentVal = parseFloat(entries[day.key]?.[cat.key]) || 0
+                      const anomalyPct = anomaly ? Math.round(((currentVal - anomaly.mean) / anomaly.mean) * 100) : 0
+                      const anomalyTooltip = anomaly
+                        ? `${anomalyPct > 0 ? '+' : ''}${anomalyPct}% vs 8-week average ($${anomaly.mean.toFixed(0)}) — please verify`
+                        : undefined
                       return (
-                        <td key={cat.key} className={styles.tdInput}>
+                        <td key={cat.key} className={styles.tdInput} style={{ position: 'relative' }}>
                           <div className={`${styles.inputWrap} ${isAnomaly ? styles.inputAnomaly : ''} ${hasValue ? styles.inputFilled : ''}`}>
                             <span className={styles.dollar}>$</span>
                             <input
                               type="number" min="0" step="0.01"
                               value={getVal(day.key, cat.key)}
                               onChange={e => setVal(day.key, cat.key, e.target.value)}
+                              onKeyDown={e => handleCellKeyDown(e, rowIdx, colIdx)}
+                              onPaste={e => handleCellPaste(e, rowIdx, colIdx)}
+                              data-entry-row={rowIdx}
+                              data-entry-col={colIdx}
                               className={styles.input}
                               placeholder={fc > 0 && forecast[day.key] ? (forecast[day.key][cat.key] || 0).toFixed(0) : '0.00'}
                               disabled={isFuture || approvalStatus === 'approved'}
-                              title={isAnomaly ? `Unusual vs 8-week average — please verify` : undefined}
+                              title={anomalyTooltip}
                             />
+                            {isAnomaly && (
+                              <>
+                                <span
+                                  style={{
+                                    position: 'absolute',
+                                    top: 6,
+                                    right: 6,
+                                    width: 6,
+                                    height: 6,
+                                    borderRadius: '50%',
+                                    background: anomaly.direction === 'high' ? '#f59e0b' : '#3b82f6',
+                                    boxShadow: `0 0 0 0 ${anomaly.direction === 'high' ? 'rgba(245, 158, 11, 0.5)' : 'rgba(59, 130, 246, 0.5)'}`,
+                                    animation: 'anomalyPulse 2s ease-in-out infinite',
+                                    pointerEvents: 'none',
+                                  }}
+                                />
+                                <div
+                                  style={{
+                                    position: 'absolute',
+                                    bottom: -14,
+                                    left: 0,
+                                    right: 0,
+                                    fontSize: 9,
+                                    fontWeight: 600,
+                                    color: anomaly.direction === 'high' ? '#b45309' : '#1e40af',
+                                    textAlign: 'center',
+                                    lineHeight: 1,
+                                    pointerEvents: 'none',
+                                    letterSpacing: '0.02em',
+                                  }}
+                                >
+                                  {anomalyPct > 0 ? '+' : ''}{anomalyPct}% vs avg
+                                </div>
+                              </>
+                            )}
                           </div>
                         </td>
                       )
@@ -846,7 +1660,6 @@ export default function WeeklySales() {
         )}
       </div>
 
-      {dropOverlay}
-    </div>
+          </div>
   )
 }
