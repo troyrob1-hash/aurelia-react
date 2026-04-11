@@ -6,6 +6,7 @@ import { useAuthStore } from '@/store/authStore'
 import { db } from '@/lib/firebase'
 import { doc, getDoc } from 'firebase/firestore'
 import { readPnL } from '@/lib/pnl'
+import { usePnL, useMultiLocationPnL } from '@/lib/usePnL'
 import { usePeriod } from '@/store/PeriodContext'
 import { ChevronDown, ChevronRight, RefreshCw, Download, ExternalLink } from 'lucide-react'
 import styles from './Dashboard.module.css'
@@ -173,70 +174,83 @@ export default function Dashboard() {
   const { selectedLocation, visibleLocations } = useLocations()
   const { periodKey } = usePeriod()
 
-  const [pnl,          setPnl]          = useState({})
-  const [priorPnl,     setPriorPnl]     = useState({})
   const [locationData, setLocationData] = useState([]) // for ranking table
   const [schema,       setSchema]       = useState(DEFAULT_SCHEMA)
-  const [loading,      setLoading]      = useState(true)
   const [collapsed,    setCollapsed]    = useState({})
   const [refreshing,   setRefreshing]   = useState(false)
 
   const location  = selectedLocation === 'all' ? null : selectedLocation
   const isAll     = selectedLocation === 'all'
   const locNames  = visibleLocations.map(l => l.name)
+  const priorKey  = getPriorKey(periodKey)
 
-  async function aggregatePnL(periodK, locs) {
-    if (!isAll && location) return await readPnL(location, periodK).catch(() => ({}))
-    const results = await Promise.all(locs.map(l => readPnL(l, periodK).catch(() => ({}))))
-    const agg = {}
-    const numKeys = [
-      'gfs_retail','gfs_catering','gfs_popup','gfs_total',
-      'revenue_commission','revenue_total',
-      'cogs_onsite_labor','cogs_3rd_party','cogs_inventory',
-      'cogs_purchases','cogs_waste','exp_comp_benefits',
-      'budget_gfs','budget_revenue','budget_cogs','budget_labor','budget_ebitda',
-    ]
-    results.forEach(r => numKeys.forEach(k => { agg[k] = (agg[k]||0) + (r[k]||0) }))
-    return agg
-  }
+  // Live subscriptions for current + prior period, single or multi location.
+  // Two of each get created but only one pair is actually "active" at a time
+  // based on isAll — the unused pair subscribes to an empty set and returns
+  // stable empty data with zero Firestore cost. React hooks must be called
+  // unconditionally so we pass the no-op inputs rather than conditionally
+  // skipping the hook call.
+  const singleCurrent = usePnL(!isAll ? location : null, !isAll ? periodKey : null)
+  const singlePrior   = usePnL(!isAll ? location : null, !isAll ? priorKey  : null)
+  const multiCurrent  = useMultiLocationPnL(isAll ? locNames : [], isAll ? periodKey : null)
+  const multiPrior    = useMultiLocationPnL(isAll ? locNames : [], isAll ? priorKey  : null)
 
-  useEffect(() => { load() }, [selectedLocation, periodKey])
+  const pnl       = isAll ? multiCurrent.data : singleCurrent.data
+  const priorPnl  = isAll ? multiPrior.data   : singlePrior.data
+  const loading   = isAll ? multiCurrent.loading : singleCurrent.loading
+  const lastUpdated = isAll
+    ? (multiCurrent.lastUpdated || null)
+    : (singleCurrent.lastUpdated || null)
 
-  async function load() {
-    setLoading(true)
+  // Schema is still a one-shot read — it rarely changes and doesn't need
+  // a live subscription. Loaded once per org + period change.
+  useEffect(() => {
+    (async () => {
+      try {
+        const schemaSnap = await getDoc(doc(db, 'tenants', orgId, 'config', 'plSchema'))
+        if (schemaSnap.exists() && schemaSnap.data().sections?.length) {
+          setSchema(schemaSnap.data().sections)
+        }
+      } catch {/* fall back to DEFAULT_SCHEMA */}
+    })()
+  }, [orgId])
+
+  // Location ranking for the All Locations view. Still uses one-shot reads
+  // because this is a secondary panel that doesn't need to be live. Will
+  // upgrade to live in a future pass if useful.
+  useEffect(() => {
+    if (!isAll || locNames.length === 0) { setLocationData([]); return }
+    let cancelled = false
+    ;(async () => {
+      const locResults = await Promise.all(
+        locNames.map(async name => {
+          const d = await readPnL(name, periodKey).catch(() => ({}))
+          return {
+            name,
+            gfs:    d.gfs_total || 0,
+            ebitda: computeEBITDA(d),
+            ebitdaPct: d.gfs_total > 0 ? computeEBITDA(d) / d.gfs_total : null,
+          }
+        })
+      )
+      if (cancelled) return
+      setLocationData(locResults.filter(l => l.gfs > 0).sort((a, b) => b.ebitda - a.ebitda))
+    })()
+    return () => { cancelled = true }
+  }, [isAll, periodKey, locNames.join('|')])
+
+  // Manual refresh kept as a visual affordance. Subscriptions already keep
+  // data fresh; this just re-runs the secondary (non-live) queries.
+  async function refresh() {
+    setRefreshing(true)
     try {
       const schemaSnap = await getDoc(doc(db, 'tenants', orgId, 'config', 'plSchema'))
       if (schemaSnap.exists() && schemaSnap.data().sections?.length) {
         setSchema(schemaSnap.data().sections)
       }
-
-      const [current, prior] = await Promise.all([
-        aggregatePnL(periodKey, locNames),
-        aggregatePnL(getPriorKey(periodKey), locNames),
-      ])
-      setPnl(current)
-      setPriorPnl(prior)
-
-      // Location ranking — only when viewing all locations
-      if (isAll && locNames.length > 0) {
-        const locResults = await Promise.all(
-          locNames.map(async name => {
-            const d = await readPnL(name, periodKey).catch(() => ({}))
-            return {
-              name,
-              gfs:    d.gfs_total || 0,
-              ebitda: computeEBITDA(d),
-              ebitdaPct: d.gfs_total > 0 ? computeEBITDA(d) / d.gfs_total : null,
-            }
-          })
-        )
-        setLocationData(locResults.filter(l => l.gfs > 0).sort((a, b) => b.ebitda - a.ebitda))
-      }
-    } catch { toast.error('Failed to load P&L data.') }
-    setLoading(false)
+    } catch { toast.error('Failed to refresh.') }
+    setRefreshing(false)
   }
-
-  async function refresh() { setRefreshing(true); await load(); setRefreshing(false) }
   function toggle(id)      { setCollapsed(p => ({ ...p, [id]: !p[id] })) }
 
   function resolveVal(line, data) {

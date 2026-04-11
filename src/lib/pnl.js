@@ -4,7 +4,7 @@
 // Period: '2026-W14' (weekly) or '2026-04' (monthly)
 
 import { db } from './firebase'
-import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore'
+import { doc, setDoc, getDoc, onSnapshot, serverTimestamp } from 'firebase/firestore'
 
 const TENANT = 'fooda'
 
@@ -38,6 +38,38 @@ export async function readPnL(location, period) {
   const ref = doc(db, 'tenants', TENANT, 'pnl', locId(location), 'periods', period)
   const snap = await getDoc(ref)
   return snap.exists() ? snap.data() : {}
+}
+
+// Live subscription — get updates whenever the doc changes.
+// Returns an unsubscribe function. Caller is responsible for cleanup.
+//
+// Usage:
+//   const unsub = subscribePnL(location, period, (data, lastUpdated) => {
+//     setPnl(data)
+//   })
+//   return () => unsub()
+export function subscribePnL(location, period, onChange, onError) {
+  const ref = doc(db, 'tenants', TENANT, 'pnl', locId(location), 'periods', period)
+  return onSnapshot(
+    ref,
+    snap => {
+      const data = snap.exists() ? snap.data() : {}
+      // Extract the updatedAt timestamp for "last updated" indicator.
+      // Firestore serverTimestamp may still be pending on the first snapshot
+      // right after a write — fall back to current time in that case.
+      let lastUpdated = null
+      if (data.updatedAt?.toDate) {
+        lastUpdated = data.updatedAt.toDate()
+      } else if (snap.exists()) {
+        lastUpdated = new Date()
+      }
+      onChange(data, lastUpdated)
+    },
+    err => {
+      console.error('subscribePnL error:', err)
+      if (onError) onError(err)
+    }
+  )
 }
 
 // ── Module writers ────────────────────────────────────────────
