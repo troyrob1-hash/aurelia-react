@@ -132,6 +132,17 @@ const fmt$ = v => {
 const fmtPct   = v => v != null ? (v * 100).toFixed(1) + '%' : '—'
 const varColor = v => v == null ? undefined : v >= 0 ? '#059669' : '#dc2626'
 
+// "Updated X ago" formatter for the live indicator pill
+function formatAgo(date) {
+  if (!date) return ''
+  const sec = Math.floor((Date.now() - date.getTime()) / 1000)
+  if (sec < 5)    return 'just now'
+  if (sec < 60)   return `${sec}s ago`
+  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`
+  if (sec < 86400)return `${Math.floor(sec / 3600)}h ago`
+  return `${Math.floor(sec / 86400)}d ago`
+}
+
 // Compute EBITDA from a raw pnl data object
 function computeEBITDA(p) {
   const rev     = p.revenue_total || (p.gfs_total||0) * 0.82
@@ -305,69 +316,153 @@ export default function Dashboard() {
   // Prime cost benchmark — industry standard 55-65% of revenue
   const primeStatus = primeCost == null ? null : primeCost <= 0.60 ? 'good' : primeCost <= 0.65 ? 'warn' : 'over'
 
-  const KPIs = [
-    {
-      label: 'Gross Food Sales',
-      val: fmt$(gfs),
-      sub: varGFS != null ? `${varGFS>=0?'▲':'▼'} ${fmt$(Math.abs(varGFS))} vs budget` : null,
-      subColor: varColor(varGFS),
-      badge: onPace != null ? { label: onPace ? 'On pace' : 'Behind pace', ok: onPace } : null,
-    },
-    {
-      label: 'Net Revenue',
-      val: fmt$(revenue),
-      sub: gfs > 0 ? `${(revenue/gfs*100).toFixed(1)}% of GFS` : null,
-    },
-    {
-      label: 'Prime Cost',
-      val: primeCost != null ? fmtPct(primeCost) : '—',
-      sub: 'Labor + COGS / Revenue',
-      valColor: primeStatus === 'good' ? '#059669' : primeStatus === 'warn' ? '#d97706' : primeStatus === 'over' ? '#dc2626' : undefined,
-      badge: primeStatus ? {
-        label: primeStatus === 'good' ? '≤60% target' : primeStatus === 'warn' ? '60–65% caution' : '>65% critical',
-        ok: primeStatus === 'good',
-        warn: primeStatus === 'warn',
-      } : null,
-    },
-    {
-      label: 'Gross Margin',
-      val: fmt$(grossMargin),
-      sub: revenue > 0 ? `${(grossMargin/revenue*100).toFixed(1)}% of Revenue` : null,
-      valColor: grossMargin >= 0 ? '#059669' : '#dc2626',
-    },
-    {
-      label: 'EBITDA',
-      val: fmt$(ebitda),
-      sub: varEBITDA != null ? `${varEBITDA>=0?'▲':'▼'} ${fmt$(Math.abs(varEBITDA))} vs budget` : gfs > 0 ? `${(ebitda/gfs*100).toFixed(1)}% of GFS` : null,
-      valColor: ebitda >= 0 ? '#059669' : '#dc2626',
-      subColor: varColor(varEBITDA),
-      alert: ebitda < 0,
-    },
-    {
-      label: 'Total COGS',
-      val: fmt$(totalCOGS),
-      sub: revenue > 0 ? `${(totalCOGS/revenue*100).toFixed(1)}% of Revenue` : null,
-      valColor: totalCOGS > 0 ? '#dc2626' : undefined,
-    },
-  ]
+  // ── Spark series for KPI strip ───────────────────────────────
+  // Build 5 arrays of 12 values each, one per metric, from history.
+  // Each entry aligned to the trailingKeys order (oldest first, newest last).
+  const sparkSeries = (() => {
+    const gfsArr     = []
+    const revArr     = []
+    const ebitdaArr  = []
+    const primeArr   = []
+    const laborPctArr = []
+    trailingKeys.forEach(k => {
+      const p = history[k] || {}
+      const g = p.gfs_total || 0
+      const r = p.revenue_total || 0
+      const l = (p.cogs_onsite_labor || 0) + (p.cogs_3rd_party || 0)
+      const pp = g * 0.018
+      const cogsT = l + (p.cogs_inventory || 0) + (p.cogs_purchases || 0) + (p.cogs_waste || 0) + pp
+      const gm = r - cogsT
+      const eb = gm - (p.exp_comp_benefits || 0)
+      const pc = r > 0 ? (l + cogsT - pp) / r : null  // prime cost = labor+COGS (excl payproc double-count)
+      const lp = g > 0 ? (l / g) : null
+      gfsArr.push(g)
+      revArr.push(r)
+      ebitdaArr.push(eb)
+      primeArr.push(pc != null ? pc * 100 : null)
+      laborPctArr.push(lp != null ? lp * 100 : null)
+    })
+    return { gfs: gfsArr, revenue: revArr, ebitda: ebitdaArr, primeCost: primeArr, laborPct: laborPctArr }
+  })()
+
+  // Delta helpers for the 5 KPI cards — compared to the prior period value.
+  const deltaPct = (cur, prev) => {
+    if (prev == null || prev === 0 || cur == null) return null
+    return ((cur - prev) / Math.abs(prev)) * 100
+  }
+  const laborPctNow   = gfs > 0 ? (labor / gfs) * 100 : null
+  const laborPctPrior = priorGFS > 0 ? (priorLabor / priorGFS) * 100 : null
+  const laborPctDelta = laborPctNow != null && laborPctPrior != null ? laborPctNow - laborPctPrior : null
+
+  const gfsDelta      = deltaPct(gfs, priorGFS)
+  const revDelta      = deltaPct(revenue, priorRev)
+  const ebitdaDelta   = ebitda != null && priorEBITDA != null ? ebitda - priorEBITDA : null
+
+  // Mini inline SVG sparkline — hand-rolled, no recharts for this tiny thing.
+  // data: array of numbers (nulls allowed), color: stroke color, height: px.
+  function Sparkline({ data, color, height = 26 }) {
+    const valid = data.filter(v => v != null && !isNaN(v) && v !== 0)
+    // Don't render a chart with too few real points — it ends up as a
+    // misleading zigzag between min and max. Empty placeholder instead.
+    if (valid.length < 3) return <div style={{ height }} />
+    const min = Math.min(...valid)
+    const max = Math.max(...valid)
+    const range = max - min
+    // If every value is identical, the "chart" is a flat line. Skip.
+    if (range === 0) return <div style={{ height }} />
+    const W = 100
+    const H = 22
+    const xStep = W / (data.length - 1)
+    const points = data.map((v, i) => {
+      if (v == null || isNaN(v)) return null
+      const x = i * xStep
+      const y = H - ((v - min) / range) * H
+      return `${x.toFixed(1)},${y.toFixed(1)}`
+    }).filter(Boolean).join(' ')
+    return (
+      <svg width="100%" height={height} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: 'block' }}>
+        <polyline
+          points={points}
+          fill="none"
+          stroke={color}
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
+        />
+      </svg>
+    )
+  }
+
+
+
 
   return (
     <div className={styles.page}>
 
       {/* ── Header ── */}
-      <div className={styles.header}>
-        <div>
-          <h1 className={styles.title}>P&L</h1>
-          <p className={styles.subtitle}>
-            {location ? cleanLocName(location) : `${locNames.length} locations`} · {periodKey}
-            {priorPnl.gfs_total ? ` · vs ${getPriorKey(periodKey)}` : ''}
-          </p>
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '0 0 20px', marginBottom: 20,
+        borderBottom: '0.5px solid #e5e7eb',
+      }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500 }}>
+            Finance
+          </div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+            <h1 style={{ margin: 0, fontSize: 24, fontWeight: 600, color: '#0f172a', letterSpacing: '-0.01em' }}>P&L</h1>
+            <span style={{ color: '#cbd5e1', fontSize: 16 }}>›</span>
+            <span style={{ fontSize: 14, color: '#475569' }}>
+              {location ? cleanLocName(location) : `${locNames.length} locations`}
+            </span>
+            <span style={{ color: '#cbd5e1' }}>·</span>
+            <span style={{ fontSize: 14, color: '#475569' }}>{periodKey}</span>
+          </div>
         </div>
-        <div className={styles.headerRight}>
-          <button className={styles.btnExport} onClick={exportCSV}>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          {/* Live indicator */}
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '6px 10px',
+            background: lastUpdated ? '#ecfdf5' : '#f8fafc',
+            border: `0.5px solid ${lastUpdated ? '#a7f3d0' : '#e2e8f0'}`,
+            borderRadius: 999,
+            fontSize: 11, fontWeight: 500,
+            color: lastUpdated ? '#047857' : '#94a3b8',
+          }}>
+            <span style={{
+              width: 6, height: 6, borderRadius: '50%',
+              background: lastUpdated ? '#10b981' : '#cbd5e1',
+              boxShadow: lastUpdated ? '0 0 0 2px rgba(16, 185, 129, 0.2)' : 'none',
+              animation: lastUpdated ? 'pulse 2s ease-in-out infinite' : 'none',
+            }} />
+            {lastUpdated ? `Live · updated ${formatAgo(lastUpdated)}` : 'Waiting for data'}
+          </div>
+
+          <button
+            onClick={exportCSV}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              padding: '7px 13px', fontSize: 12, fontWeight: 500,
+              background: '#fff', color: '#475569',
+              border: '0.5px solid #e2e8f0', borderRadius: 8,
+              cursor: 'pointer',
+            }}
+          >
             <Download size={13} /> Export
           </button>
-          <button className={styles.refreshBtn} onClick={refresh} disabled={refreshing}>
+          <button
+            onClick={refresh}
+            disabled={refreshing}
+            style={{
+              display: 'inline-flex', alignItems: 'center',
+              padding: 8, background: '#fff',
+              border: '0.5px solid #e2e8f0', borderRadius: 8,
+              cursor: refreshing ? 'wait' : 'pointer',
+            }}
+          >
             <RefreshCw size={13} className={refreshing ? styles.spinning : ''} />
           </button>
         </div>
@@ -396,21 +491,131 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* ── KPI Strip ── */}
-      <div className={styles.kpiStrip}>
-        {KPIs.map(k => (
-          <div key={k.label} className={`${styles.kpi} ${k.alert ? styles.kpiAlert : ''}`}>
-            <div className={styles.kpiL}>{k.label}</div>
-            <div className={styles.kpiV} style={{ color: k.valColor }}>{k.val}</div>
-            {k.sub && <div className={styles.kpiSub} style={{ color: k.subColor }}>{k.sub}</div>}
-            {k.badge && (
-              <div className={`${styles.kpiBadge} ${k.badge.ok ? styles.kpiBadgeGood : k.badge.warn ? styles.kpiBadgeWarn : styles.kpiBadgeOver}`}>
-                {k.badge.label}
+      {/* ── KPI Strip (Pattern 3, 5 columns) ── */}
+      {(() => {
+        // Columns defined inline for readability. Each column knows its value,
+        // its delta vs prior, its sparkline data, and its color rules.
+        const fmtSmall$ = v => {
+          if (v == null || isNaN(v)) return '—'
+          const abs = Math.abs(v)
+          if (abs >= 1_000_000) return '$' + (abs/1_000_000).toFixed(1) + 'M'
+          if (abs >= 1_000)     return '$' + Math.round(abs/1_000) + 'k'
+          return '$' + Math.round(abs)
+        }
+        const fmtBig$ = v => {
+          if (v == null || isNaN(v)) return '—'
+          return '$' + Math.round(v).toLocaleString('en-US')
+        }
+        const primeColor = primeStatus === 'over'  ? '#b45309'
+                          : primeStatus === 'warn' ? '#b45309'
+                          : '#0f172a'
+        const deltaRow = (val, suffix = '', goodIsUp = true) => {
+          if (val == null || isNaN(val)) return null
+          const up = val >= 0
+          const good = goodIsUp ? up : !up
+          return (
+            <span style={{ fontSize: 11, fontWeight: 500, color: good ? '#059669' : '#dc2626' }}>
+              {up ? '▲' : '▼'} {Math.abs(val).toFixed(1)}{suffix}
+            </span>
+          )
+        }
+        const columns = [
+          {
+            label: 'Gross food sales',
+            value: fmtBig$(gfs),
+            delta: deltaRow(gfsDelta, '%'),
+            sub: 'vs last period',
+            sparkData: sparkSeries.gfs,
+            sparkColor: '#1D9E75',
+            valueColor: '#0f172a',
+          },
+          {
+            label: 'Net revenue',
+            value: fmtBig$(revenue),
+            delta: deltaRow(revDelta, '%'),
+            sub: gfs > 0 ? `${Math.round(revenue/gfs*100)}% of GFS` : 'vs last period',
+            sparkData: sparkSeries.revenue,
+            sparkColor: '#1D9E75',
+            valueColor: '#0f172a',
+          },
+          {
+            label: 'EBITDA',
+            value: fmtBig$(ebitda),
+            delta: ebitdaDelta != null ? (
+              <span style={{ fontSize: 11, fontWeight: 500, color: ebitdaDelta >= 0 ? '#059669' : '#dc2626' }}>
+                {ebitdaDelta >= 0 ? '▲' : '▼'} {fmtSmall$(ebitdaDelta)}
+              </span>
+            ) : null,
+            sub: 'vs last period',
+            sparkData: sparkSeries.ebitda,
+            sparkColor: ebitda >= 0 ? '#1D9E75' : '#dc2626',
+            valueColor: ebitda >= 0 ? '#0f172a' : '#dc2626',
+          },
+          {
+            label: 'Prime cost %',
+            value: primeCost != null ? (primeCost * 100).toFixed(1) + '%' : '—',
+            delta: null,
+            sub: primeStatus === 'good' ? 'under 60% target'
+                 : primeStatus === 'warn' ? 'approaching 65% ceiling'
+                 : primeStatus === 'over' ? 'above 65% critical'
+                 : 'labor + COGS / revenue',
+            subColor: primeStatus === 'good' ? '#059669'
+                      : primeStatus ? '#b45309' : '#94a3b8',
+            sparkData: sparkSeries.primeCost,
+            sparkColor: primeStatus === 'good' ? '#1D9E75' : '#BA7517',
+            valueColor: primeColor,
+          },
+          {
+            label: 'Labor %',
+            value: laborPctNow != null ? laborPctNow.toFixed(1) + '%' : '—',
+            delta: laborPctDelta != null ? (
+              <span style={{ fontSize: 11, fontWeight: 500, color: laborPctDelta <= 0 ? '#059669' : '#dc2626' }}>
+                {laborPctDelta <= 0 ? '▼' : '▲'} {Math.abs(laborPctDelta).toFixed(1)}pp
+              </span>
+            ) : null,
+            sub: 'vs last period',
+            sparkData: sparkSeries.laborPct,
+            sparkColor: '#1D9E75',
+            valueColor: '#0f172a',
+          },
+        ]
+        return (
+          <div style={{
+            background: '#fff',
+            border: '0.5px solid #e5e7eb',
+            borderRadius: 12,
+            padding: '22px 28px',
+            marginBottom: 24,
+            display: 'grid',
+            gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
+            gap: 0,
+          }}>
+            {columns.map((c, i) => (
+              <div key={c.label} style={{
+                padding: i === 0 ? '0 24px 0 0'
+                        : i === columns.length - 1 ? '0 0 0 24px'
+                        : '0 24px',
+                borderRight: i < columns.length - 1 ? '0.5px solid #e5e7eb' : 'none',
+                minWidth: 0,
+              }}>
+                <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500, marginBottom: 10 }}>
+                  {c.label}
+                </div>
+                <div style={{ fontSize: 24, fontWeight: 500, color: c.valueColor, letterSpacing: '-0.01em', lineHeight: 1.15 }}>
+                  {c.value}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 7, minHeight: 14 }}>
+                  {c.delta}
+                  <span style={{ fontSize: 11, color: c.subColor || '#94a3b8' }}>{c.sub}</span>
+                </div>
+                <div style={{ marginTop: 10 }}>
+                  <Sparkline data={c.sparkData} color={c.sparkColor} />
+                </div>
               </div>
-            )}
+            ))}
           </div>
-        ))}
-      </div>
+        )
+      })()}
 
       {/* ── P&L Table ── */}
       {loading ? (
