@@ -9,6 +9,9 @@ import {
 import { useAuth }         from "@/hooks/useAuth";
 import InviteModal         from "../components/InviteModal";
 import UserRow             from "../components/UserRow";
+import EditAccessModal     from "../components/EditAccessModal";
+import { canAdministerSystem } from "@/lib/permissions";
+import { useLocations }    from "@/store/LocationContext";
 import EmptyState          from "@/components/ui/EmptyState";
 import Spinner             from "@/components/ui/Spinner";
 import { useToast }        from "@/components/ui/Toast";
@@ -17,7 +20,8 @@ const PAGE_SIZE = 20;
 
 export default function UsersTab() {
   const { user, orgId }  = useAuth();
-  const isAdmin          = user?.role === "admin";
+  const { allLocations, regionsList, regionsById } = useLocations();
+  const isAdmin          = canAdministerSystem(user);
 
   const [users,       setUsers]       = useState([]);
   const [loading,     setLoading]     = useState(true);
@@ -27,11 +31,10 @@ export default function UsersTab() {
   const [showInvite,  setShowInvite]  = useState(false);
   const [filter,      setFilter]      = useState("all");
   const [error,       setError]       = useState(null);
-  const [userLocs,    setUserLocs]    = useState({});
-  const [locNames,    setLocNames]    = useState({});
   const [search,      setSearch]      = useState("");
   const [sortCol,     setSortCol]     = useState("createdAt");
   const [sortDir,     setSortDir]     = useState("desc");
+  const [editingUser, setEditingUser] = useState(null);
   const toast = useToast();
 
   const fetchUsers = useCallback(async (cursor = null) => {
@@ -62,27 +65,6 @@ export default function UsersTab() {
   }, [orgId, filter]);
 
   useEffect(() => { fetchUsers(); }, [fetchUsers]);
-
-  useEffect(() => {
-    Promise.all([
-      getDocs(collection(db, "orgs", orgId, "userLocations")),
-      getDocs(collection(db, "orgs", orgId, "locations")),
-    ]).then(([ulSnap, locSnap]) => {
-      const map = {};
-      ulSnap.docs.forEach(d => {
-        const data = d.data();
-        if (!map[data.uid]) map[data.uid] = [];
-        map[data.uid].push(data.locationId);
-      });
-      setUserLocs(map);
-      const names = {};
-      locSnap.docs.forEach(d => {
-        const data = d.data();
-        names[data.locationId] = data.name;
-      });
-      setLocNames(names);
-    });
-  }, [orgId]);
 
   const handleInviteSent = () => {
     setShowInvite(false);
@@ -238,8 +220,9 @@ export default function UsersTab() {
                   isAdmin={isAdmin}
                   currentUid={user.uid}
                   onDeactivate={handleDeactivate}
-                  onUpdated={handleRoleUpdated}
-                  locationNames={(userLocs[u.uid] || []).map(id => locNames[id] || id)}
+                  onEdit={() => setEditingUser(u)}
+                  regionsById={regionsById}
+                  allLocations={allLocations}
                 />
               ))}
             </tbody>

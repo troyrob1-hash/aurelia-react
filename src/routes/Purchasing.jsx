@@ -15,7 +15,6 @@ import Breadcrumb from '@/components/ui/Breadcrumb'
 import { useDragDropUpload } from '@/hooks/useDragDropUpload'
 import DropZoneOverlay from '@/components/ui/DropZoneOverlay'
 import { canApproveInvoices, canAdministerSystem } from '@/lib/permissions'
-import { canApproveInvoices, canAdministerSystem } from '@/lib/permissions'
 import styles from './Purchasing.module.css'
 
 // ── Fallback vendors — overridden by Firestore per org ───────

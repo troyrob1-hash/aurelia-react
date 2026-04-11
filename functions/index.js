@@ -171,19 +171,41 @@ exports.auditApiKeyWrite = onDocumentWritten("orgs/{orgId}/apiKeys/{keyId}", asy
 exports.inviteUser = onCall(async (request) => {
   if (!request.auth) throw new HttpsError("unauthenticated", "Must be signed in.");
 
-  const { orgId, email, displayName, role, locationIds = [] } = request.data;
+  const {
+    orgId, email, displayName,
+    roles = [],
+    managedRegionIds = [],
+    assignedLocations = [],
+  } = request.data;
   const callerUid = request.auth.uid;
 
-  const validRoles = ["admin", "director", "manager"];
-  if (!orgId || !email || !role || !validRoles.includes(role)) {
-    throw new HttpsError("invalid-argument", "Missing or invalid fields.");
+  // Validate inputs
+  const VALID_ROLES = ["manager", "director", "vp", "admin"];
+  if (!orgId || !email || !displayName) {
+    throw new HttpsError("invalid-argument", "orgId, email, and displayName are required.");
+  }
+  if (!Array.isArray(roles) || roles.length === 0) {
+    throw new HttpsError("invalid-argument", "At least one role must be specified.");
+  }
+  const invalid = roles.find(r => !VALID_ROLES.includes(r));
+  if (invalid) {
+    throw new HttpsError("invalid-argument", `Invalid role: ${invalid}`);
   }
 
+  // Caller must be admin (check roles array with legacy fallback)
   const callerSnap = await db.collection("orgs").doc(orgId).collection("users").doc(callerUid).get();
-  if (!callerSnap.exists || callerSnap.data().role !== "admin" || !callerSnap.data().active) {
+  if (!callerSnap.exists || !callerSnap.data().active) {
+    throw new HttpsError("permission-denied", "Caller not found or inactive.");
+  }
+  const caller = callerSnap.data();
+  const callerRoles = Array.isArray(caller.roles) && caller.roles.length > 0
+    ? caller.roles
+    : (caller.role ? [caller.role] : []);
+  if (!callerRoles.includes("admin")) {
     throw new HttpsError("permission-denied", "Only admins can invite users.");
   }
 
+  // No duplicate emails
   const existing = await db.collection("orgs").doc(orgId).collection("users")
     .where("email", "==", email).limit(1).get();
   if (!existing.empty) throw new HttpsError("already-exists", "A user with this email already exists.");
@@ -191,6 +213,10 @@ exports.inviteUser = onCall(async (request) => {
   try {
     const AWS     = require("aws-sdk");
     const cognito = new AWS.CognitoIdentityServiceProvider({ region: "us-east-2" });
+
+    // Determine the primary (highest-tier) role for Cognito custom:role claim
+    const TIER_ORDER = ["admin", "vp", "director", "manager"];
+    const primaryRole = TIER_ORDER.find(r => roles.includes(r)) || roles[0];
 
     const cognitoRes = await cognito.adminCreateUser({
       UserPoolId:        POOL_ID,
@@ -201,6 +227,7 @@ exports.inviteUser = onCall(async (request) => {
         { Name: "email_verified", Value: "true" },
         { Name: "name",           Value: displayName },
         { Name: "custom:orgId",   Value: orgId },
+        { Name: "custom:role",    Value: primaryRole },
       ],
     }).promise();
 
@@ -208,7 +235,11 @@ exports.inviteUser = onCall(async (request) => {
     const now    = admin.firestore.FieldValue.serverTimestamp();
 
     await db.collection("orgs").doc(orgId).collection("users").doc(newUid).set({
-      uid: newUid, orgId, email, displayName, role,
+      uid: newUid, orgId, email, displayName,
+      roles,
+      role: primaryRole,  // legacy mirror for backwards compat with code still reading .role
+      managedRegionIds,
+      assignedLocations,
       permissionOverrides: {
         canExportData: null, canApproveOrders: null, canViewFinancials: null,
         canManageUsers: null, canManageLocations: null, canManageAPIKeys: null,
@@ -222,18 +253,10 @@ exports.inviteUser = onCall(async (request) => {
       createdAt: now, updatedAt: now,
     });
 
-    const batch = db.batch();
-    for (const locationId of locationIds) {
-      const ref = db.collection("orgs").doc(orgId).collection("userLocations").doc(`${newUid}_${locationId}`);
-      batch.set(ref, { uid: newUid, locationId, orgId, role, assignedBy: callerUid, assignedAt: now });
-    }
-    await batch.commit();
-
-    const caller = callerSnap.data();
     await writeAuditLog(orgId,
       { uid: callerUid, email: caller.email, displayName: caller.displayName, ip: request.rawRequest?.ip ?? null, userAgent: null },
       "user.invited", { type: "user", id: newUid },
-      null, { email, role, locationIds }
+      null, { email, roles, managedRegionIds, assignedLocations }
     );
 
     return { success: true, uid: newUid };

@@ -1,32 +1,46 @@
-// src/pages/Settings/components/InviteModal.jsx
+// src/pages/Settings/components/EditAccessModal.jsx
 //
-// Rewritten for the 4-role RBAC model. Creates a new user with:
-//   - roles[] (manager, director, vp, admin — additive)
-//   - managedRegionIds[] for region-based access
-//   - assignedLocations[] for ad-hoc location overrides
+// Full "Edit access" modal for a user. Admins use this to change:
+//   - Roles (checkboxes: manager, director, vp, admin — additive)
+//   - Managed regions (multi-select from the regions collection)
+//   - Ad-hoc assigned locations (individual location overrides)
 //
-// Sends the new-shape payload to the updated inviteUser Cloud Function.
-// Uses the same UI patterns as EditAccessModal for consistency.
+// On save, calls the updateUserRoles Cloud Function which:
+//   - Writes Firestore
+//   - Syncs Cognito custom:role claim
+//   - Revokes refresh tokens so the target picks up new claims on next load
+//   - Writes an audit log entry
+//   - Enforces guardrails (last-admin, valid roles, at least one role)
 
 import { useState, useMemo } from "react";
-import { functions } from "@/lib/firebase";
 import { httpsCallable } from "firebase/functions";
-import { useLocations, cleanLocName } from "@/store/LocationContext";
-import { ASSIGNABLE_ROLES } from "@/lib/permissions";
+import { functions } from "@/lib/firebase";
+import { useToast } from "@/components/ui/Toast";
+import { ASSIGNABLE_ROLES, getUserRoles } from "@/lib/permissions";
+import { cleanLocName } from "@/store/LocationContext";
 
-export default function InviteModal({ orgId, onClose, onSuccess }) {
-  const { allLocations, regionsList } = useLocations();
+export default function EditAccessModal({
+  user,
+  orgId,
+  currentUser,
+  allLocations,
+  regionsList,
+  onClose,
+  onSaved,
+}) {
+  const toast = useToast();
 
-  const [email, setEmail] = useState("");
-  const [displayName, setDisplayName] = useState("");
-  const [roles, setRoles] = useState(["manager"]);
-  const [managedRegionIds, setManagedRegionIds] = useState([]);
-  const [assignedLocations, setAssignedLocations] = useState([]);
+  const [roles, setRoles] = useState(() => getUserRoles(user));
+  const [managedRegionIds, setManagedRegionIds] = useState(
+    () => Array.isArray(user.managedRegionIds) ? [...user.managedRegionIds] : []
+  );
+  const [assignedLocations, setAssignedLocations] = useState(
+    () => Array.isArray(user.assignedLocations) ? [...user.assignedLocations] : []
+  );
   const [locationSearch, setLocationSearch] = useState("");
+  const [saving, setSaving] = useState(false);
 
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-
+  const isSelf = user.uid === currentUser?.uid;
   const seesAll = roles.includes("vp") || roles.includes("admin");
   const needsRegions = !seesAll && (roles.includes("director") || roles.includes("manager"));
 
@@ -58,32 +72,27 @@ export default function InviteModal({ orgId, onClose, onSuccess }) {
     });
   }, [allLocations, locationSearch]);
 
-  async function handleSubmit() {
-    if (!email.trim() || !displayName.trim()) {
-      setError("Name and email are required.");
-      return;
-    }
+  async function handleSave() {
     if (roles.length === 0) {
-      setError("Select at least one role.");
+      toast.error("Select at least one role");
       return;
     }
-    setLoading(true);
-    setError(null);
+    setSaving(true);
     try {
-      const invite = httpsCallable(functions, "inviteUser");
-      await invite({
+      const callable = httpsCallable(functions, "updateUserRoles");
+      await callable({
         orgId,
-        email: email.trim(),
-        displayName: displayName.trim(),
+        targetUid: user.uid,
         roles,
         managedRegionIds: seesAll ? [] : managedRegionIds,
         assignedLocations: seesAll ? [] : assignedLocations,
       });
-      onSuccess();
+      onSaved?.();
     } catch (e) {
-      setError(e.message || "Failed to send invitation.");
+      console.error("updateUserRoles failed:", e);
+      toast.error(e.message || "Failed to update access");
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
   }
 
@@ -101,88 +110,70 @@ export default function InviteModal({ orgId, onClose, onSuccess }) {
         onClick={e => e.stopPropagation()}
         style={{
           background: "#fff", borderRadius: 14,
-          maxWidth: 620, width: "100%", maxHeight: "90vh",
+          maxWidth: 620, width: "100%", maxHeight: "88vh",
           display: "flex", flexDirection: "column",
           boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
         }}
       >
-        <div style={{ padding: "20px 24px", borderBottom: "1px solid #e5e7eb", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600, color: "#0f172a" }}>Invite team member</h2>
-          <button
-            onClick={onClose}
-            style={{ background: "none", border: "none", fontSize: 20, color: "#94a3b8", cursor: "pointer", padding: 4 }}
-          >
-            ✕
-          </button>
+        <div style={{ padding: "20px 24px", borderBottom: "1px solid #e5e7eb" }}>
+          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600, color: "#0f172a" }}>Edit access</h2>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 6 }}>
+            <div style={{
+              width: 28, height: 28, borderRadius: "50%",
+              background: "#1D9E75", color: "#fff",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 12, fontWeight: 600,
+            }}>
+              {(user.displayName?.[0] || user.email?.[0] || "?").toUpperCase()}
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13, color: "#0f172a", fontWeight: 500 }}>
+                {user.displayName || user.email}
+                {isSelf && (
+                  <span style={{
+                    fontSize: 10, fontWeight: 600, marginLeft: 8, padding: "2px 6px",
+                    background: "#fef3c7", color: "#854d0e", borderRadius: 10,
+                  }}>you</span>
+                )}
+              </div>
+              <div style={{ fontSize: 11, color: "#64748b" }}>{user.email}</div>
+            </div>
+          </div>
         </div>
 
         <div style={{ padding: "20px 24px", overflowY: "auto", flex: 1 }}>
-          {error && (
-            <div style={{ padding: "10px 12px", background: "#fee2e2", color: "#991b1b", borderRadius: 8, marginBottom: 16, fontSize: 12 }}>
-              {error}
+          <div style={{ marginBottom: 24 }}>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 10 }}>
+              Roles <span style={{ color: "#94a3b8", fontWeight: 400 }}>(can hold multiple)</span>
+            </label>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {ASSIGNABLE_ROLES.map(r => {
+                const checked = roles.includes(r.value);
+                return (
+                  <label
+                    key={r.value}
+                    style={{
+                      display: "flex", alignItems: "flex-start", gap: 10,
+                      padding: "10px 12px",
+                      border: "1px solid " + (checked ? "#1D9E75" : "#e5e7eb"),
+                      background: checked ? "#f0fdf4" : "#fff",
+                      borderRadius: 8, cursor: "pointer",
+                      transition: "all 0.12s",
+                    }}
+                  >
+                    <input type="checkbox" checked={checked} onChange={() => toggleRole(r.value)} style={{ marginTop: 2, cursor: "pointer" }} />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: "#0f172a" }}>{r.label}</div>
+                      <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>{r.hint}</div>
+                    </div>
+                  </label>
+                );
+              })}
             </div>
-          )}
-
-          <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 6 }}>
-            Full name
-          </label>
-          <input
-            type="text"
-            placeholder="Jane Smith"
-            value={displayName}
-            onChange={e => setDisplayName(e.target.value)}
-            style={{
-              width: "100%", padding: "10px 12px", fontSize: 13,
-              border: "1px solid #e2e8f0", borderRadius: 8,
-              marginBottom: 16, fontFamily: "inherit",
-            }}
-          />
-
-          <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 6 }}>
-            Email address
-          </label>
-          <input
-            type="email"
-            placeholder="jane@company.com"
-            value={email}
-            onChange={e => setEmail(e.target.value)}
-            style={{
-              width: "100%", padding: "10px 12px", fontSize: 13,
-              border: "1px solid #e2e8f0", borderRadius: 8,
-              marginBottom: 20, fontFamily: "inherit",
-            }}
-          />
-
-          <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 10 }}>
-            Roles <span style={{ color: "#94a3b8", fontWeight: 400 }}>(can hold multiple)</span>
-          </label>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
-            {ASSIGNABLE_ROLES.map(r => {
-              const checked = roles.includes(r.value);
-              return (
-                <label
-                  key={r.value}
-                  style={{
-                    display: "flex", alignItems: "flex-start", gap: 10,
-                    padding: "10px 12px",
-                    border: "1px solid " + (checked ? "#1D9E75" : "#e5e7eb"),
-                    background: checked ? "#f0fdf4" : "#fff",
-                    borderRadius: 8, cursor: "pointer",
-                    transition: "all 0.12s",
-                  }}
-                >
-                  <input type="checkbox" checked={checked} onChange={() => toggleRole(r.value)} style={{ marginTop: 2, cursor: "pointer" }} />
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: "#0f172a" }}>{r.label}</div>
-                    <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>{r.hint}</div>
-                  </div>
-                </label>
-              );
-            })}
           </div>
 
           {needsRegions && (
-            <div style={{ marginBottom: 20 }}>
+            <div style={{ marginBottom: 24 }}>
               <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 8 }}>
                 Managed regions ({managedRegionIds.length} selected)
               </label>
@@ -223,7 +214,7 @@ export default function InviteModal({ orgId, onClose, onSuccess }) {
                 Ad-hoc location assignments ({assignedLocations.length} selected)
               </label>
               <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 8 }}>
-                Optional. Use for one-off location access outside a region.
+                Use this for one-off location access outside of a region. Locations already covered by a selected region are disabled.
               </div>
               <input
                 type="text"
@@ -236,7 +227,7 @@ export default function InviteModal({ orgId, onClose, onSuccess }) {
                   marginBottom: 6, fontFamily: "inherit",
                 }}
               />
-              <div style={{ maxHeight: 160, overflowY: "auto", border: "1px solid #e5e7eb", borderRadius: 8 }}>
+              <div style={{ maxHeight: 180, overflowY: "auto", border: "1px solid #e5e7eb", borderRadius: 8 }}>
                 {filteredLocations.length === 0 ? (
                   <div style={{ padding: 12, fontSize: 12, color: "#94a3b8", textAlign: "center" }}>
                     No locations match
@@ -291,28 +282,28 @@ export default function InviteModal({ orgId, onClose, onSuccess }) {
         }}>
           <button
             onClick={onClose}
-            disabled={loading}
+            disabled={saving}
             style={{
               padding: "8px 16px", background: "#fff", color: "#475569",
               border: "1px solid #e2e8f0", borderRadius: 8,
-              cursor: loading ? "not-allowed" : "pointer",
+              cursor: saving ? "not-allowed" : "pointer",
               fontSize: 13, fontWeight: 500,
             }}
           >
             Cancel
           </button>
           <button
-            onClick={handleSubmit}
-            disabled={loading || roles.length === 0 || !email.trim() || !displayName.trim()}
+            onClick={handleSave}
+            disabled={saving || roles.length === 0}
             style={{
               padding: "8px 20px",
-              background: loading || roles.length === 0 || !email.trim() || !displayName.trim() ? "#94a3b8" : "#1D9E75",
+              background: saving || roles.length === 0 ? "#94a3b8" : "#1D9E75",
               color: "#fff", border: "none", borderRadius: 8,
-              cursor: loading || roles.length === 0 ? "not-allowed" : "pointer",
+              cursor: saving || roles.length === 0 ? "not-allowed" : "pointer",
               fontSize: 13, fontWeight: 500,
             }}
           >
-            {loading ? "Sending..." : "Send invite"}
+            {saving ? "Saving..." : "Save access"}
           </button>
         </div>
       </div>
