@@ -9,7 +9,14 @@ import { readPnL, getPriorKey, getTrailingPeriodKeys } from '@/lib/pnl'
 import { usePnL, useMultiLocationPnL, usePnLHistory } from '@/lib/usePnL'
 import { usePeriod } from '@/store/PeriodContext'
 import { ChevronDown, ChevronRight, RefreshCw, Download, ExternalLink } from 'lucide-react'
+import {
+  LineChart, Line as RLine, XAxis as RXAxis, YAxis as RYAxis,
+  Tooltip as RTooltip, ResponsiveContainer as RResponsiveContainer,
+  ReferenceLine as RReferenceLine,
+} from 'recharts'
 import styles from './Dashboard.module.css'
+import WhyPanel from './components/WhyPanel'
+import { buildPeriodDiff } from '@/lib/whyRules'
 
 const DEFAULT_SCHEMA = [
   {
@@ -159,6 +166,71 @@ function computePrimeCost(p) {
   return rev > 0 ? (labor + cogs) / rev : null
 }
 
+// Apply a scenario to a baseline pnl object. Returns a NEW object with the
+// same shape as the input — every consumer can read it like a real pnl.
+//
+// scenario: { revenueDelta, laborDelta, foodCostDelta }
+//   revenueDelta: percent (-30 to +30) — scales GFS, revenue, and the
+//                 payment processing line which is GFS-derived
+//   laborDelta:   percentage POINTS (-5 to +5) added to current labor %.
+//                 Recomputes onsite + 3rd party labor proportionally.
+//   foodCostDelta: percentage POINTS added to current food cost %.
+//                  Recomputes inventory + purchases + waste proportionally.
+//
+// All adjustments preserve the relative mix of sub-lines so we don't
+// arbitrarily reweight the underlying components.
+function applyScenario(baselinePnl, scenario) {
+  if (!scenario || (scenario.revenueDelta === 0 && scenario.laborDelta === 0 && scenario.foodCostDelta === 0)) {
+    return baselinePnl
+  }
+  const out = { ...baselinePnl }
+
+  // 1. Revenue scaling
+  const revScale = 1 + (scenario.revenueDelta / 100)
+  if (scenario.revenueDelta !== 0) {
+    out.gfs_total          = (baselinePnl.gfs_total          || 0) * revScale
+    out.gfs_retail         = (baselinePnl.gfs_retail         || 0) * revScale
+    out.gfs_catering       = (baselinePnl.gfs_catering       || 0) * revScale
+    out.gfs_popup          = (baselinePnl.gfs_popup          || 0) * revScale
+    out.revenue_total      = (baselinePnl.revenue_total      || 0) * revScale
+    out.revenue_commission = (baselinePnl.revenue_commission || 0) * revScale
+  }
+
+  // 2. Labor adjustment (in percentage points of GFS)
+  // Current labor = onsite + 3rd party. Compute current labor%, add the
+  // delta, find the new total dollar amount, then scale both sub-lines.
+  if (scenario.laborDelta !== 0) {
+    const gfsForCalc = out.gfs_total || baselinePnl.gfs_total || 0
+    const currentLabor = (baselinePnl.cogs_onsite_labor || 0) + (baselinePnl.cogs_3rd_party || 0)
+    if (gfsForCalc > 0 && currentLabor > 0) {
+      const currentLaborPct = currentLabor / gfsForCalc
+      const newLaborPct = currentLaborPct + (scenario.laborDelta / 100)
+      const newLabor = Math.max(0, gfsForCalc * newLaborPct)
+      const scale = currentLabor > 0 ? newLabor / currentLabor : 1
+      out.cogs_onsite_labor = (baselinePnl.cogs_onsite_labor || 0) * scale
+      out.cogs_3rd_party    = (baselinePnl.cogs_3rd_party    || 0) * scale
+    }
+  }
+
+  // 3. Food cost adjustment (in percentage points of revenue)
+  // Current food cost = inventory + purchases + waste. Same approach.
+  if (scenario.foodCostDelta !== 0) {
+    const revForCalc = out.revenue_total || baselinePnl.revenue_total || 0
+    const currentFood = (baselinePnl.cogs_inventory || 0) + (baselinePnl.cogs_purchases || 0) + (baselinePnl.cogs_waste || 0)
+    if (revForCalc > 0 && currentFood > 0) {
+      const currentFoodPct = currentFood / revForCalc
+      const newFoodPct = currentFoodPct + (scenario.foodCostDelta / 100)
+      const newFood = Math.max(0, revForCalc * newFoodPct)
+      const scale = currentFood > 0 ? newFood / currentFood : 1
+      out.cogs_inventory = (baselinePnl.cogs_inventory || 0) * scale
+      out.cogs_purchases = (baselinePnl.cogs_purchases || 0) * scale
+      out.cogs_waste     = (baselinePnl.cogs_waste     || 0) * scale
+    }
+  }
+
+  return out
+}
+
 // Budget pacing — how far through the period are we (0–1)
 function getPeriodPacing(periodKey) {
   const parts = periodKey.match(/(\d+)-P(\d+)-W(\d+)/)
@@ -179,6 +251,19 @@ export default function Dashboard() {
   const [schema,       setSchema]       = useState(DEFAULT_SCHEMA)
   const [collapsed,    setCollapsed]    = useState({})
   const [refreshing,   setRefreshing]   = useState(false)
+  const [whyLine,      setWhyLine]      = useState(null)  // {line, actual, budget, prior}
+
+  // ── Scenario scratchpad state ──
+  // Three sliders that produce a derived pnl for what-if modeling.
+  // All deltas are 0 by default (= identity, no scenario applied).
+  const [scenarioOpen,    setScenarioOpen]    = useState(false)
+  const [revenueDelta,    setRevenueDelta]    = useState(0)   // -30 to +30 (percent)
+  const [laborDelta,      setLaborDelta]      = useState(0)   // -5 to +5 (percentage points)
+  const [foodCostDelta,   setFoodCostDelta]   = useState(0)   // -5 to +5 (percentage points)
+  const [applyToTable,    setApplyToTable]    = useState(false)
+  function resetScenario() {
+    setRevenueDelta(0); setLaborDelta(0); setFoodCostDelta(0)
+  }
 
   const location  = selectedLocation === 'all' ? null : selectedLocation
   const isAll     = selectedLocation === 'all'
@@ -316,6 +401,24 @@ export default function Dashboard() {
   // Prime cost benchmark — industry standard 55-65% of revenue
   const primeStatus = primeCost == null ? null : primeCost <= 0.60 ? 'good' : primeCost <= 0.65 ? 'warn' : 'over'
 
+  // Scenario derived values — recomputed whenever sliders change
+  const scenario = { revenueDelta, laborDelta, foodCostDelta }
+  const scenarioActive = revenueDelta !== 0 || laborDelta !== 0 || foodCostDelta !== 0
+  const scenarioPnl = scenarioActive ? applyScenario(pnl, scenario) : pnl
+  const scenGfs     = scenarioPnl.gfs_total || 0
+  const scenRev     = scenarioPnl.revenue_total || 0
+  const scenLabor   = (scenarioPnl.cogs_onsite_labor || 0) + (scenarioPnl.cogs_3rd_party || 0)
+  const scenPayp    = scenGfs * 0.018
+  const scenCogs    = scenLabor + (scenarioPnl.cogs_inventory || 0) + (scenarioPnl.cogs_purchases || 0) + (scenarioPnl.cogs_waste || 0) + scenPayp
+  const scenGm      = scenRev - scenCogs
+  const scenEbitda  = scenGm - (scenarioPnl.exp_comp_benefits || 0)
+  const scenPrime   = scenRev > 0 ? (scenLabor + scenCogs - scenPayp) / scenRev : null
+  const scenLaborPct = scenGfs > 0 ? scenLabor / scenGfs : null
+
+  // EBITDA delta vs baseline — the headline output of the scratchpad
+  const scenarioEbitdaDelta = scenarioActive ? scenEbitda - ebitda : 0
+
+
   // ── Spark series for KPI strip ───────────────────────────────
   // Build 5 arrays of 12 values each, one per metric, from history.
   // Each entry aligned to the trailingKeys order (oldest first, newest last).
@@ -394,6 +497,67 @@ export default function Dashboard() {
     )
   }
 
+  // Anomaly detection for a P&L line. Walks the trailing 12 periods of
+  // history, computes mean + stddev for that line, and flags current as
+  // anomalous if it's more than 2 stddevs from mean OR (when budget exists)
+  // the variance-to-budget exceeds 15 percent.
+  //
+  // Returns { isAnomaly, reason, severity: 'warn' | 'alert' } or null.
+  function detectAnomaly(line, currentValue, budgetValue) {
+    if (line.pct || line.key?.startsWith('_pct')) return null
+    if (currentValue == null || currentValue === 0) return null
+
+    // 1. Budget variance check — the easier and more obvious signal
+    if (budgetValue != null && budgetValue !== 0) {
+      const variancePct = Math.abs((currentValue - budgetValue) / budgetValue)
+      if (variancePct > 0.15) {
+        return {
+          isAnomaly: true,
+          reason: `${Math.round(variancePct * 100)}% vs budget`,
+          severity: variancePct > 0.30 ? 'alert' : 'warn',
+        }
+      }
+    }
+
+    // 2. Statistical outlier check — needs at least 4 historical points
+    const historicalValues = trailingKeys
+      .slice(0, -1)  // exclude current period
+      .map(k => {
+        const p = history[k] || {}
+        return line.computeFn ? line.computeFn(p) : p[line.key]
+      })
+      .filter(v => v != null && !isNaN(v) && v !== 0)
+
+    if (historicalValues.length < 4) return null
+
+    const mean = historicalValues.reduce((a, b) => a + b, 0) / historicalValues.length
+    const variance = historicalValues.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / historicalValues.length
+    const stddev = Math.sqrt(variance)
+    if (stddev === 0) return null
+
+    const zScore = Math.abs((currentValue - mean) / stddev)
+    if (zScore > 2) {
+      return {
+        isAnomaly: true,
+        reason: `${zScore.toFixed(1)}σ from trailing mean`,
+        severity: zScore > 3 ? 'alert' : 'warn',
+      }
+    }
+    return null
+  }
+
+  // Projected close — takes an actual value for an in-progress period and
+  // projects what it will be at period close based on pacing. Returns null
+  // if we can't meaningfully project (no pacing signal, or period already done).
+  const periodPacing = getPeriodPacing(periodKey)
+  function projectedClose(actualValue) {
+    if (actualValue == null || actualValue === 0) return null
+    if (periodPacing == null || periodPacing <= 0) return null
+    if (periodPacing >= 1.0) return null  // period is done, actual is final
+    return actualValue / periodPacing
+  }
+
+
 
 
 
@@ -467,6 +631,49 @@ export default function Dashboard() {
           </button>
         </div>
       </div>
+
+      {/* ── Period-over-period narrative diff (executive summary) ── */}
+      {(() => {
+        const locLabel = location ? cleanLocName(location) : `${locNames.length} locations`
+        const diff = buildPeriodDiff(pnl, priorPnl, history, trailingKeys, locLabel, isAll)
+        const bgColor = diff.sentiment === 'positive' ? '#f0fdf4'
+                       : diff.sentiment === 'negative' ? '#fef2f2'
+                       : '#f8fafc'
+        const borderColor = diff.sentiment === 'positive' ? '#bbf7d0'
+                           : diff.sentiment === 'negative' ? '#fecaca'
+                           : '#e2e8f0'
+        const accentColor = diff.sentiment === 'positive' ? '#059669'
+                           : diff.sentiment === 'negative' ? '#dc2626'
+                           : '#94a3b8'
+        return (
+          <div style={{
+            background: bgColor,
+            border: `0.5px solid ${borderColor}`,
+            borderLeft: `3px solid ${accentColor}`,
+            borderRadius: 10,
+            padding: '14px 20px',
+            marginBottom: 16,
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 12,
+          }}>
+            <div style={{
+              fontSize: 11, color: accentColor,
+              textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600,
+              marginTop: 2,
+              flexShrink: 0,
+            }}>
+              Summary
+            </div>
+            <div style={{
+              fontSize: 13, color: '#0f172a', lineHeight: 1.55,
+              flex: 1,
+            }}>
+              {diff.summary}
+            </div>
+          </div>
+        )
+      })()}
 
       {/* ── Negative EBITDA alert ── */}
       {ebitda < 0 && gfs > 0 && (
@@ -617,6 +824,209 @@ export default function Dashboard() {
         )
       })()}
 
+      {/* ── Scenario scratchpad ── */}
+      {(() => {
+        const fmtSlim = v => {
+          if (v == null || isNaN(v)) return '—'
+          const abs = Math.abs(v)
+          if (abs >= 1_000_000) return '$' + (abs/1_000_000).toFixed(1) + 'M'
+          if (abs >= 1_000)     return '$' + Math.round(abs/1_000) + 'k'
+          return '$' + Math.round(abs)
+        }
+        const Slider = ({ label, value, onChange, min, max, step, suffix, leftLabel, rightLabel }) => (
+          <div style={{ marginBottom: 18 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 6 }}>
+              <label style={{ fontSize: 12, color: '#475569', fontWeight: 500 }}>{label}</label>
+              <span style={{
+                fontSize: 13, fontWeight: 500,
+                color: value === 0 ? '#94a3b8' : value > 0 ? '#dc2626' : '#059669',
+                fontVariantNumeric: 'tabular-nums',
+              }}>
+                {value > 0 ? '+' : ''}{value}{suffix}
+              </span>
+            </div>
+            <input
+              type="range"
+              min={min}
+              max={max}
+              step={step}
+              value={value}
+              onChange={e => onChange(parseFloat(e.target.value))}
+              style={{
+                width: '100%',
+                accentColor: value === 0 ? '#94a3b8' : value > 0 ? '#dc2626' : '#059669',
+                cursor: 'pointer',
+              }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 2 }}>
+              <span style={{ fontSize: 10, color: '#cbd5e1' }}>{leftLabel}</span>
+              <span style={{ fontSize: 10, color: '#cbd5e1' }}>{rightLabel}</span>
+            </div>
+          </div>
+        )
+
+        return (
+          <div style={{
+            background: '#fff',
+            border: '0.5px solid #e5e7eb',
+            borderRadius: 12,
+            marginBottom: 24,
+            overflow: 'hidden',
+          }}>
+            {/* Header bar — always visible, click to toggle */}
+            <button
+              onClick={() => setScenarioOpen(v => !v)}
+              style={{
+                width: '100%',
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '14px 24px',
+                background: scenarioActive ? '#fef3c7' : '#fff',
+                border: 'none',
+                borderBottom: scenarioOpen ? '0.5px solid #e5e7eb' : 'none',
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+                textAlign: 'left',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div style={{
+                  width: 28, height: 28, borderRadius: 6,
+                  background: scenarioActive ? '#f59e0b' : '#f1f5f9',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  <span style={{
+                    fontSize: 13,
+                    color: scenarioActive ? '#fff' : '#64748b',
+                    fontWeight: 600,
+                  }}>
+                    ƒ
+                  </span>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500 }}>
+                    Scenario
+                  </div>
+                  <div style={{ fontSize: 14, color: '#0f172a', fontWeight: 500, marginTop: 1 }}>
+                    {scenarioActive
+                      ? `${scenarioEbitdaDelta >= 0 ? '+' : ''}${fmtSlim(scenarioEbitdaDelta)} EBITDA impact`
+                      : 'Run a what-if scenario'}
+                  </div>
+                </div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                {scenarioActive && (
+                  <span
+                    onClick={e => { e.stopPropagation(); resetScenario() }}
+                    style={{
+                      fontSize: 11, color: '#64748b', fontWeight: 500,
+                      padding: '4px 10px',
+                      border: '0.5px solid #e2e8f0', borderRadius: 6,
+                      background: '#fff',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Reset
+                  </span>
+                )}
+                <span style={{ fontSize: 16, color: '#94a3b8' }}>{scenarioOpen ? '−' : '+'}</span>
+              </div>
+            </button>
+
+            {/* Body — sliders + projection */}
+            {scenarioOpen && (
+              <div style={{ padding: '20px 24px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 32 }}>
+                {/* Left: sliders */}
+                <div>
+                  <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500, marginBottom: 14 }}>
+                    Adjust inputs
+                  </div>
+                  <Slider
+                    label="Revenue volume"
+                    value={revenueDelta}
+                    onChange={setRevenueDelta}
+                    min={-30} max={30} step={1} suffix="%"
+                    leftLabel="−30%" rightLabel="+30%"
+                  />
+                  <Slider
+                    label="Labor as % of GFS"
+                    value={laborDelta}
+                    onChange={setLaborDelta}
+                    min={-5} max={5} step={0.1} suffix="pp"
+                    leftLabel="−5pp" rightLabel="+5pp"
+                  />
+                  <Slider
+                    label="Food cost as % of revenue"
+                    value={foodCostDelta}
+                    onChange={setFoodCostDelta}
+                    min={-5} max={5} step={0.1} suffix="pp"
+                    leftLabel="−5pp" rightLabel="+5pp"
+                  />
+                  <label style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    marginTop: 16, padding: '10px 12px',
+                    background: '#f8fafc',
+                    border: '0.5px solid #e2e8f0', borderRadius: 8,
+                    cursor: 'pointer',
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={applyToTable}
+                      onChange={e => setApplyToTable(e.target.checked)}
+                      style={{ cursor: 'pointer' }}
+                    />
+                    <span style={{ fontSize: 12, color: '#475569' }}>
+                      Show scenario column in P&L table below
+                    </span>
+                  </label>
+                </div>
+
+                {/* Right: projected output */}
+                <div>
+                  <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500, marginBottom: 14 }}>
+                    Projected at period close
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                    {[
+                      { label: 'GFS', value: scenGfs, baseline: gfs, fmt: fmtSlim },
+                      { label: 'EBITDA', value: scenEbitda, baseline: ebitda, fmt: fmtSlim, primaryColor: scenEbitda >= 0 ? '#0f172a' : '#dc2626' },
+                      { label: 'Prime cost %', value: scenPrime != null ? (scenPrime * 100) : null, baseline: primeCost != null ? primeCost * 100 : null, fmt: v => v != null ? v.toFixed(1) + '%' : '—', goodIsDown: true },
+                      { label: 'Labor %', value: scenLaborPct != null ? (scenLaborPct * 100) : null, baseline: laborPctNow, fmt: v => v != null ? v.toFixed(1) + '%' : '—', goodIsDown: true },
+                    ].map(o => {
+                      const delta = (o.value != null && o.baseline != null) ? o.value - o.baseline : null
+                      const showDelta = delta != null && Math.abs(delta) > 0.001
+                      const goodIsDown = o.goodIsDown
+                      const deltaColor = !showDelta ? '#94a3b8'
+                                       : goodIsDown ? (delta < 0 ? '#059669' : '#dc2626')
+                                       : (delta > 0 ? '#059669' : '#dc2626')
+                      return (
+                        <div key={o.label} style={{
+                          padding: '12px 14px',
+                          background: '#f8fafc',
+                          border: '0.5px solid #e2e8f0',
+                          borderRadius: 8,
+                        }}>
+                          <div style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500, marginBottom: 4 }}>
+                            {o.label}
+                          </div>
+                          <div style={{ fontSize: 18, fontWeight: 500, color: o.primaryColor || '#0f172a', letterSpacing: '-0.01em' }}>
+                            {o.fmt(o.value)}
+                          </div>
+                          {showDelta && (
+                            <div style={{ fontSize: 10, color: deltaColor, marginTop: 3, fontWeight: 500 }}>
+                              {delta >= 0 ? '▲' : '▼'} {o.fmt(Math.abs(delta))} from baseline
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )
+      })()}
+
       {/* ── P&L Table ── */}
       {loading ? (
         <div className={styles.loading}>Loading P&L data...</div>
@@ -625,11 +1035,15 @@ export default function Dashboard() {
           <table className={styles.table}>
             <thead>
               <tr className={styles.thead}>
-                <th className={styles.thLabel}>Line Item</th>
+                <th className={styles.thLabel}>Line item</th>
                 <th className={styles.thVal}>Actual</th>
+                <th className={styles.thVal} style={{ color: '#64748b' }}>Projected close</th>
+                {applyToTable && scenarioActive && (
+                  <th className={styles.thVal} style={{ color: '#b45309' }}>Scenario</th>
+                )}
                 <th className={styles.thVal}>Budget</th>
                 <th className={styles.thVal}>Variance</th>
-                <th className={styles.thVal} style={{ color: '#666' }}>Prior Period</th>
+                <th className={styles.thVal} style={{ color: '#666' }}>Prior period</th>
               </tr>
             </thead>
 
@@ -638,7 +1052,7 @@ export default function Dashboard() {
               return (
                 <tbody key={section.id}>
                   <tr className={styles.section} onClick={() => toggle(section.id)}>
-                    <td colSpan={5} className={styles.sectionCell} style={{ borderTopColor: section.color, color: section.color }}>
+                    <td colSpan={applyToTable && scenarioActive ? 7 : 6} className={styles.sectionCell} style={{ borderTopColor: section.color, color: section.color }}>
                       <span className={styles.sectionToggle}>
                         {isCollapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
                       </span>
@@ -653,20 +1067,44 @@ export default function Dashboard() {
                         <tr key={line.key} className={styles.pctRow}>
                           <td className={styles.label} style={{ paddingLeft: 16 + (line.indent||0) * 14, fontStyle: 'italic', color: '#888' }}>{line.label}</td>
                           <td className={styles.val} style={{ color: '#888' }}>{v != null ? fmtPct(v) : '—'}</td>
+                          <td />
+                          {applyToTable && scenarioActive && <td />}
                           <td /><td /><td />
                         </tr>
                       )
                     }
 
-                    const actual   = resolveVal(line, pnl)
-                    const prior    = resolveVal(line, priorPnl)
-                    const budget   = line.budgetKey ? (pnl[line.budgetKey] ?? null) : null
-                    const variance = actual != null && budget != null ? actual - budget : null
-                    const vsPrior  = actual != null && prior != null && prior !== 0 ? actual - prior : null
+                    const actual    = resolveVal(line, pnl)
+                    const prior     = resolveVal(line, priorPnl)
+                    const budget    = line.budgetKey ? (pnl[line.budgetKey] ?? null) : null
+                    const variance  = actual != null && budget != null ? actual - budget : null
+                    const vsPrior   = actual != null && prior != null && prior !== 0 ? actual - prior : null
+                    const projected = projectedClose(actual)
+                    const anomaly   = detectAnomaly(line, actual, budget)
 
                     return (
-                      <tr key={line.key} className={`${styles.row} ${line.bold ? styles.bold : ''} ${line.highlight ? styles.highlight : ''}`}>
+                      <tr
+                        key={line.key}
+                        className={`${styles.row} ${line.bold ? styles.bold : ''} ${line.highlight ? styles.highlight : ''}`}
+                        onClick={() => setWhyLine({ line, actual, budget, prior })}
+                        style={{ cursor: 'pointer' }}
+                      >
                         <td className={styles.label} style={{ paddingLeft: 16 + (line.indent||0) * 14 }}>
+                          {anomaly && (
+                            <span
+                              title={anomaly.reason}
+                              style={{
+                                display: 'inline-block',
+                                width: 6, height: 6, borderRadius: '50%',
+                                background: anomaly.severity === 'alert' ? '#dc2626' : '#f59e0b',
+                                marginRight: 6,
+                                verticalAlign: 'middle',
+                                boxShadow: anomaly.severity === 'alert'
+                                  ? '0 0 0 2px rgba(220, 38, 38, 0.2)'
+                                  : '0 0 0 2px rgba(245, 158, 11, 0.2)',
+                              }}
+                            />
+                          )}
                           {line.label}
                           {line.drillTo && (
                             <button className={styles.drillBtn} onClick={e => { e.stopPropagation(); navigate(line.drillTo) }}>
@@ -681,6 +1119,23 @@ export default function Dashboard() {
                         }}>
                           {actual != null && actual !== 0 ? fmt$(actual) : '—'}
                         </td>
+                        <td className={styles.val} style={{ color: '#64748b', fontStyle: 'italic' }}>
+                          {projected != null ? fmt$(projected) : '—'}
+                        </td>
+                        {applyToTable && scenarioActive && (() => {
+                          const scenVal = line.computeFn ? line.computeFn(scenarioPnl) : scenarioPnl[line.key]
+                          const scenDelta = scenVal != null && actual != null ? scenVal - actual : null
+                          return (
+                            <td className={styles.val} style={{ color: '#b45309', fontWeight: 500 }}>
+                              {scenVal != null && scenVal !== 0 ? fmt$(scenVal) : '—'}
+                              {scenDelta != null && Math.abs(scenDelta) > 0.5 && (
+                                <div style={{ fontSize: 10, color: scenDelta > 0 ? '#dc2626' : '#059669', marginTop: 2 }}>
+                                  {scenDelta >= 0 ? '+' : ''}{fmt$(scenDelta)}
+                                </div>
+                              )}
+                            </td>
+                          )
+                        })()}
                         <td className={styles.val} style={{ color: '#888' }}>
                           {budget != null && budget !== 0 ? fmt$(budget) : '—'}
                         </td>
@@ -693,7 +1148,7 @@ export default function Dashboard() {
                       </tr>
                     )
                   })}
-                  <tr className={styles.gap}><td colSpan={5} /></tr>
+                  <tr className={styles.gap}><td colSpan={applyToTable && scenarioActive ? 7 : 6} /></tr>
                 </tbody>
               )
             })}
@@ -703,6 +1158,17 @@ export default function Dashboard() {
               <tr className={`${styles.row} ${styles.bold} ${styles.ebitdaRow}`}>
                 <td className={styles.label} style={{ paddingLeft: 16, fontSize: 14, letterSpacing: '.02em' }}>EBITDA</td>
                 <td className={styles.val} style={{ color: ebitda >= 0 ? '#059669' : '#dc2626', fontSize: 15, fontWeight: 800 }}>{fmt$(ebitda)}</td>
+                <td className={styles.val} style={{ color: '#64748b', fontStyle: 'italic' }}>
+                  {(() => {
+                    const p = projectedClose(ebitda)
+                    return p != null ? fmt$(p) : '—'
+                  })()}
+                </td>
+                {applyToTable && scenarioActive && (
+                  <td className={styles.val} style={{ color: '#b45309', fontWeight: 600, fontSize: 14 }}>
+                    {fmt$(scenEbitda)}
+                  </td>
+                )}
                 <td className={styles.val} style={{ color: '#888' }}>{budgetEBITDA ? fmt$(budgetEBITDA) : '—'}</td>
                 <td className={styles.val} style={{ color: varColor(varEBITDA) }}>{varEBITDA != null ? (varEBITDA >= 0 ? '+' : '') + fmt$(varEBITDA) : '—'}</td>
                 <td className={styles.val} style={{ color: priorEBITDA !== 0 ? varColor(ebitda - priorEBITDA) : '#bbb', fontSize: 12 }}>
@@ -713,6 +1179,168 @@ export default function Dashboard() {
           </table>
         </div>
       )}
+
+      {/* ── Why Panel (side drawer) ── */}
+      {whyLine && (
+        <WhyPanel
+          line={whyLine.line}
+          actual={whyLine.actual}
+          budget={whyLine.budget}
+          prior={whyLine.prior}
+          periodKey={periodKey}
+          history={history}
+          trailingKeys={trailingKeys}
+          orgId={orgId}
+          location={location}
+          isAllLocations={isAll}
+          onClose={() => setWhyLine(null)}
+        />
+      )}
+
+      {/* ── 12-period trend (small multiples) ── */}
+      {(() => {
+        // Build chart-ready data: array of { period, revenue, ebitda, primeCost, laborPct }
+        // from trailingKeys + history. Skip if no data anywhere.
+        const chartData = trailingKeys.map((k, i) => ({
+          period: k.replace(/^\d+-/, ''),  // strip year for compactness ("P04-W2")
+          fullPeriod: k,
+          revenue:   sparkSeries.revenue[i],
+          ebitda:    sparkSeries.ebitda[i],
+          primeCost: sparkSeries.primeCost[i],
+          laborPct:  sparkSeries.laborPct[i],
+        }))
+        const hasAnyData = chartData.some(d =>
+          (d.revenue && d.revenue !== 0) ||
+          (d.ebitda && d.ebitda !== 0) ||
+          (d.primeCost != null && d.primeCost !== 0) ||
+          (d.laborPct != null && d.laborPct !== 0)
+        )
+        if (!hasAnyData) return null  // hide entirely until there's something to chart
+
+        const fmtDollar = v => '$' + Math.round(v / 1000) + 'k'
+        const fmtPercent = v => v != null ? v.toFixed(1) + '%' : ''
+
+        const charts = [
+          { key: 'revenue',   label: 'Net revenue',  color: '#1D9E75', fmt: fmtDollar,  refLine: null },
+          { key: 'ebitda',    label: 'EBITDA',       color: '#1D9E75', fmt: fmtDollar,  refLine: 0 },
+          { key: 'primeCost', label: 'Prime cost %', color: '#BA7517', fmt: fmtPercent, refLine: 60 },
+          { key: 'laborPct',  label: 'Labor %',      color: '#1D9E75', fmt: fmtPercent, refLine: null },
+        ]
+
+        return (
+          <div style={{
+            background: '#fff',
+            border: '0.5px solid #e5e7eb',
+            borderRadius: 12,
+            padding: '22px 28px',
+            marginTop: 24,
+            marginBottom: 24,
+          }}>
+            <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500, marginBottom: 4 }}>
+              12-period trend
+            </div>
+            <div style={{ fontSize: 14, color: '#475569', marginBottom: 18 }}>
+              Trailing 12 periods · {trailingKeys[0]} – {trailingKeys[trailingKeys.length - 1]}
+            </div>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
+              gap: 18,
+            }}>
+              {charts.map(c => {
+                const data = chartData.map(d => ({ period: d.period, value: d[c.key] }))
+                const validValues = data.map(d => d.value).filter(v => v != null && !isNaN(v))
+                if (validValues.length < 2) {
+                  return (
+                    <div key={c.key} style={{
+                      border: '0.5px solid #e5e7eb',
+                      borderRadius: 8,
+                      padding: '14px 16px',
+                      minHeight: 200,
+                    }}>
+                      <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500, marginBottom: 8 }}>
+                        {c.label}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#cbd5e1', display: 'flex', alignItems: 'center', justifyContent: 'center', height: 140 }}>
+                        Not enough data
+                      </div>
+                    </div>
+                  )
+                }
+                const latest = validValues[validValues.length - 1]
+                const earliest = validValues[0]
+                const change = latest - earliest
+                const changePct = earliest !== 0 ? (change / Math.abs(earliest)) * 100 : null
+                return (
+                  <div key={c.key} style={{
+                    border: '0.5px solid #e5e7eb',
+                    borderRadius: 8,
+                    padding: '14px 16px',
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 4 }}>
+                      <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500 }}>
+                        {c.label}
+                      </div>
+                      {changePct != null && (
+                        <div style={{
+                          fontSize: 11,
+                          fontWeight: 500,
+                          color: (c.key === 'laborPct' || c.key === 'primeCost') ? (changePct <= 0 ? '#059669' : '#dc2626') : (changePct >= 0 ? '#059669' : '#dc2626'),
+                        }}>
+                          {changePct >= 0 ? '+' : ''}{Math.round(changePct)}% over period
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 18, fontWeight: 500, color: '#0f172a', marginBottom: 8, letterSpacing: '-0.01em' }}>
+                      {c.fmt(latest)}
+                    </div>
+                    <RResponsiveContainer width="100%" height={140}>
+                      <LineChart data={data} margin={{ top: 5, right: 6, bottom: 0, left: -10 }}>
+                        <RXAxis
+                          dataKey="period"
+                          tick={{ fontSize: 9, fill: '#94a3b8' }}
+                          interval={Math.max(0, Math.floor(data.length / 6) - 1)}
+                          axisLine={{ stroke: '#e5e7eb' }}
+                          tickLine={false}
+                        />
+                        <RYAxis
+                          tick={{ fontSize: 9, fill: '#94a3b8' }}
+                          tickFormatter={c.fmt}
+                          axisLine={false}
+                          tickLine={false}
+                          width={50}
+                        />
+                        {c.refLine != null && (
+                          <RReferenceLine y={c.refLine} stroke="#cbd5e1" strokeDasharray="2 3" />
+                        )}
+                        <RTooltip
+                          contentStyle={{
+                            background: '#0f172a', border: 'none', borderRadius: 6,
+                            fontSize: 11, padding: '6px 10px',
+                          }}
+                          labelStyle={{ color: '#cbd5e1' }}
+                          itemStyle={{ color: '#fff' }}
+                          formatter={v => v != null ? c.fmt(v) : '—'}
+                        />
+                        <RLine
+                          type="monotone"
+                          dataKey="value"
+                          stroke={c.color}
+                          strokeWidth={2}
+                          dot={{ r: 2, fill: c.color }}
+                          activeDot={{ r: 4 }}
+                          isAnimationActive={false}
+                          connectNulls
+                        />
+                      </LineChart>
+                    </RResponsiveContainer>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )
+      })()}
 
       {/* ── Location ranking table (All Locations only) ── */}
       {isAll && locationData.length > 0 && (
