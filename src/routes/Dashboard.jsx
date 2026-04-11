@@ -346,7 +346,7 @@ export default function Dashboard() {
       {/* ── Header ── */}
       <div className={styles.header}>
         <div>
-          <h1 className={styles.title}>P&L Dashboard</h1>
+          <h1 className={styles.title}>P&L</h1>
           <p className={styles.subtitle}>
             {location ? cleanLocName(location) : `${locNames.length} locations`} · {periodKey}
             {priorPnl.gfs_total ? ` · vs ${getPriorKey(periodKey)}` : ''}

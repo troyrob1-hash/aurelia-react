@@ -11,7 +11,7 @@ import {
 import styles from './AppShell.module.css'
 
 const NAV = [
-  { to: '/dashboard',  icon: LayoutDashboard, label: 'Dashboard',    category: 'P&L' },
+  { to: '/dashboard',  icon: LayoutDashboard, label: 'P&L',          category: 'FINANCE' },
   { to: '/orders',     icon: ShoppingCart,    label: 'Order Hub',    category: 'Procurement' },
   { to: '/sales',      icon: TrendingUp,      label: 'Weekly Sales', category: 'Revenue' },
   { to: '/inventory',  icon: Package,         label: 'Inventory',    category: 'Stock' },
