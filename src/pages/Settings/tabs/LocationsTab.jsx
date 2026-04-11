@@ -10,6 +10,7 @@ import { useAuth }  from "@/hooks/useAuth";
 import { v4 as uuid } from "uuid";
 import Spinner      from "@/components/ui/Spinner";
 import EmptyState   from "@/components/ui/EmptyState";
+import { canAdministerSystem } from "@/lib/permissions";
 
 const TIMEZONES = [
   "America/New_York",
@@ -28,7 +29,7 @@ const EMPTY_FORM = {
 
 export default function LocationsTab() {
   const { orgId, user } = useAuth();
-  const isAdmin = user?.role === "admin";
+  const isAdmin = canAdministerSystem(user);
 
   const [locations, setLocations] = useState([]);
   const [loading,   setLoading]   = useState(true);

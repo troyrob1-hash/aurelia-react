@@ -1687,22 +1687,82 @@ export default function WeeklySales() {
         </div>
 
         {/* Pace indicator */}
-        {paceStatus && (
-          <div style={{
-            display: 'flex', flexDirection: 'column', alignItems: 'flex-end',
-            padding: '8px 14px',
-            background: paceStatus === 'ahead' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.15)',
-            border: `1px solid ${paceStatus === 'ahead' ? 'rgba(16, 185, 129, 0.3)' : 'rgba(245, 158, 11, 0.3)'}`,
-            borderRadius: 8,
-          }}>
-            <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em', color: paceStatus === 'ahead' ? '#6ee7b7' : '#fcd34d', fontWeight: 600 }}>
-              {paceStatus === 'ahead' ? '▲ Ahead of pace' : '▼ Behind pace'}
+        {paceStatus && (() => {
+          // Build velocity spark data: for each operating day, compute
+          // cumulative actual and cumulative pace target (budget/days * day#).
+          // The spark shows both as overlaid lines — actual (solid) and
+          // target (dotted). Color-coded to match the pace status.
+          const dailyBudget = budgetTotal > 0 && daysTotal > 0 ? budgetTotal / daysTotal : 0
+          const sparkPoints = []
+          let cumActual = 0
+          week.days.forEach((d, idx) => {
+            const dayTotal = (parseFloat(entries[d.key]?.popup)    || 0) +
+                             (parseFloat(entries[d.key]?.catering) || 0) +
+                             (parseFloat(entries[d.key]?.retail)   || 0)
+            cumActual += dayTotal
+            const cumTarget = dailyBudget * (idx + 1)
+            sparkPoints.push({ actual: cumActual, target: cumTarget })
+          })
+          const maxVal = Math.max(
+            ...sparkPoints.map(p => Math.max(p.actual, p.target)),
+            1
+          )
+          const W = 100, H = 24
+          const xStep = sparkPoints.length > 1 ? W / (sparkPoints.length - 1) : 0
+          const actualPath = sparkPoints
+            .map((p, i) => `${i === 0 ? 'M' : 'L'}${(i * xStep).toFixed(1)},${(H - (p.actual / maxVal) * H).toFixed(1)}`)
+            .join(' ')
+          const targetPath = sparkPoints
+            .map((p, i) => `${i === 0 ? 'M' : 'L'}${(i * xStep).toFixed(1)},${(H - (p.target / maxVal) * H).toFixed(1)}`)
+            .join(' ')
+          const lineColor = paceStatus === 'ahead' ? '#6ee7b7' : '#fcd34d'
+
+          return (
+            <div style={{
+              display: 'flex', flexDirection: 'column', alignItems: 'flex-end',
+              padding: '8px 14px',
+              background: paceStatus === 'ahead' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.15)',
+              border: `1px solid ${paceStatus === 'ahead' ? 'rgba(16, 185, 129, 0.3)' : 'rgba(245, 158, 11, 0.3)'}`,
+              borderRadius: 8,
+              minWidth: 128,
+            }}>
+              <div style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em', color: lineColor, fontWeight: 600 }}>
+                {paceStatus === 'ahead' ? '▲ Ahead of pace' : '▼ Behind pace'}
+              </div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: '#fff', marginTop: 2 }}>
+                {paceStatus === 'ahead' ? '+' : '−'}{fmt$(Math.abs(paceGap))}
+              </div>
+              {sparkPoints.length > 1 && dailyBudget > 0 && (
+                <svg width={W} height={H} style={{ marginTop: 4, display: 'block' }}>
+                  {/* Target (dotted) */}
+                  <path
+                    d={targetPath}
+                    fill="none"
+                    stroke="rgba(255,255,255,0.35)"
+                    strokeWidth="1"
+                    strokeDasharray="2 2"
+                  />
+                  {/* Actual (solid) */}
+                  <path
+                    d={actualPath}
+                    fill="none"
+                    stroke={lineColor}
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  {/* Dot on the latest actual point */}
+                  {sparkPoints.length > 0 && (() => {
+                    const last = sparkPoints[sparkPoints.length - 1]
+                    const cx = (sparkPoints.length - 1) * xStep
+                    const cy = H - (last.actual / maxVal) * H
+                    return <circle cx={cx} cy={cy} r="2" fill={lineColor} />
+                  })()}
+                </svg>
+              )}
             </div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: '#fff', marginTop: 2 }}>
-              {paceStatus === 'ahead' ? '+' : '−'}{fmt$(Math.abs(paceGap))}
-            </div>
-          </div>
-        )}
+          )
+        })()}
 
         <button
           onClick={nextWeek}
