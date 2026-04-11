@@ -546,6 +546,258 @@ exports.revokeAPIKey = onCall(async (request) => {
 
 
 // ============================================================
+// CALLABLE: update a user's roles and region/location assignments.
+// Writes to Firestore, syncs to Cognito custom:role claim, writes audit log.
+//
+// Payload: { orgId, targetUid, roles, managedRegionIds, assignedLocations }
+//   - roles: array of role strings (['manager', 'director', 'vp', 'admin'])
+//   - managedRegionIds: array of region IDs this user can see
+//   - assignedLocations: array of individual location names (ad-hoc overrides)
+//
+// Guardrails:
+//   - Caller must be admin
+//   - Cannot demote yourself out of admin if you're the last admin
+//   - Must have at least one role
+//   - Roles must be from the valid set
+// ============================================================
+exports.updateUserRoles = onCall(async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Must be signed in.");
+
+  const { orgId, targetUid, roles, managedRegionIds, assignedLocations } = request.data;
+  const callerUid = request.auth.uid;
+
+  if (!orgId || !targetUid) {
+    throw new HttpsError("invalid-argument", "orgId and targetUid are required.");
+  }
+  if (!Array.isArray(roles) || roles.length === 0) {
+    throw new HttpsError("invalid-argument", "At least one role must be specified.");
+  }
+
+  // Validate role values
+  const VALID_ROLES = ["manager", "director", "vp", "admin"];
+  const invalid = roles.find(r => !VALID_ROLES.includes(r));
+  if (invalid) {
+    throw new HttpsError("invalid-argument", `Invalid role: ${invalid}`);
+  }
+
+  // Verify caller is admin
+  const callerSnap = await db.collection("orgs").doc(orgId).collection("users").doc(callerUid).get();
+  if (!callerSnap.exists) {
+    throw new HttpsError("permission-denied", "Caller not found in tenant.");
+  }
+  const caller = callerSnap.data();
+  const callerRoles = Array.isArray(caller.roles) && caller.roles.length > 0
+    ? caller.roles
+    : (caller.role ? [caller.role] : []);
+  if (!callerRoles.includes("admin")) {
+    throw new HttpsError("permission-denied", "Only admins can update user roles.");
+  }
+
+  // Fetch target
+  const targetSnap = await db.collection("orgs").doc(orgId).collection("users").doc(targetUid).get();
+  if (!targetSnap.exists) {
+    throw new HttpsError("not-found", "Target user not found.");
+  }
+  const target = targetSnap.data();
+
+  // Guardrail: cannot remove yourself as admin if you're the last admin
+  if (callerUid === targetUid) {
+    const wasAdmin = callerRoles.includes("admin");
+    const willBeAdmin = roles.includes("admin");
+    if (wasAdmin && !willBeAdmin) {
+      // Count other admins in tenant
+      const usersSnap = await db.collection("orgs").doc(orgId).collection("users").get();
+      let otherAdmins = 0;
+      usersSnap.forEach(doc => {
+        if (doc.id === callerUid) return;
+        const data = doc.data();
+        const drs = Array.isArray(data.roles) && data.roles.length > 0
+          ? data.roles
+          : (data.role ? [data.role] : []);
+        if (drs.includes("admin") && data.active !== false) {
+          otherAdmins++;
+        }
+      });
+      if (otherAdmins === 0) {
+        throw new HttpsError("failed-precondition", "You cannot remove your own admin role — you are the last admin.");
+      }
+    }
+  }
+
+  const now = admin.firestore.FieldValue.serverTimestamp();
+  const updatePayload = {
+    roles,
+    managedRegionIds: Array.isArray(managedRegionIds) ? managedRegionIds : [],
+    assignedLocations: Array.isArray(assignedLocations) ? assignedLocations : [],
+    updatedAt: now,
+    updatedBy: callerUid,
+  };
+
+  // Mirror into the legacy `role` string (highest-tier role) for backwards compat
+  const TIER_ORDER = ["admin", "vp", "director", "manager"];
+  const primaryRole = TIER_ORDER.find(r => roles.includes(r)) || roles[0];
+  updatePayload.role = primaryRole;
+
+  // Write Firestore first — this is the source of truth for the app
+  await db.collection("orgs").doc(orgId).collection("users").doc(targetUid).update(updatePayload);
+
+  // Sync to Cognito custom:role claim (best-effort; don't fail the whole op if Cognito rejects)
+  try {
+    const AWS = require("aws-sdk");
+    const cognito = new AWS.CognitoIdentityServiceProvider({ region: "us-east-2" });
+    await cognito.adminUpdateUserAttributes({
+      UserPoolId: POOL_ID,
+      Username: targetUid,
+      UserAttributes: [
+        { Name: "custom:role", Value: primaryRole },
+      ],
+    }).promise();
+  } catch (e) {
+    console.warn("Cognito sync failed (Firestore already updated):", e.message);
+  }
+
+  // Revoke refresh tokens so the target user has to re-login and pick up new claims
+  try {
+    await admin.auth().revokeRefreshTokens(targetUid);
+  } catch (e) {
+    console.warn("Refresh token revocation failed:", e.message);
+  }
+
+  // Audit log
+  const before = {
+    roles: target.roles || (target.role ? [target.role] : []),
+    managedRegionIds: target.managedRegionIds || [],
+    assignedLocations: target.assignedLocations || [],
+  };
+  const after = {
+    roles,
+    managedRegionIds: updatePayload.managedRegionIds,
+    assignedLocations: updatePayload.assignedLocations,
+  };
+  await writeAuditLog(
+    orgId,
+    { uid: callerUid, email: caller.email, displayName: caller.displayName, ip: null, userAgent: null },
+    "user.roles.updated",
+    { type: "user", id: targetUid },
+    before,
+    after
+  );
+
+  return { success: true };
+});
+
+
+// ============================================================
+// CALLABLE: create, update, or delete a region.
+//
+// Payload: { orgId, action, regionId, name, locations }
+//   - action: 'create' | 'update' | 'delete'
+//   - regionId: required for update/delete
+//   - name: required for create/update
+//   - locations: array of location names (required for create; optional for update)
+//
+// On delete, cascades by removing the regionId from every user's
+// managedRegionIds array so there are no dangling references.
+// ============================================================
+exports.updateRegion = onCall(async (request) => {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Must be signed in.");
+
+  const { orgId, action, regionId, name, locations } = request.data;
+  const callerUid = request.auth.uid;
+
+  if (!orgId || !action) {
+    throw new HttpsError("invalid-argument", "orgId and action are required.");
+  }
+  if (!["create", "update", "delete"].includes(action)) {
+    throw new HttpsError("invalid-argument", "action must be create, update, or delete.");
+  }
+
+  // Verify caller is admin
+  const callerSnap = await db.collection("orgs").doc(orgId).collection("users").doc(callerUid).get();
+  if (!callerSnap.exists) {
+    throw new HttpsError("permission-denied", "Caller not found in tenant.");
+  }
+  const caller = callerSnap.data();
+  const callerRoles = Array.isArray(caller.roles) && caller.roles.length > 0
+    ? caller.roles
+    : (caller.role ? [caller.role] : []);
+  if (!callerRoles.includes("admin")) {
+    throw new HttpsError("permission-denied", "Only admins can manage regions.");
+  }
+
+  const regionsRef = db.collection("tenants").doc(orgId).collection("regions");
+  const now = admin.firestore.FieldValue.serverTimestamp();
+  const actor = { uid: callerUid, email: caller.email, displayName: caller.displayName, ip: null, userAgent: null };
+
+  if (action === "create") {
+    if (!name || typeof name !== "string" || !name.trim()) {
+      throw new HttpsError("invalid-argument", "name is required.");
+    }
+    const payload = {
+      name: name.trim(),
+      locations: Array.isArray(locations) ? locations : [],
+      createdAt: now,
+      createdBy: callerUid,
+      updatedAt: now,
+      updatedBy: callerUid,
+    };
+    const ref = await regionsRef.add(payload);
+    await writeAuditLog(orgId, actor, "region.created", { type: "region", id: ref.id }, null, { name: payload.name, locationCount: payload.locations.length });
+    return { success: true, regionId: ref.id };
+  }
+
+  if (action === "update") {
+    if (!regionId) throw new HttpsError("invalid-argument", "regionId is required.");
+    const existing = await regionsRef.doc(regionId).get();
+    if (!existing.exists) throw new HttpsError("not-found", "Region not found.");
+    const before = existing.data();
+
+    const updates = { updatedAt: now, updatedBy: callerUid };
+    if (typeof name === "string" && name.trim()) updates.name = name.trim();
+    if (Array.isArray(locations)) updates.locations = locations;
+
+    await regionsRef.doc(regionId).update(updates);
+    await writeAuditLog(orgId, actor, "region.updated", { type: "region", id: regionId },
+      { name: before.name, locationCount: (before.locations || []).length },
+      { name: updates.name || before.name, locationCount: (updates.locations || before.locations || []).length }
+    );
+    return { success: true };
+  }
+
+  if (action === "delete") {
+    if (!regionId) throw new HttpsError("invalid-argument", "regionId is required.");
+    const existing = await regionsRef.doc(regionId).get();
+    if (!existing.exists) throw new HttpsError("not-found", "Region not found.");
+    const before = existing.data();
+
+    // Cascade: remove this regionId from every user's managedRegionIds
+    const usersSnap = await db.collection("orgs").doc(orgId).collection("users").get();
+    const batch = db.batch();
+    let affectedUsers = 0;
+    usersSnap.forEach(doc => {
+      const data = doc.data();
+      if (Array.isArray(data.managedRegionIds) && data.managedRegionIds.includes(regionId)) {
+        batch.update(doc.ref, {
+          managedRegionIds: data.managedRegionIds.filter(id => id !== regionId),
+          updatedAt: now,
+          updatedBy: callerUid,
+        });
+        affectedUsers++;
+      }
+    });
+    batch.delete(regionsRef.doc(regionId));
+    await batch.commit();
+
+    await writeAuditLog(orgId, actor, "region.deleted", { type: "region", id: regionId },
+      { name: before.name, locationCount: (before.locations || []).length },
+      { affectedUsers }
+    );
+    return { success: true, affectedUsers };
+  }
+});
+
+
+// ============================================================
 // SCHEDULED: process scheduled invoice payments
 // Runs every hour. Finds invoices where scheduledPaymentDate <= today
 // and flips them from Approved to Paid, writing to the P&L.

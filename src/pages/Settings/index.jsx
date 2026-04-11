@@ -1,14 +1,17 @@
 import { useState } from "react";
 import UsersTab     from "./tabs/UsersTab";
+import RegionsTab   from "./tabs/RegionsTab";
 import LocationsTab from "./tabs/LocationsTab";
 import APIKeysTab   from "./tabs/APIKeysTab";
 import AuditLogTab  from "./tabs/AuditLogTab";
 import SSOTab       from "./tabs/SSOTab";
 import Breadcrumb   from "@/components/ui/Breadcrumb";
 import { useAuth }  from "@/hooks/useAuth";
+import { canAdministerSystem } from "@/lib/permissions";
 
 const TABS = [
   { id: "users",     label: "Users & roles",  adminOnly: false },
+  { id: "regions",   label: "Regions",         adminOnly: true  },
   { id: "locations", label: "Locations",       adminOnly: true  },
   { id: "apikeys",   label: "Integrations",    adminOnly: true  },
   { id: "audit",     label: "Activity",        adminOnly: true  },
@@ -18,7 +21,7 @@ const TABS = [
 export default function Settings() {
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState("users");
-  const isAdmin = user?.role === "admin";
+  const isAdmin = canAdministerSystem(user);
   const visibleTabs = TABS.filter(t => !t.adminOnly || isAdmin);
   const activeLabel = TABS.find(t => t.id === activeTab)?.label ?? "";
 
@@ -42,6 +45,7 @@ export default function Settings() {
       </nav>
       <div className="settings-panel">
         {activeTab === "users"     && <UsersTab />}
+        {activeTab === "regions"   && <RegionsTab />}
         {activeTab === "locations" && <LocationsTab />}
         {activeTab === "apikeys"   && <APIKeysTab />}
         {activeTab === "audit"     && <AuditLogTab />}

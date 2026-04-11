@@ -14,6 +14,8 @@ import { writePurchasingPnL } from '@/lib/pnl'
 import Breadcrumb from '@/components/ui/Breadcrumb'
 import { useDragDropUpload } from '@/hooks/useDragDropUpload'
 import DropZoneOverlay from '@/components/ui/DropZoneOverlay'
+import { canApproveInvoices, canAdministerSystem } from '@/lib/permissions'
+import { canApproveInvoices, canAdministerSystem } from '@/lib/permissions'
 import styles from './Purchasing.module.css'
 
 // ── Fallback vendors — overridden by Firestore per org ───────
@@ -105,8 +107,8 @@ export default function Purchasing() {
   const fileRef = useRef()
 
   const location   = selectedLocation === 'all' ? null : selectedLocation
-  const isDirector = user?.role === 'admin' || user?.role === 'director'
-  const isAdmin    = user?.role === 'admin'
+  const isDirector = canApproveInvoices(user)  // directors, VPs, and admins can approve invoices
+  const isAdmin    = canAdministerSystem(user)  // admin powers only
 
   // Drag-and-drop file upload (shared hook handles enter/leave counting,
   // escape-to-dismiss, and drag-end cleanup)
@@ -959,7 +961,7 @@ export default function Purchasing() {
                 <label>Location</label>
                 <select value={form.location} onChange={e => setForm(f => ({ ...f, location: e.target.value }))}>
                   <option value="">All Locations</option>
-                  {Object.keys(visibleLocations).map(l => <option key={l} value={l}>{cleanLocName(l)}</option>)}
+                  {visibleLocations.map(l => <option key={l.name} value={l.name}>{cleanLocName(l.name)}</option>)}
                 </select>
               </div>
               <div className={styles.field}>

@@ -57,7 +57,7 @@ export default function Transfers() {
   const [view,         setView]         = useState('board') // 'board' | 'timeline' | 'list'
   const [invItems,     setInvItems]     = useState([])
 
-  const allLocs = useMemo(() => Object.values(groupedLocations).flat(), [groupedLocations])
+  const allLocs = useMemo(() => visibleLocations.map(l => l.name), [visibleLocations])
   const myLocation = selectedLocation === 'all' ? null : selectedLocation
 
   useEffect(() => { load() }, [periodKey])

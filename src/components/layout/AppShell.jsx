@@ -67,10 +67,10 @@ export default function AppShell() {
               className={styles.locationSelect}
             >
               <option value="all">All Locations</option>
-              {Object.entries(groupedLocations).map(([director, locs]) => (
-                <optgroup key={director} label={director}>
+              {Object.entries(groupedLocations).map(([regionName, locs]) => (
+                <optgroup key={regionName} label={regionName}>
                   {locs.map(loc => (
-                    <option key={loc} value={loc}>{cleanLocName(loc)}</option>
+                    <option key={loc.name} value={loc.name}>{cleanLocName(loc.name)}</option>
                   ))}
                 </optgroup>
               ))}

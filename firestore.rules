@@ -42,6 +42,14 @@ service cloud.firestore {
         allow write: if ownsTenant(tenantId) && isDirector();
       }
 
+      // Regions — named buckets of locations for director/manager access control.
+      // Readable by anyone in the tenant (needed for visibility resolution).
+      // Writable only by admins (creates, renames, add/remove locations).
+      match /regions/{regionId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isAdmin();
+      }
+
       match /settings/{doc} {
         allow read:  if ownsTenant(tenantId);
         allow write: if ownsTenant(tenantId) && isDirector();

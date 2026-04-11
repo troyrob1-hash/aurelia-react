@@ -10,6 +10,7 @@ import { writeSalesPnL } from '@/lib/pnl'
 import Breadcrumb from '@/components/ui/Breadcrumb'
 import { useDragDropUpload } from '@/hooks/useDragDropUpload'
 import DropZoneOverlay from '@/components/ui/DropZoneOverlay'
+import { canApproveSales } from '@/lib/permissions'
 import {
   ResponsiveContainer, ComposedChart, Area, Line, ReferenceLine,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
@@ -91,14 +92,31 @@ export default function WeeklySales() {
   const [approving, setApproving] = useState(false)
   const [submissionEvents, setSubmissionEvents] = useState([])
   const [rejectNoteFromDoc, setRejectNoteFromDoc] = useState('')
+  const [hoveredCell, setHoveredCell] = useState(null)  // { dateKey, catKey, x, y } for context card
+  const [compareMode, setCompareMode]   = useState(null)  // null | 'priorPeriod' | 'yoy' | 'location'
+  const [compareTarget, setCompareTarget] = useState(null)  // location name for 'location' mode
+  const [compareData, setCompareData]   = useState([])  // parallel 12-week data for comparison
+  const [compareLoading, setCompareLoading] = useState(false)
+  const [showCompareMenu, setShowCompareMenu] = useState(false)
   const [anomalies,    setAnomalies]    = useState({})
   const [allLocData,   setAllLocData]   = useState([])
   const [historyChart, setHistoryChart] = useState([])  // trailing 12 weeks for chart
+
 
   // Request counter to cancel stale loadData calls when user rapidly switches
   // locations or weeks. Each loadData bumps this and captures its own ID;
   // if the ID doesn't match by the time an await resolves, bail silently.
   const loadRequestId = useRef(0)
+
+  // Dismiss hover context card when the user scrolls — the card is
+  // position: fixed and would otherwise strand at the wrong screen position
+  // while the underlying cell scrolls out from under it.
+  useEffect(() => {
+    if (!hoveredCell) return
+    const dismiss = () => setHoveredCell(null)
+    window.addEventListener('scroll', dismiss, true)
+    return () => window.removeEventListener('scroll', dismiss, true)
+  }, [hoveredCell])
 
   // Drag-and-drop file upload (shared hook handles enter/leave counting,
   // escape-to-dismiss, and drag-end cleanup)
@@ -110,7 +128,7 @@ export default function WeeklySales() {
 
   const location = selectedLocation === 'all' ? null : selectedLocation
   const isAll    = selectedLocation === 'all'
-  const isDirector = user?.role === 'admin' || user?.role === 'director'
+  const isDirector = canApproveSales(user)  // directors, VPs, and admins can approve
 
   const week = useMemo(() => {
     if (!currentWeek) return null
@@ -131,6 +149,49 @@ export default function WeeklySales() {
       }).filter(Boolean)
     }
   }, [currentWeek, periodKey, period, weekNum, currentLocation])
+
+  // Derive chart data with the current week's forecast projection layered in,
+  // and compare data layered in if compare mode is active.
+  const chartDataWithForecast = useMemo(() => {
+    if (!historyChart.length || !week) return historyChart
+
+    return historyChart.map((row, i) => {
+      let enhanced = row
+
+      // Forecast layer for the current week
+      if (row.isCurrent) {
+        const today = new Date()
+        today.setHours(0, 0, 0, 0)
+
+        let projectedTotal = 0
+        week.days.forEach(day => {
+          const dayEntered = (parseFloat(entries[day.key]?.popup)    || 0) +
+                             (parseFloat(entries[day.key]?.catering) || 0) +
+                             (parseFloat(entries[day.key]?.retail)   || 0)
+          if (dayEntered > 0 || day.date <= today) {
+            projectedTotal += dayEntered
+          } else {
+            const fc = forecast[day.key] || {}
+            projectedTotal += (parseFloat(fc.popup)    || 0) +
+                              (parseFloat(fc.catering) || 0) +
+                              (parseFloat(fc.retail)   || 0)
+          }
+        })
+
+        enhanced = {
+          ...enhanced,
+          forecastTotal: projectedTotal > row.total ? projectedTotal : null,
+        }
+      }
+
+      // Compare layer — parallel value at the same index
+      if (compareMode && compareData[i] !== undefined) {
+        enhanced = { ...enhanced, compareTotal: compareData[i] }
+      }
+
+      return enhanced
+    })
+  }, [historyChart, forecast, entries, week, compareMode, compareData])
 
   const priorKey = getPriorKey(periodKey)
   const yoyKey   = getYoYKey(periodKey)
@@ -328,12 +389,16 @@ export default function WeeklySales() {
           })
           const parts = wk.match(/(\d+)-P(\d+)-W(\d+)/)
           const label = parts ? `P${parts[2]}W${parts[3]}` : wk
+          const total = totals.popup + totals.catering + totals.retail
           return {
             weekKey: wk,
             label,
             ...totals,
-            total: totals.popup + totals.catering + totals.retail,
+            total,
             isCurrent: wk === week.weekKey,
+            // forecastTotal is populated only for the current week in the effect below,
+            // after forecast data has been loaded.
+            forecastTotal: null,
           }
         } catch {
           return null
@@ -346,10 +411,81 @@ export default function WeeklySales() {
     }
   }
 
+  // Load a parallel 12-week dataset for comparison mode.
+  // Supports: prior period, year-over-year, or another location.
+  async function loadCompareData(mode, targetLocation = null) {
+    if (!location || !week) return
+    setCompareLoading(true)
+    try {
+      // Build 12 week keys depending on mode
+      const weekKeys = []
+      let seedKey = week.weekKey
+      if (mode === 'priorPeriod') {
+        // Shift each week back by 4 (roughly one period) to compare
+        // previous period's same-week numbers
+        for (let i = 0; i < 4; i++) seedKey = getPriorKey(seedKey)
+      } else if (mode === 'yoy') {
+        seedKey = getYoYKey(seedKey)
+      }
+      // For 'location' mode we keep the same weeks, just a different location.
+      if (!seedKey) {
+        setCompareLoading(false)
+        return
+      }
+
+      weekKeys.push(seedKey)
+      let k = seedKey
+      for (let i = 0; i < 11; i++) {
+        k = getPriorKey(k)
+        if (!k) break
+        weekKeys.unshift(k)
+      }
+
+      const targetLoc = mode === 'location' ? targetLocation : location
+      const results = await Promise.all(weekKeys.map(async (wk) => {
+        try {
+          const ref = doc(db, 'tenants', orgId, 'locations', locId(targetLoc), 'sales', wk)
+          const snap = await getDoc(ref)
+          const entries = snap.exists() ? (snap.data().entries || {}) : {}
+          const totals = { popup: 0, catering: 0, retail: 0 }
+          Object.values(entries).forEach(day => {
+            CATS.forEach(c => {
+              totals[c.key] += parseFloat(day?.[c.key]) || 0
+            })
+          })
+          return totals.popup + totals.catering + totals.retail
+        } catch {
+          return 0
+        }
+      }))
+
+      setCompareData(results)
+    } catch (e) {
+      console.error('Failed to load compare data:', e)
+      toast.error('Failed to load comparison data')
+    } finally {
+      setCompareLoading(false)
+    }
+  }
+
+  function openCompare(mode, targetLocation = null) {
+    setCompareMode(mode)
+    setCompareTarget(targetLocation)
+    setShowCompareMenu(false)
+    loadCompareData(mode, targetLocation)
+  }
+
+  function clearCompare() {
+    setCompareMode(null)
+    setCompareTarget(null)
+    setCompareData([])
+    setShowCompareMenu(false)
+  }
+
   async function loadAllLocations() {
     setLoading(true)
     try {
-      const locNames = Object.keys(visibleLocations)
+      const locNames = visibleLocations.map(l => l.name)
 
       // Build the list of 8 prior week keys once (same for every location)
       const weekKeys = [periodKey]
@@ -1033,7 +1169,110 @@ export default function WeeklySales() {
           0%, 100% { opacity: 1; transform: scale(1); }
           50% { opacity: 0.4; transform: scale(0.85); }
         }
+        @keyframes contextFadeIn {
+          from { opacity: 0; transform: translate(-50%, -4px); }
+          to { opacity: 1; transform: translate(-50%, 0); }
+        }
       `}</style>
+
+      {/* ── Cell hover context card ── */}
+      {hoveredCell && (() => {
+        const { dateKey, catKey, dayName, catLabel, catColor, x, y } = hoveredCell
+        const currentVal  = parseFloat(entries[dateKey]?.[catKey]) || 0
+        const priorVal    = parseFloat(priorEntries[dateKey]?.[catKey]) || 0
+        const yoyVal      = parseFloat(yoyEntries[dateKey]?.[catKey]) || 0
+        const forecastVal = parseFloat(forecast[dateKey]?.[catKey]) || 0
+        const anomaly     = anomalies[`${dateKey}_${catKey}`]
+        const avg8w       = anomaly?.mean || 0
+
+        // Always show the card — even empty state is informative
+        // (the user learns the hover feature exists)
+        const hasAnyData = currentVal > 0 || priorVal > 0 || yoyVal > 0 || forecastVal > 0 || avg8w > 0
+
+        const compareLine = (label, val, color) => {
+          if (val === 0) return null
+          const diff = currentVal - val
+          const pct  = val > 0 ? ((diff / val) * 100) : null
+          return (
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 11, padding: '4px 0' }}>
+              <span style={{ color: '#94a3b8' }}>{label}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ color: '#e2e8f0', fontFamily: 'ui-monospace, monospace' }}>{fmt$(val)}</span>
+                {currentVal > 0 && pct !== null && (
+                  <span style={{
+                    fontSize: 10, fontWeight: 600,
+                    color: diff >= 0 ? '#6ee7b7' : '#fca5a5',
+                    minWidth: 46, textAlign: 'right',
+                  }}>
+                    {diff >= 0 ? '+' : ''}{pct.toFixed(0)}%
+                  </span>
+                )}
+              </div>
+            </div>
+          )
+        }
+
+        return (
+          <div
+            style={{
+              position: 'fixed',
+              left: x,
+              top: y - 8,
+              transform: 'translate(-50%, -100%)',
+              background: '#0f172a',
+              color: '#fff',
+              borderRadius: 10,
+              padding: '12px 14px',
+              minWidth: 240,
+              boxShadow: '0 8px 24px rgba(0, 0, 0, 0.25)',
+              zIndex: 1500,
+              pointerEvents: 'none',
+              animation: 'contextFadeIn 0.12s ease-out',
+              fontFamily: 'inherit',
+            }}
+          >
+            {/* Header */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, paddingBottom: 8, marginBottom: 8, borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+              <span style={{ width: 8, height: 8, borderRadius: 2, background: catColor, display: 'inline-block' }} />
+              <span style={{ fontSize: 11, fontWeight: 600, color: '#e2e8f0' }}>{dayName} · {catLabel}</span>
+            </div>
+
+            {/* Current value */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+              <span style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>Current</span>
+              <span style={{ fontSize: 18, fontWeight: 700, color: '#fff', fontFamily: 'ui-monospace, monospace' }}>
+                {currentVal > 0 ? fmt$(currentVal) : '—'}
+              </span>
+            </div>
+
+            {/* Comparisons */}
+            <div style={{ borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: 6 }}>
+              {hasAnyData ? (
+                <>
+                  {compareLine('8-wk avg',     avg8w,       '#94a3b8')}
+                  {compareLine('Last week',    priorVal,    '#94a3b8')}
+                  {compareLine('Same wk YoY',  yoyVal,      '#94a3b8')}
+                  {compareLine('Forecast',     forecastVal, '#94a3b8')}
+                </>
+              ) : (
+                <div style={{ fontSize: 11, color: '#64748b', fontStyle: 'italic', textAlign: 'center', padding: '6px 0' }}>
+                  No comparison data yet
+                </div>
+              )}
+            </div>
+
+            {/* Arrow pointer */}
+            <div style={{
+              position: 'absolute',
+              bottom: -6,
+              left: '50%',
+              transform: 'translateX(-50%) rotate(45deg)',
+              width: 12, height: 12,
+              background: '#0f172a',
+            }} />
+          </div>
+        )
+      })()}
 
       {/* ── Header ── */}
       <div className={styles.header}>
@@ -1144,21 +1383,140 @@ export default function WeeklySales() {
               </div>
               <div style={{ fontSize: 14, color: '#0f172a', fontWeight: 600 }}>
                 Sales by category · {cleanLocName(location)}
+                {compareMode && (
+                  <span style={{ color: '#94a3b8', fontWeight: 500 }}>
+                    {' '}vs{' '}
+                    <span style={{ color: '#7c3aed' }}>
+                      {compareMode === 'priorPeriod' ? 'prior period' :
+                       compareMode === 'yoy' ? 'last year' :
+                       `${cleanLocName(compareTarget)}`}
+                    </span>
+                  </span>
+                )}
               </div>
             </div>
-            <div style={{ display: 'flex', gap: 16, fontSize: 11 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', position: 'relative' }}>
+              {compareMode ? (
+                <button
+                  onClick={clearCompare}
+                  style={{
+                    fontSize: 11, padding: '6px 12px',
+                    background: '#f3e8ff', color: '#7c3aed',
+                    border: '1px solid #e9d5ff', borderRadius: 20,
+                    cursor: 'pointer', fontWeight: 500, fontFamily: 'inherit',
+                    display: 'flex', alignItems: 'center', gap: 5,
+                  }}
+                >
+                  ✕ Clear comparison
+                </button>
+              ) : (
+                <button
+                  onClick={() => setShowCompareMenu(m => !m)}
+                  style={{
+                    fontSize: 11, padding: '6px 12px',
+                    background: '#fff', color: '#475569',
+                    border: '1px solid #e2e8f0', borderRadius: 20,
+                    cursor: 'pointer', fontWeight: 500, fontFamily: 'inherit',
+                  }}
+                >
+                  Compare ▾
+                </button>
+              )}
+              {showCompareMenu && (
+                <>
+                  <div
+                    onClick={() => setShowCompareMenu(false)}
+                    style={{ position: 'fixed', inset: 0, zIndex: 100 }}
+                  />
+                  <div style={{
+                    position: 'absolute', top: 34, right: 0,
+                    background: '#fff',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: 10,
+                    boxShadow: '0 8px 24px rgba(0,0,0,0.08)',
+                    padding: 6,
+                    minWidth: 220,
+                    zIndex: 101,
+                  }}>
+                    <button
+                      onClick={() => openCompare('priorPeriod')}
+                      style={{
+                        display: 'block', width: '100%', textAlign: 'left',
+                        padding: '8px 12px', fontSize: 12,
+                        background: 'none', border: 'none', cursor: 'pointer',
+                        color: '#0f172a', borderRadius: 6, fontFamily: 'inherit',
+                      }}
+                      onMouseEnter={e => e.currentTarget.style.background = '#f8fafc'}
+                      onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                    >
+                      <div style={{ fontWeight: 500 }}>Prior period</div>
+                      <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 1 }}>Compare to P{Math.max(1, period - 1)}</div>
+                    </button>
+                    <button
+                      onClick={() => openCompare('yoy')}
+                      style={{
+                        display: 'block', width: '100%', textAlign: 'left',
+                        padding: '8px 12px', fontSize: 12,
+                        background: 'none', border: 'none', cursor: 'pointer',
+                        color: '#0f172a', borderRadius: 6, fontFamily: 'inherit',
+                      }}
+                      onMouseEnter={e => e.currentTarget.style.background = '#f8fafc'}
+                      onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                    >
+                      <div style={{ fontWeight: 500 }}>Same week last year</div>
+                      <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 1 }}>YoY comparison</div>
+                    </button>
+                    <div style={{ height: 1, background: '#f1f5f9', margin: '4px 6px' }} />
+                    <div style={{ padding: '6px 12px 2px', fontSize: 10, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>
+                      Another location
+                    </div>
+                    <div style={{ maxHeight: 180, overflowY: 'auto' }}>
+                      {visibleLocations.map(l => l.name).filter(n => n !== location).map(name => (
+                        <button
+                          key={name}
+                          onClick={() => openCompare('location', name)}
+                          style={{
+                            display: 'block', width: '100%', textAlign: 'left',
+                            padding: '7px 12px', fontSize: 12,
+                            background: 'none', border: 'none', cursor: 'pointer',
+                            color: '#0f172a', borderRadius: 6, fontFamily: 'inherit',
+                          }}
+                          onMouseEnter={e => e.currentTarget.style.background = '#f8fafc'}
+                          onMouseLeave={e => e.currentTarget.style.background = 'none'}
+                        >
+                          {cleanLocName(name)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+            <div style={{ display: 'flex', gap: 14, fontSize: 11, alignItems: 'center' }}>
               {CATS.map(cat => (
                 <div key={cat.key} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                   <span style={{ width: 9, height: 9, borderRadius: 2, background: cat.color, display: 'inline-block' }} />
                   <span style={{ color: '#64748b', fontWeight: 500 }}>{cat.label}</span>
                 </div>
               ))}
+              {chartDataWithForecast.some(r => r.forecastTotal) && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 5, paddingLeft: 10, borderLeft: '1px solid #e5e7eb' }}>
+                  <span style={{ width: 14, height: 2, background: 'repeating-linear-gradient(90deg, #1D9E75 0 4px, transparent 4px 7px)', display: 'inline-block' }} />
+                  <span style={{ color: '#1D9E75', fontWeight: 600 }}>Forecast</span>
+                </div>
+              )}
+              {compareMode && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 5, paddingLeft: 10, borderLeft: '1px solid #e5e7eb' }}>
+                  <span style={{ width: 14, height: 2, background: 'repeating-linear-gradient(90deg, #7c3aed 0 3px, transparent 3px 6px)', display: 'inline-block' }} />
+                  <span style={{ color: '#7c3aed', fontWeight: 600 }}>Comparison</span>
+                </div>
+              )}
             </div>
           </div>
 
           <ResponsiveContainer width="100%" height={220}>
             <ComposedChart
-              data={historyChart}
+              data={chartDataWithForecast}
               margin={{ top: 8, right: 8, left: -12, bottom: 0 }}
             >
               <defs>
@@ -1217,6 +1575,31 @@ export default function WeeklySales() {
                 activeDot={{ r: 5, fill: '#0f172a', stroke: '#fff', strokeWidth: 2 }}
                 name="Total"
               />
+              <Line
+                type="monotone"
+                dataKey="forecastTotal"
+                stroke="#1D9E75"
+                strokeWidth={2}
+                strokeDasharray="5 3"
+                dot={{ r: 4, fill: '#1D9E75', stroke: '#fff', strokeWidth: 2 }}
+                connectNulls={false}
+                name="Forecast"
+                isAnimationActive={false}
+              />
+              {compareMode && (
+                <Line
+                  type="monotone"
+                  dataKey="compareTotal"
+                  stroke="#7c3aed"
+                  strokeWidth={2}
+                  strokeDasharray="3 3"
+                  dot={{ r: 3, fill: '#7c3aed', strokeWidth: 0 }}
+                  activeDot={{ r: 5, fill: '#7c3aed', stroke: '#fff', strokeWidth: 2 }}
+                  connectNulls={true}
+                  name="Comparison"
+                  isAnimationActive={false}
+                />
+              )}
 
               {/* Highlight the current week with a reference line */}
               {historyChart.some(d => d.isCurrent) && (
@@ -1549,7 +1932,24 @@ export default function WeeklySales() {
                         ? `${anomalyPct > 0 ? '+' : ''}${anomalyPct}% vs 8-week average ($${anomaly.mean.toFixed(0)}) — please verify`
                         : undefined
                       return (
-                        <td key={cat.key} className={styles.tdInput} style={{ position: 'relative' }}>
+                        <td
+                          key={cat.key}
+                          className={styles.tdInput}
+                          style={{ position: 'relative' }}
+                          onMouseEnter={e => {
+                            const rect = e.currentTarget.getBoundingClientRect()
+                            setHoveredCell({
+                              dateKey: day.key,
+                              catKey: cat.key,
+                              dayName: day.name,
+                              catLabel: cat.label,
+                              catColor: cat.color,
+                              x: rect.left + rect.width / 2,
+                              y: rect.top,
+                            })
+                          }}
+                          onMouseLeave={() => setHoveredCell(null)}
+                        >
                           <div className={`${styles.inputWrap} ${isAnomaly ? styles.inputAnomaly : ''} ${hasValue ? styles.inputFilled : ''}`}>
                             <span className={styles.dollar}>$</span>
                             <input

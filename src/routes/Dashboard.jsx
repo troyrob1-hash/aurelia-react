@@ -183,7 +183,7 @@ export default function Dashboard() {
 
   const location  = selectedLocation === 'all' ? null : selectedLocation
   const isAll     = selectedLocation === 'all'
-  const locNames  = Object.keys(visibleLocations)
+  const locNames  = visibleLocations.map(l => l.name)
 
   async function aggregatePnL(periodK, locs) {
     if (!isAll && location) return await readPnL(location, periodK).catch(() => ({}))
