@@ -9,7 +9,7 @@
 // Both hooks return { data, loading, lastUpdated } and auto-cleanup on unmount.
 
 import { useState, useEffect, useRef } from 'react'
-import { subscribePnL } from './pnl'
+import { subscribePnL, fetchPnLHistory } from './pnl'
 
 // Keys that are numeric and get summed in aggregation.
 // Keep this list in sync with what the P&L schema actually reads.
@@ -99,3 +99,67 @@ export function useMultiLocationPnL(locations, period) {
 
   return { data: aggregated, perLocation, loading, lastUpdated }
 }
+
+// Historical data hook — loads N prior periods of P&L data for one or
+// many locations. Used to power KPI strip sparklines and 12-period
+// trend charts.
+//
+// Unlike usePnL / useMultiLocationPnL, this is NOT a live subscription:
+// historical data doesn't change, so we load once per (locations, periodKeys)
+// input and cache in state.
+//
+// Returns:
+//   {
+//     byPeriod: { '2026-P04-W1': { gfs_total: 4820, ... }, ... },
+//     loading
+//   }
+// For multi-location calls, byPeriod values are SUMS across all locations.
+export function usePnLHistory(locations, periodKeys) {
+  const [byPeriod, setByPeriod] = useState({})
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (!Array.isArray(locations) || locations.length === 0 ||
+        !Array.isArray(periodKeys) || periodKeys.length === 0) {
+      setByPeriod({})
+      setLoading(false)
+      return
+    }
+    let cancelled = false
+    setLoading(true)
+    ;(async () => {
+      try {
+        // Fetch each location's history in parallel
+        const perLocation = await Promise.all(
+          locations.map(loc => fetchPnLHistory(loc, periodKeys).catch(() => ({})))
+        )
+        if (cancelled) return
+
+        // Aggregate: for each period, sum numeric keys across all locations
+        const aggregated = {}
+        periodKeys.forEach(pk => {
+          const zeros = {}
+          NUMERIC_KEYS.forEach(k => { zeros[k] = 0 })
+          perLocation.forEach(locHistory => {
+            const periodData = locHistory[pk]
+            if (!periodData) return
+            NUMERIC_KEYS.forEach(k => {
+              zeros[k] += (periodData[k] || 0)
+            })
+          })
+          aggregated[pk] = zeros
+        })
+        setByPeriod(aggregated)
+      } catch (e) {
+        console.error('usePnLHistory error:', e)
+        setByPeriod({})
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [JSON.stringify(locations), JSON.stringify(periodKeys)])
+
+  return { byPeriod, loading }
+}
+

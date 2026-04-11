@@ -4,7 +4,7 @@
 // Period: '2026-W14' (weekly) or '2026-04' (monthly)
 
 import { db } from './firebase'
-import { doc, setDoc, getDoc, onSnapshot, serverTimestamp } from 'firebase/firestore'
+import { doc, setDoc, getDoc, onSnapshot, serverTimestamp, collection, query, where, getDocs, documentId } from 'firebase/firestore'
 
 const TENANT = 'fooda'
 
@@ -25,6 +25,34 @@ export function weekPeriod(offset = 0) {
 
 export function monthPeriod(date = new Date()) {
   return `${date.getFullYear()}-P${String(date.getMonth()+1).padStart(2,'0')}`
+}
+
+// Walk back one period from a period key like '2026-P04-W2'.
+// Assumes 4 weeks per period (Fooda fiscal calendar).
+// Returns null if the key doesn't parse.
+export function getPriorKey(key) {
+  const parts = key?.match(/(\d+)-P(\d+)-W(\d+)/)
+  if (!parts) return null
+  let [, yr, p, w] = parts.map(Number)
+  if (w > 1) return `${yr}-P${String(p).padStart(2,'0')}-W${w-1}`
+  if (p > 1) return `${yr}-P${String(p-1).padStart(2,'0')}-W4`
+  return `${yr-1}-P12-W4`
+}
+
+// Build a list of N trailing period keys ending at (and including) currentKey.
+// Example: getTrailingPeriodKeys('2026-P04-W2', 12) returns
+//   ['2026-P01-W3', '2026-P01-W4', '2026-P02-W1', ..., '2026-P04-W2']
+// (12 keys, oldest first, newest last)
+export function getTrailingPeriodKeys(currentKey, count = 12) {
+  if (!currentKey) return []
+  const keys = [currentKey]
+  let k = currentKey
+  for (let i = 1; i < count; i++) {
+    k = getPriorKey(k)
+    if (!k) break
+    keys.unshift(k)
+  }
+  return keys
 }
 
 // Generic writer — merges into existing period doc
@@ -70,6 +98,37 @@ export function subscribePnL(location, period, onChange, onError) {
       if (onError) onError(err)
     }
   )
+}
+
+// Batched historical reader — fetches multiple periods for ONE location
+// in a single Firestore collection query. Much faster than N separate
+// getDoc calls, especially when loading 12 periods for 62 locations.
+//
+// Returns an object keyed by period: { '2026-P04-W1': {...}, '2026-P03-W4': {...}, ... }
+// Missing periods are omitted (not returned as empty objects).
+export async function fetchPnLHistory(location, periodKeys) {
+  if (!location || !Array.isArray(periodKeys) || periodKeys.length === 0) {
+    return {}
+  }
+  // Firestore 'in' queries are capped at 30 values per query. We batch
+  // if more than 30 periods are requested (unlikely but defensive).
+  const BATCH_SIZE = 30
+  const batches = []
+  for (let i = 0; i < periodKeys.length; i += BATCH_SIZE) {
+    batches.push(periodKeys.slice(i, i + BATCH_SIZE))
+  }
+  const col = collection(db, 'tenants', TENANT, 'pnl', locId(location), 'periods')
+  const results = {}
+  await Promise.all(
+    batches.map(async batch => {
+      const q = query(col, where(documentId(), 'in', batch))
+      const snap = await getDocs(q)
+      snap.forEach(docSnap => {
+        results[docSnap.id] = docSnap.data()
+      })
+    })
+  )
+  return results
 }
 
 // ── Module writers ────────────────────────────────────────────

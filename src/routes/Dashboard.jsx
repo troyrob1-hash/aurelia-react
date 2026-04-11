@@ -5,8 +5,8 @@ import { useToast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/store/authStore'
 import { db } from '@/lib/firebase'
 import { doc, getDoc } from 'firebase/firestore'
-import { readPnL } from '@/lib/pnl'
-import { usePnL, useMultiLocationPnL } from '@/lib/usePnL'
+import { readPnL, getPriorKey, getTrailingPeriodKeys } from '@/lib/pnl'
+import { usePnL, useMultiLocationPnL, usePnLHistory } from '@/lib/usePnL'
 import { usePeriod } from '@/store/PeriodContext'
 import { ChevronDown, ChevronRight, RefreshCw, Download, ExternalLink } from 'lucide-react'
 import styles from './Dashboard.module.css'
@@ -148,16 +148,6 @@ function computePrimeCost(p) {
   return rev > 0 ? (labor + cogs) / rev : null
 }
 
-// Derive prior period key — one week back
-function getPriorKey(key) {
-  const parts = key.match(/(\d+)-P(\d+)-W(\d+)/)
-  if (!parts) return null
-  let [, yr, p, w] = parts.map(Number)
-  if (w > 1) return `${yr}-P${String(p).padStart(2,'0')}-W${w-1}`
-  if (p > 1) return `${yr}-P${String(p-1).padStart(2,'0')}-W4`
-  return `${yr-1}-P12-W4`
-}
-
 // Budget pacing — how far through the period are we (0–1)
 function getPeriodPacing(periodKey) {
   const parts = periodKey.match(/(\d+)-P(\d+)-W(\d+)/)
@@ -194,6 +184,13 @@ export default function Dashboard() {
   const singlePrior   = usePnL(!isAll ? location : null, !isAll ? priorKey  : null)
   const multiCurrent  = useMultiLocationPnL(isAll ? locNames : [], isAll ? periodKey : null)
   const multiPrior    = useMultiLocationPnL(isAll ? locNames : [], isAll ? priorKey  : null)
+
+  // Trailing 12 periods of historical data for KPI sparklines and trend chart.
+  // Loaded once per (locations, periodKey) pair. Not a live subscription —
+  // historical periods don't change.
+  const trailingKeys = getTrailingPeriodKeys(periodKey, 12)
+  const historyLocations = isAll ? locNames : (location ? [location] : [])
+  const { byPeriod: history, loading: historyLoading } = usePnLHistory(historyLocations, trailingKeys)
 
   const pnl       = isAll ? multiCurrent.data : singleCurrent.data
   const priorPnl  = isAll ? multiPrior.data   : singlePrior.data
