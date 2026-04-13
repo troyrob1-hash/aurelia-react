@@ -1,21 +1,13 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { doc, getDoc, setDoc, collection, getDocs, serverTimestamp } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
+import { getPriorKey as getPriorKeyLib, locId as locIdLib } from '@/lib/pnl'
 
-/**
- * Compute prior period key from current
- * Format: YYYY-P##-W#
- */
-function getPriorKey(key) {
-  const parts = key?.match(/(\d+)-P(\d+)-W(\d+)/)
-  if (!parts) return null
-  let [, yr, p, w] = parts.map(Number)
-  if (w > 1) return `${yr}-P${String(p).padStart(2, '0')}-W${w - 1}`
-  if (p > 1) return `${yr}-P${String(p - 1).padStart(2, '0')}-W4`
-  return `${yr - 1}-P12-W4`
-}
-
-export const sanitizeDocId = (str) => str?.replace(/[^a-zA-Z0-9]/g, '_') || ''
+// getPriorKey + sanitizeDocId moved to @/lib/pnl as the canonical source.
+// Re-exported here so existing call sites (Inventory.jsx imports sanitizeDocId
+// from this module) keep working without churn.
+const getPriorKey = getPriorKeyLib
+export const sanitizeDocId = locIdLib
 
 export const fmt$ = (v) => '$' + Number(v || 0).toLocaleString('en-US', { 
   minimumFractionDigits: 2, 
@@ -46,6 +38,10 @@ export function useInventory(orgId, locationId, periodKey, user) {
   const [dirty, setDirty] = useState(false)
   const [session, setSession] = useState(null)
   const [error, setError] = useState(null)
+  // Buddy mode: dual attribution for team counts. Counts taken in buddy mode
+  // get both names persisted to lastCountedBy + counterNames.
+  const [buddyMode, setBuddyMode] = useState(false)
+  const [buddyNames, setBuddyNames] = useState({ caller: '', marker: '' })
 
   const priorKey = getPriorKey(periodKey)
   const locId = sanitizeDocId(locationId)
@@ -120,11 +116,55 @@ export function useInventory(orgId, locationId, periodKey, user) {
             avgDailyUsage: override.avgDailyUsage,
             lastCountedAt: override.lastCountedAt,
             lastCountedBy: override.lastCountedBy,
+            isKey: override.isKey || false,
           }
         })
 
-      setItems(inventoryItems)
-      setPriorItems([])
+      // Pick up custom items — overrides that aren't tied to a master item.
+      // These have id starting with 'custom_' and the data is fully self-contained.
+      const customItems = []
+      locationItemsSnap.forEach(d => {
+        const data = d.data()
+        if (data.custom && !data.removed) {
+          customItems.push({
+            id: d.id,
+            name: data.name || 'Untitled item',
+            unitCost: data.unitCost || 0,
+            packSize: data.packSize || null,
+            vendor: data.vendor || null,
+            qty: data.qty ?? null,
+            parLevel: data.parLevel || null,
+            reorderPoint: data.reorderPoint || null,
+            avgDailyUsage: data.avgDailyUsage || null,
+            lastCountedAt: data.lastCountedAt || null,
+            lastCountedBy: data.lastCountedBy || null,
+            isKey: data.isKey || false,
+            custom: true,
+          })
+        }
+      })
+
+      setItems([...inventoryItems, ...customItems])
+
+      // Load prior period items from Path B snapshot for variance + copyPrior.
+      // Best-effort: if no prior snapshot exists, priorItems stays empty.
+      try {
+        if (priorKey) {
+          const priorSnapRef = doc(db, 'tenants', orgId, 'locations', locId, 'inventory', priorKey)
+          const priorSnap = await getDoc(priorSnapRef)
+          if (priorSnap.exists()) {
+            const priorData = priorSnap.data()
+            setPriorItems(Array.isArray(priorData.items) ? priorData.items : [])
+          } else {
+            setPriorItems([])
+          }
+        } else {
+          setPriorItems([])
+        }
+      } catch (e) {
+        console.warn('Failed to load prior period items:', e)
+        setPriorItems([])
+      }
 
       if (priorPnlSnap?.exists()) {
         setOpeningValue(priorPnlSnap.data().closingValue || 0)
@@ -184,19 +224,37 @@ export function useInventory(orgId, locationId, periodKey, user) {
     setItems(prev => prev.map(item => {
       if (item.id !== itemId) return item
       const next = Math.max(0, parseFloat(((item.qty || 0) + delta).toFixed(2)))
-      return { ...item, qty: next, lastCountedAt: new Date().toISOString(), lastCountedBy: user?.email }
+      const attribution = buddyMode && buddyNames.caller && buddyNames.marker
+        ? `${buddyNames.caller} + ${buddyNames.marker}`
+        : (user?.email || 'unknown')
+      return {
+        ...item,
+        qty: next,
+        lastCountedAt: new Date().toISOString(),
+        lastCountedBy: attribution,
+        countedInBuddyMode: buddyMode,
+      }
     }))
     setDirty(true)
-  }, [user])
+  }, [user, buddyMode, buddyNames])
 
   const setQty = useCallback((itemId, value) => {
     setItems(prev => prev.map(item => {
       if (item.id !== itemId) return item
       const qty = value === '' ? null : Math.max(0, parseFloat(value) || 0)
-      return { ...item, qty, lastCountedAt: new Date().toISOString(), lastCountedBy: user?.email }
+      const attribution = buddyMode && buddyNames.caller && buddyNames.marker
+        ? `${buddyNames.caller} + ${buddyNames.marker}`
+        : (user?.email || 'unknown')
+      return {
+        ...item,
+        qty,
+        lastCountedAt: new Date().toISOString(),
+        lastCountedBy: attribution,
+        countedInBuddyMode: buddyMode,
+      }
     }))
     setDirty(true)
-  }, [user])
+  }, [user, buddyMode, buddyNames])
 
   const copyPrior = useCallback((itemId) => {
     const priorItem = priorItems.find(p => p.id === itemId)
@@ -204,6 +262,138 @@ export function useInventory(orgId, locationId, periodKey, user) {
       setQty(itemId, priorItem.qty)
     }
   }, [priorItems, setQty])
+
+  // Toggle whether an item is marked as "key" — surfaces in Quick count mode.
+  // Persists immediately so the flag survives a reload even if the user
+  // hasn't clicked Save yet.
+  const toggleKey = useCallback(async (itemId) => {
+    const target = items.find(i => i.id === itemId)
+    if (!target) return
+    const nextValue = !target.isKey
+    // Optimistic local update
+    setItems(prev => prev.map(i => i.id === itemId ? { ...i, isKey: nextValue } : i))
+    // Persist immediately to the per-item override doc
+    try {
+      await setDoc(
+        doc(db, 'tenants', orgId, 'inventory', locId, 'items', itemId),
+        { isKey: nextValue, updatedAt: serverTimestamp() },
+        { merge: true }
+      )
+    } catch (e) {
+      console.error('Failed to toggle isKey:', e)
+      // Revert on failure
+      setItems(prev => prev.map(i => i.id === itemId ? { ...i, isKey: !nextValue } : i))
+    }
+  }, [items, orgId, locId])
+
+  // Hide an item from this location. For master items this sets removed: true
+  // on the override doc. For custom items it also sets removed: true (we don't
+  // hard-delete, so it can be restored).
+  const removeItem = useCallback(async (itemId) => {
+    const target = items.find(i => i.id === itemId)
+    if (!target) return
+    // Optimistic: remove from local state immediately
+    setItems(prev => prev.filter(i => i.id !== itemId))
+    try {
+      await setDoc(
+        doc(db, 'tenants', orgId, 'inventory', locId, 'items', itemId),
+        {
+          removed:   true,
+          removedAt: serverTimestamp(),
+          removedBy: user?.email || 'unknown',
+          // For custom items, preserve the data fields so we can restore
+          ...(target.custom ? {
+            custom:   true,
+            name:     target.name,
+            unitCost: target.unitCost,
+            packSize: target.packSize,
+            vendor:   target.vendor,
+          } : {}),
+        },
+        { merge: true }
+      )
+    } catch (e) {
+      console.error('Failed to remove item:', e)
+      setItems(prev => [...prev, target])  // revert
+    }
+  }, [items, orgId, locId, user])
+
+  // Restore a previously removed item.
+  const restoreItem = useCallback(async (itemId) => {
+    try {
+      await setDoc(
+        doc(db, 'tenants', orgId, 'inventory', locId, 'items', itemId),
+        {
+          removed:    false,
+          restoredAt: serverTimestamp(),
+          restoredBy: user?.email || 'unknown',
+        },
+        { merge: true }
+      )
+      // Reload to pick up the restored item from master + overrides
+      await load()
+    } catch (e) {
+      console.error('Failed to restore item:', e)
+    }
+  }, [orgId, locId, user, load])
+
+  // Add a custom item that exists only at this location.
+  const addCustomItem = useCallback(async (data) => {
+    if (!data.name) return
+    const customId = `custom_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+    const newItem = {
+      name:     data.name,
+      unitCost: parseFloat(data.unitCost) || 0,
+      packSize: data.packSize || null,
+      vendor:   data.vendor || null,
+      custom:   true,
+      removed:  false,
+      createdAt: serverTimestamp(),
+      createdBy: user?.email || 'unknown',
+    }
+    try {
+      await setDoc(
+        doc(db, 'tenants', orgId, 'inventory', locId, 'items', customId),
+        newItem
+      )
+      // Optimistic local insert
+      setItems(prev => [...prev, {
+        id: customId,
+        ...newItem,
+        qty: null,
+        isKey: false,
+      }])
+    } catch (e) {
+      console.error('Failed to add custom item:', e)
+    }
+  }, [orgId, locId, user])
+
+  // List of removed items for the manage drawer. We need to query the
+  // override collection separately because removed items are filtered out
+  // of the main items list during load.
+  const [removedItems, setRemovedItems] = useState([])
+  const loadRemovedItems = useCallback(async () => {
+    if (!orgId || !locId) return
+    try {
+      const snap = await getDocs(collection(db, 'tenants', orgId, 'inventory', locId, 'items'))
+      const removed = []
+      snap.forEach(d => {
+        const data = d.data()
+        if (data.removed) {
+          removed.push({
+            id:       d.id,
+            name:     data.name || (data.custom ? 'Untitled custom item' : `Master item ${d.id}`),
+            vendor:   data.vendor || null,
+            custom:   data.custom || false,
+            removedAt: data.removedAt || null,
+          })
+        }
+      })
+      setRemovedItems(removed)
+    } catch (e) {
+      console.error('Failed to load removed items:', e)
+    }
+  }, [orgId, locId])
 
   const markSectionComplete = useCallback(async (sectionKey) => {
     if (!session) return
@@ -270,6 +460,34 @@ export function useInventory(orgId, locationId, periodKey, user) {
           cogs_inventory: cogs,
           inventoryCountedAt: serverTimestamp(),
           inventoryCountedBy: user?.email
+        },
+        { merge: true }
+      )
+
+      // Path B snapshot — period-keyed items array at
+      // tenants/{orgId}/locations/{locId}/inventory/{periodKey}.
+      // This is the canonical inventory location-period snapshot that Waste
+      // and the P&L Why panel inventory engine read from. Without this write,
+      // those consumers see no data for any period.
+      const snapshotItems = items
+        .filter(i => i.qty != null)
+        .map(i => ({
+          id: i.id,
+          name: i.name,
+          qty: i.qty,
+          unitCost: i.unitCost || 0,
+          category: i._cat || null,
+          vendor: i.vendor || null,
+        }))
+      await setDoc(
+        doc(db, 'tenants', orgId, 'locations', locId, 'inventory', periodKey),
+        {
+          items:        snapshotItems,
+          closingValue,
+          period:       periodKey,
+          locationName: locationId,
+          updatedAt:    serverTimestamp(),
+          updatedBy:    user?.email || 'unknown',
         },
         { merge: true }
       )
@@ -386,6 +604,16 @@ export function useInventory(orgId, locationId, periodKey, user) {
     adjust,
     setQty,
     copyPrior,
+    toggleKey,
+    removeItem,
+    restoreItem,
+    addCustomItem,
+    removedItems,
+    loadRemovedItems,
+    buddyMode,
+    setBuddyMode,
+    buddyNames,
+    setBuddyNames,
     markSectionComplete,
     save
   }

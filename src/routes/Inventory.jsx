@@ -8,6 +8,33 @@ import { Search, Download, RefreshCw, Eye, EyeOff, TrendingUp, TrendingDown, Min
 import { useToast } from '@/components/ui/Toast'
 import styles from './Inventory.module.css'
 
+// ─── Helpers ─────────────────────────────────────────────────────────────
+function formatLastCounted(iso) {
+  if (!iso) return null
+  const then = new Date(iso)
+  if (isNaN(then.getTime())) return null
+  const days = Math.floor((Date.now() - then.getTime()) / 86400000)
+  if (days < 1) return { label: 'today', tone: 'fresh' }
+  if (days === 1) return { label: '1d ago', tone: 'fresh' }
+  if (days < 7) return { label: days + 'd ago', tone: 'fresh' }
+  if (days < 14) return { label: days + 'd ago', tone: 'warn' }
+  if (days < 60) return { label: days + 'd ago', tone: 'stale' }
+  return { label: '60d+ ago', tone: 'stale' }
+}
+
+// Confidence score for an item — surfaces in a per-row badge so directors
+// scanning the count sheet know what to trust. Combines staleness + variance.
+function calcConfidence(item) {
+  if (item.qty == null || item.qty === 0) return null
+  const lc = formatLastCounted(item.lastCountedAt)
+  const stale = lc?.tone === 'stale'
+  const warn  = lc?.tone === 'warn'
+  const varClass = item._varClass || 'neutral'
+  if (stale || varClass === 'alert') return { level: 'low', label: 'low confidence', color: '#dc2626', bg: '#fef2f2' }
+  if (warn  || varClass === 'warn')  return { level: 'med', label: 'medium', color: '#b45309', bg: '#fef3c7' }
+  return { level: 'high', label: 'high', color: '#059669', bg: '#f0fdf4' }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Inventory Component - Aurelia FMS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -29,6 +56,13 @@ export default function Inventory() {
   const [blindMode, setBlindMode] = useState(false)
   const [showVariance, setShowVariance] = useState(true)
   const [showParPanel, setShowParPanel] = useState(false)
+  const [countMode, setCountMode] = useState('full')  // 'quick' | 'section' | 'full'
+  const [showManage, setShowManage] = useState(false)
+  const [customDraft, setCustomDraft] = useState({ name: '', vendor: '', unitCost: '', packSize: '' })
+  const [manageSearch, setManageSearch] = useState('')
+  const [whyItem, setWhyItem] = useState(null)
+  const [showBuddySetup, setShowBuddySetup] = useState(false)
+  const [buddyDraft, setBuddyDraft] = useState({ caller: '', marker: '' })
 
   const location = selectedLocation === 'all' ? null : selectedLocation
 
@@ -49,6 +83,16 @@ export default function Inventory() {
     adjust,
     setQty,
     copyPrior,
+    toggleKey,
+    removeItem,
+    restoreItem,
+    addCustomItem,
+    removedItems,
+    loadRemovedItems,
+    buddyMode,
+    setBuddyMode,
+    buddyNames,
+    setBuddyNames,
     markSectionComplete,
     save
   } = useInventory(orgId, location, periodKey, user)
@@ -149,10 +193,15 @@ export default function Inventory() {
   // ─── Filtered Items ────────────────────────────────────────────────────────
   const q = search.toLowerCase()
   const displayItems = useMemo(() => items.filter(i => {
+    // Count mode filter — the most aggressive scope cut
+    if (countMode === 'quick' && !i.isKey) return false
+    if (countMode === 'section' && activeCat === 'all') return false  // section mode requires a category pick
     const matchCat = activeCat === 'all' || i._cat === activeCat
     const matchSearch = !q || i.name?.toLowerCase().includes(q) || i.vendor?.toLowerCase().includes(q)
     return matchCat && matchSearch
-  }), [items, activeCat, q])
+  }), [items, activeCat, q, countMode])
+
+  const keyItemCount = useMemo(() => items.filter(i => i.isKey).length, [items])
 
   const displayGroups = useMemo(() => {
     const cats = activeCat === 'all' ? categories : categories.filter(c => c.key === activeCat)
@@ -256,6 +305,28 @@ export default function Inventory() {
             >
               {blindMode ? <EyeOff size={14} /> : <Eye size={14} />}
               {blindMode ? 'Blind' : 'Show prior'}
+            </button>
+            <button
+              className={styles.btnMode}
+              onClick={() => { setShowManage(true); loadRemovedItems() }}
+              title="Add or remove items for this location"
+            >
+              ⚙ Manage items
+            </button>
+            <button
+              className={`${styles.btnMode} ${buddyMode ? styles.btnModeActive : ''}`}
+              onClick={() => {
+                if (buddyMode) {
+                  setBuddyMode(false)
+                  setBuddyNames({ caller: '', marker: '' })
+                } else {
+                  setBuddyDraft({ caller: '', marker: '' })
+                  setShowBuddySetup(true)
+                }
+              }}
+              title={buddyMode ? 'Exit buddy mode' : 'Start a team count with two people'}
+            >
+              {buddyMode ? `👥 ${buddyNames.caller || '?'} + ${buddyNames.marker || '?'}` : '👥 Buddy mode'}
             </button>
             <button 
               className={`${styles.btnMode} ${showParPanel ? styles.btnModeActive : ''}`} 
@@ -391,6 +462,59 @@ export default function Inventory() {
 
         {/* Toolbar */}
         <div className={styles.toolbar}>
+          {/* Count mode selector */}
+          <div style={{
+            display: 'inline-flex',
+            background: '#f1f5f9',
+            borderRadius: 8,
+            padding: 3,
+            marginRight: 12,
+            gap: 2,
+          }}>
+            {[
+              { key: 'quick',   label: 'Quick',   sub: keyItemCount > 0 ? `${keyItemCount} key items` : 'key items' },
+              { key: 'section', label: 'Section', sub: 'one category' },
+              { key: 'full',    label: 'Full',    sub: `${items.length} items` },
+            ].map(m => {
+              const active = countMode === m.key
+              return (
+                <button
+                  key={m.key}
+                  onClick={() => setCountMode(m.key)}
+                  style={{
+                    background: active ? '#fff' : 'transparent',
+                    border: 'none',
+                    borderRadius: 6,
+                    padding: '6px 14px',
+                    cursor: 'pointer',
+                    boxShadow: active ? '0 1px 3px rgba(15,23,42,0.08)' : 'none',
+                    fontFamily: 'inherit',
+                    textAlign: 'left',
+                    minWidth: 90,
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  <div style={{
+                    fontSize: 12,
+                    fontWeight: 500,
+                    color: active ? '#0f172a' : '#64748b',
+                    lineHeight: 1.2,
+                  }}>
+                    {m.label}
+                  </div>
+                  <div style={{
+                    fontSize: 9,
+                    color: active ? '#94a3b8' : '#94a3b8',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.04em',
+                    marginTop: 1,
+                  }}>
+                    {m.sub}
+                  </div>
+                </button>
+              )
+            })}
+          </div>
           <div className={styles.searchWrap}>
             <Search size={14} className={styles.searchIcon} />
             <input 
@@ -476,10 +600,62 @@ export default function Inventory() {
                     const varDir = (item._variance || 0) > 0 ? 'up' : (item._variance || 0) < 0 ? 'down' : 'neutral'
 
                     return (
-                      <tr key={item.id} className={`${styles.row} ${idx % 2 === 0 ? '' : styles.rowAlt}`}>
+                      <tr
+                        key={item.id}
+                        className={`${styles.row} ${idx % 2 === 0 ? '' : styles.rowAlt}`}
+                        onClick={(e) => {
+                          // Don't open the panel if the click was inside an input,
+                          // button, or any interactive control
+                          const t = e.target
+                          if (t.tagName === 'INPUT' || t.tagName === 'BUTTON' || t.closest('button') || t.closest('input')) return
+                          setWhyItem(item)
+                        }}
+                        style={{ cursor: 'pointer' }}>
                         <td className={styles.tdNum}>{idx + 1}</td>
                         <td className={styles.tdName}>
                           <div className={styles.nameRow}>
+                            <button
+                              onClick={() => toggleKey(item.id)}
+                              title={item.isKey ? 'Unmark as key item' : 'Mark as key item (shows in Quick count mode)'}
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                cursor: 'pointer',
+                                padding: 0,
+                                marginRight: 4,
+                                fontSize: 13,
+                                lineHeight: 1,
+                                color: item.isKey ? '#f59e0b' : '#cbd5e1',
+                                transition: 'color 0.15s, transform 0.1s',
+                              }}
+                              onMouseEnter={e => { e.currentTarget.style.transform = 'scale(1.2)' }}
+                              onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)' }}
+                            >
+                              {item.isKey ? '★' : '☆'}
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (window.confirm(`Remove "${item.name}" from this location's count sheet? You can restore it from Manage Items.`)) {
+                                  removeItem(item.id)
+                                }
+                              }}
+                              title="Remove from this location"
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                cursor: 'pointer',
+                                padding: '0 4px',
+                                marginRight: 4,
+                                fontSize: 11,
+                                lineHeight: 1,
+                                color: '#cbd5e1',
+                                transition: 'color 0.15s',
+                              }}
+                              onMouseEnter={e => { e.currentTarget.style.color = '#dc2626' }}
+                              onMouseLeave={e => { e.currentTarget.style.color = '#cbd5e1' }}
+                            >
+                              ×
+                            </button>
                             <div 
                               className={`${styles.heatDot} ${isCounted ? styles['heat_' + (item._varClass || 'neutral')] : styles.heat_empty}`} 
                               title={isCounted 
@@ -556,6 +732,572 @@ export default function Inventory() {
             </div>
             <button className={styles.btnSaveFooter} onClick={handleSave} disabled={saving}>
               {saving ? 'Saving...' : 'Save & Post to P&L'}
+            </button>
+          </div>
+        )}
+
+        {/* ── Why panel — item-level explanation drawer ── */}
+        {whyItem && (() => {
+          // Build the narrative inline. The data is already in the item — we
+          // just package it into a friendly story. No Firestore reads needed.
+          const item = whyItem
+          const cur = item.qty
+          const prior = item._priorQty || 0
+          const variance = item._variance || 0
+          const varClass = item._varClass || 'neutral'
+          const value = item._value || 0
+          const lastCounted = formatLastCounted(item.lastCountedAt)
+
+          // Headline
+          let headline
+          if (cur == null) {
+            headline = `${item.name} hasn't been counted yet for this period.`
+          } else if (prior === 0) {
+            headline = `${item.name} is at ${cur} this period (no prior count to compare against).`
+          } else if (Math.abs(variance) < 0.5) {
+            headline = `${item.name} is essentially flat: ${cur} this period vs ${prior} prior.`
+          } else {
+            const dir = variance > 0 ? 'up' : 'down'
+            const pct = Math.round(Math.abs(variance) / prior * 100)
+            headline = `${item.name} is ${dir} ${Math.abs(variance).toFixed(1)} units (${pct}%) vs prior period — ${cur} now, ${prior} then.`
+          }
+
+          // Bullets — what we actually know about this item
+          const bullets = []
+          if (varClass === 'alert') {
+            bullets.push({ sign: 'up', text: `Variance >25% — flagged for investigation` })
+          } else if (varClass === 'warn') {
+            bullets.push({ sign: 'up', text: `Variance 10-25% — worth a second look` })
+          }
+          if (item._daysOnHand != null) {
+            const dohColor = item._daysOnHand < 3 ? 'up' : item._daysOnHand < 7 ? 'neutral' : 'down'
+            bullets.push({ sign: dohColor, text: `${item._daysOnHand} days on hand at current usage` })
+          }
+          if (item._belowPar) {
+            bullets.push({ sign: 'up', text: `Below par level (${item.parLevel || 'N/A'}) — reorder needed` })
+          } else if (item._atReorder) {
+            bullets.push({ sign: 'up', text: `At reorder point (${item.reorderPoint || 'N/A'})` })
+          }
+          if (lastCounted) {
+            const tone = lastCounted.tone === 'fresh' ? 'down' : lastCounted.tone === 'warn' ? 'neutral' : 'up'
+            bullets.push({ sign: tone, text: `Last counted ${lastCounted.label}${lastCounted.tone === 'stale' ? ' — count may be unreliable' : ''}` })
+          }
+          if (item.vendor) {
+            bullets.push({ sign: 'neutral', text: `Sourced from ${item.vendor}` })
+          }
+
+          // Factors — the supporting numbers
+          const factors = [
+            { label: 'Current count', detail: `${cur ?? '—'} units`, value: '$' + (value || 0).toFixed(2), sign: cur != null ? 'down' : 'neutral' },
+            { label: 'Prior count', detail: `${prior} units`, value: prior > 0 ? '$' + (prior * (item.unitCost || 0)).toFixed(2) : '—', sign: 'neutral' },
+            { label: 'Unit cost', detail: 'from last invoice', value: '$' + (item.unitCost || 0).toFixed(2), sign: 'neutral' },
+          ]
+          if (item.parLevel) {
+            factors.push({ label: 'Par level', detail: 'target on hand', value: String(item.parLevel), sign: 'neutral' })
+          }
+          if (item._daysOnHand != null && item.avgDailyUsage) {
+            factors.push({ label: 'Avg daily usage', detail: 'rolling estimate', value: item.avgDailyUsage.toFixed(1) + ' /day', sign: 'neutral' })
+          }
+
+          const signColor = (s) => s === 'up' ? '#dc2626' : s === 'down' ? '#059669' : '#94a3b8'
+
+          return (
+            <>
+              <div
+                onClick={() => setWhyItem(null)}
+                style={{
+                  position: 'fixed', inset: 0,
+                  background: 'rgba(15, 23, 42, 0.3)',
+                  zIndex: 2900,
+                }}
+              />
+              <aside style={{
+                position: 'fixed', top: 0, right: 0, bottom: 0,
+                width: 480, maxWidth: '90vw',
+                background: '#fff',
+                borderLeft: '0.5px solid #e5e7eb',
+                boxShadow: '-20px 0 60px rgba(15, 23, 42, 0.1)',
+                zIndex: 3000,
+                display: 'flex', flexDirection: 'column',
+              }}>
+                {/* Header */}
+                <div style={{
+                  padding: '20px 24px 16px',
+                  borderBottom: '0.5px solid #e5e7eb',
+                  display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
+                }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500, marginBottom: 4 }}>
+                      Why
+                    </div>
+                    <div style={{ fontSize: 18, color: '#0f172a', fontWeight: 500, lineHeight: 1.3 }}>
+                      {item.name}
+                    </div>
+                    <div style={{ fontSize: 22, color: '#0f172a', fontWeight: 500, marginTop: 6, letterSpacing: '-0.01em' }}>
+                      {value > 0 ? '$' + value.toFixed(2) : '—'}
+                    </div>
+                    {item.vendor && (
+                      <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{item.vendor}</div>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => setWhyItem(null)}
+                    style={{
+                      background: 'none', border: 'none', cursor: 'pointer',
+                      fontSize: 22, color: '#94a3b8', padding: 0, lineHeight: 1, marginLeft: 12,
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+
+                {/* Body */}
+                <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px' }}>
+                  {/* Headline narrative */}
+                  <div style={{ fontSize: 14, color: '#0f172a', lineHeight: 1.55, marginBottom: 18 }}>
+                    {headline}
+                  </div>
+
+                  {/* Bullets */}
+                  {bullets.length > 0 && (
+                    <div style={{ marginBottom: 22 }}>
+                      <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500, marginBottom: 10 }}>
+                        Key signals
+                      </div>
+                      {bullets.map((b, i) => (
+                        <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 6, fontSize: 13, color: '#475569', lineHeight: 1.5 }}>
+                          <span style={{ color: signColor(b.sign), fontWeight: 600, marginTop: 1, fontSize: 11 }}>
+                            {b.sign === 'up' ? '▲' : b.sign === 'down' ? '▼' : '•'}
+                          </span>
+                          <span>{b.text}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Factors */}
+                  <div>
+                    <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500, marginBottom: 10 }}>
+                      Details
+                    </div>
+                    <div>
+                      {factors.map((f, i) => (
+                        <div key={i} style={{
+                          display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
+                          padding: '8px 0',
+                          borderBottom: i < factors.length - 1 ? '0.5px solid #f1f5f9' : 'none',
+                          fontSize: 13,
+                        }}>
+                          <div>
+                            <div style={{ color: '#475569', fontWeight: 500 }}>{f.label}</div>
+                            {f.detail && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 1 }}>{f.detail}</div>}
+                          </div>
+                          <div style={{ color: '#0f172a', fontWeight: 500, fontVariantNumeric: 'tabular-nums' }}>
+                            {f.value}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </aside>
+            </>
+          )
+        })()}
+
+        {/* ── Manage items drawer ── */}
+        {showManage && (
+          <>
+            <div
+              onClick={() => setShowManage(false)}
+              style={{
+                position: 'fixed', inset: 0,
+                background: 'rgba(15, 23, 42, 0.3)',
+                zIndex: 2900,
+              }}
+            />
+            <aside style={{
+              position: 'fixed', top: 0, right: 0, bottom: 0,
+              width: 480, maxWidth: '90vw',
+              background: '#fff',
+              borderLeft: '0.5px solid #e5e7eb',
+              boxShadow: '-20px 0 60px rgba(15, 23, 42, 0.1)',
+              zIndex: 3000,
+              display: 'flex', flexDirection: 'column',
+            }}>
+              {/* Drawer header */}
+              <div style={{
+                padding: '20px 24px 16px',
+                borderBottom: '0.5px solid #e5e7eb',
+                display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
+              }}>
+                <div>
+                  <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500, marginBottom: 4 }}>
+                    Manage items
+                  </div>
+                  <div style={{ fontSize: 16, color: '#0f172a', fontWeight: 500 }}>
+                    {cleanLocName(location)}
+                  </div>
+                  <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
+                    Customize what shows on this unit's count sheet
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowManage(false)}
+                  style={{
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    fontSize: 22, color: '#94a3b8', padding: 0, lineHeight: 1,
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+
+              {/* Drawer body — scrollable */}
+              <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px' }}>
+                {/* Section 1: Add custom item */}
+                <div style={{ marginBottom: 28 }}>
+                  <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500, marginBottom: 10 }}>
+                    Add a custom item
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
+                    <input
+                      type="text"
+                      placeholder="Item name *"
+                      value={customDraft.name}
+                      onChange={e => setCustomDraft(d => ({ ...d, name: e.target.value }))}
+                      style={{ gridColumn: '1 / -1', padding: '8px 10px', fontSize: 13, border: '0.5px solid #e2e8f0', borderRadius: 6, fontFamily: 'inherit' }}
+                    />
+                    <input
+                      type="text"
+                      placeholder="Vendor"
+                      value={customDraft.vendor}
+                      onChange={e => setCustomDraft(d => ({ ...d, vendor: e.target.value }))}
+                      style={{ padding: '8px 10px', fontSize: 13, border: '0.5px solid #e2e8f0', borderRadius: 6, fontFamily: 'inherit' }}
+                    />
+                    <input
+                      type="text"
+                      placeholder="Pack size"
+                      value={customDraft.packSize}
+                      onChange={e => setCustomDraft(d => ({ ...d, packSize: e.target.value }))}
+                      style={{ padding: '8px 10px', fontSize: 13, border: '0.5px solid #e2e8f0', borderRadius: 6, fontFamily: 'inherit' }}
+                    />
+                    <input
+                      type="number"
+                      step="0.01"
+                      placeholder="Unit cost ($)"
+                      value={customDraft.unitCost}
+                      onChange={e => setCustomDraft(d => ({ ...d, unitCost: e.target.value }))}
+                      style={{ gridColumn: '1 / -1', padding: '8px 10px', fontSize: 13, border: '0.5px solid #e2e8f0', borderRadius: 6, fontFamily: 'inherit' }}
+                    />
+                  </div>
+                  <button
+                    onClick={async () => {
+                      if (!customDraft.name) return
+                      await addCustomItem(customDraft)
+                      setCustomDraft({ name: '', vendor: '', unitCost: '', packSize: '' })
+                    }}
+                    disabled={!customDraft.name}
+                    style={{
+                      padding: '8px 16px', fontSize: 13, fontWeight: 500,
+                      background: customDraft.name ? '#0f172a' : '#e2e8f0',
+                      color: customDraft.name ? '#fff' : '#94a3b8',
+                      border: 'none', borderRadius: 6,
+                      cursor: customDraft.name ? 'pointer' : 'not-allowed',
+                      fontFamily: 'inherit',
+                    }}
+                  >
+                    + Add to this location
+                  </button>
+                </div>
+
+                {/* Section 2: Currently active items — searchable */}
+                <div style={{ marginBottom: 28 }}>
+                  <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500, marginBottom: 10 }}>
+                    Active at this location ({items.length})
+                  </div>
+                  <div style={{ position: 'relative', marginBottom: 10 }}>
+                    <input
+                      type="text"
+                      value={manageSearch}
+                      onChange={e => setManageSearch(e.target.value)}
+                      placeholder="Search items to remove..."
+                      style={{
+                        width: '100%',
+                        padding: '8px 10px 8px 32px',
+                        fontSize: 13,
+                        border: '0.5px solid #e2e8f0',
+                        borderRadius: 6,
+                        fontFamily: 'inherit',
+                      }}
+                    />
+                    <Search size={13} style={{
+                      position: 'absolute',
+                      left: 10, top: '50%',
+                      transform: 'translateY(-50%)',
+                      color: '#94a3b8',
+                      pointerEvents: 'none',
+                    }} />
+                  </div>
+                  {(() => {
+                    const ms = manageSearch.trim().toLowerCase()
+                    const filtered = ms
+                      ? items.filter(i =>
+                          (i.name || '').toLowerCase().includes(ms) ||
+                          (i.vendor || '').toLowerCase().includes(ms)
+                        )
+                      : items
+                    if (!ms) {
+                      return (
+                        <div style={{ fontSize: 11, color: '#94a3b8', fontStyle: 'italic', padding: '8px 0' }}>
+                          Start typing to find items to remove from this location.
+                        </div>
+                      )
+                    }
+                    if (filtered.length === 0) {
+                      return (
+                        <div style={{ fontSize: 12, color: '#cbd5e1', padding: '12px 0', fontStyle: 'italic' }}>
+                          No matches.
+                        </div>
+                      )
+                    }
+                    return (
+                      <div style={{ maxHeight: 280, overflowY: 'auto', border: '0.5px solid #f1f5f9', borderRadius: 6 }}>
+                        {filtered.slice(0, 50).map(it => (
+                          <div key={it.id} style={{
+                            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                            padding: '8px 10px',
+                            borderBottom: '0.5px solid #f1f5f9',
+                            fontSize: 13,
+                          }}>
+                            <div style={{ minWidth: 0, flex: 1, marginRight: 8 }}>
+                              <div style={{
+                                color: '#475569', fontWeight: 500,
+                                whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                              }}>
+                                {it.name}
+                                {it.custom && <span style={{ fontSize: 9, marginLeft: 6, padding: '1px 5px', background: '#f1f5f9', color: '#64748b', borderRadius: 3, textTransform: 'uppercase', letterSpacing: '0.04em' }}>custom</span>}
+                                {it.isKey && <span style={{ fontSize: 11, marginLeft: 4, color: '#f59e0b' }}>★</span>}
+                              </div>
+                              {it.vendor && <div style={{ color: '#94a3b8', fontSize: 11, marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.vendor}</div>}
+                            </div>
+                            <button
+                              onClick={async () => {
+                                if (window.confirm(`Remove "${it.name}" from ${cleanLocName(location)}'s count sheet?`)) {
+                                  await removeItem(it.id)
+                                  await loadRemovedItems()
+                                }
+                              }}
+                              style={{
+                                padding: '4px 10px', fontSize: 11, fontWeight: 500,
+                                background: '#fff', border: '0.5px solid #fecaca', borderRadius: 4,
+                                color: '#dc2626', cursor: 'pointer', fontFamily: 'inherit',
+                                flexShrink: 0,
+                              }}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        ))}
+                        {filtered.length > 50 && (
+                          <div style={{ padding: '8px 10px', fontSize: 11, color: '#94a3b8', textAlign: 'center', fontStyle: 'italic' }}>
+                            Showing first 50 of {filtered.length} matches — refine search to narrow.
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })()}
+                </div>
+
+                {/* Section 3: Removed items */}
+                <div>
+                  <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500, marginBottom: 10 }}>
+                    Removed from this location ({removedItems.length})
+                  </div>
+                  {removedItems.length === 0 ? (
+                    <div style={{ fontSize: 12, color: '#cbd5e1', padding: '12px 0', fontStyle: 'italic' }}>
+                      No removed items.
+                    </div>
+                  ) : (
+                    <div>
+                      {removedItems.map(ri => (
+                        <div key={ri.id} style={{
+                          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                          padding: '8px 10px',
+                          borderBottom: '0.5px solid #f1f5f9',
+                          fontSize: 13,
+                        }}>
+                          <div>
+                            <div style={{ color: '#475569', fontWeight: 500 }}>
+                              {ri.name}
+                              {ri.custom && <span style={{ fontSize: 9, marginLeft: 6, padding: '1px 5px', background: '#f1f5f9', color: '#64748b', borderRadius: 3, textTransform: 'uppercase', letterSpacing: '0.04em' }}>custom</span>}
+                            </div>
+                            {ri.vendor && <div style={{ color: '#94a3b8', fontSize: 11, marginTop: 1 }}>{ri.vendor}</div>}
+                          </div>
+                          <button
+                            onClick={async () => {
+                              await restoreItem(ri.id)
+                              await loadRemovedItems()
+                            }}
+                            style={{
+                              padding: '4px 10px', fontSize: 11, fontWeight: 500,
+                              background: '#fff', border: '0.5px solid #cbd5e1', borderRadius: 4,
+                              color: '#475569', cursor: 'pointer', fontFamily: 'inherit',
+                            }}
+                          >
+                            Restore
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </aside>
+          </>
+        )}
+
+        {/* ── Buddy mode setup modal ── */}
+        {showBuddySetup && (
+          <>
+            <div
+              onClick={() => setShowBuddySetup(false)}
+              style={{
+                position: 'fixed', inset: 0,
+                background: 'rgba(15, 23, 42, 0.4)',
+                zIndex: 3500,
+              }}
+            />
+            <div style={{
+              position: 'fixed',
+              top: '50%', left: '50%',
+              transform: 'translate(-50%, -50%)',
+              width: 420, maxWidth: '90vw',
+              background: '#fff',
+              borderRadius: 12,
+              boxShadow: '0 25px 80px rgba(15, 23, 42, 0.25)',
+              zIndex: 3600,
+              padding: '24px 28px',
+            }}>
+              <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500, marginBottom: 4 }}>
+                Buddy mode
+              </div>
+              <div style={{ fontSize: 18, fontWeight: 500, color: '#0f172a', marginBottom: 4 }}>
+                Start a team count
+              </div>
+              <div style={{ fontSize: 12, color: '#64748b', lineHeight: 1.5, marginBottom: 18 }}>
+                One person calls counts, the other marks them on the device. Both names get attributed to every count taken in this session.
+              </div>
+
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.04em', fontWeight: 500, display: 'block', marginBottom: 4 }}>
+                  Caller (walks the cooler)
+                </label>
+                <input
+                  type="text"
+                  value={buddyDraft.caller}
+                  onChange={e => setBuddyDraft(d => ({ ...d, caller: e.target.value }))}
+                  placeholder="Name or initials"
+                  autoFocus
+                  style={{
+                    width: '100%', padding: '10px 12px', fontSize: 14,
+                    border: '0.5px solid #e2e8f0', borderRadius: 6,
+                    fontFamily: 'inherit',
+                  }}
+                />
+              </div>
+              <div style={{ marginBottom: 22 }}>
+                <label style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.04em', fontWeight: 500, display: 'block', marginBottom: 4 }}>
+                  Marker (enters on device)
+                </label>
+                <input
+                  type="text"
+                  value={buddyDraft.marker}
+                  onChange={e => setBuddyDraft(d => ({ ...d, marker: e.target.value }))}
+                  placeholder="Name or initials"
+                  style={{
+                    width: '100%', padding: '10px 12px', fontSize: 14,
+                    border: '0.5px solid #e2e8f0', borderRadius: 6,
+                    fontFamily: 'inherit',
+                  }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                <button
+                  onClick={() => setShowBuddySetup(false)}
+                  style={{
+                    padding: '9px 18px', fontSize: 13, fontWeight: 500,
+                    background: '#fff', color: '#64748b',
+                    border: '0.5px solid #e2e8f0', borderRadius: 6,
+                    cursor: 'pointer', fontFamily: 'inherit',
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    if (!buddyDraft.caller || !buddyDraft.marker) return
+                    setBuddyNames(buddyDraft)
+                    setBuddyMode(true)
+                    setShowBuddySetup(false)
+                    toast.success(`Buddy mode active — ${buddyDraft.caller} + ${buddyDraft.marker}`)
+                  }}
+                  disabled={!buddyDraft.caller || !buddyDraft.marker}
+                  style={{
+                    padding: '9px 18px', fontSize: 13, fontWeight: 500,
+                    background: (buddyDraft.caller && buddyDraft.marker) ? '#0f172a' : '#e2e8f0',
+                    color: (buddyDraft.caller && buddyDraft.marker) ? '#fff' : '#94a3b8',
+                    border: 'none', borderRadius: 6,
+                    cursor: (buddyDraft.caller && buddyDraft.marker) ? 'pointer' : 'not-allowed',
+                    fontFamily: 'inherit',
+                  }}
+                >
+                  Start counting
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* ── Persistent buddy banner ── */}
+        {buddyMode && (
+          <div style={{
+            position: 'fixed',
+            bottom: 24, left: '50%',
+            transform: 'translateX(-50%)',
+            background: '#0f172a',
+            color: '#fff',
+            padding: '10px 18px',
+            borderRadius: 999,
+            fontSize: 12,
+            fontWeight: 500,
+            boxShadow: '0 8px 24px rgba(15, 23, 42, 0.25)',
+            display: 'flex', alignItems: 'center', gap: 12,
+            zIndex: 2500,
+          }}>
+            <span style={{ fontSize: 14 }}>👥</span>
+            <span>
+              <span style={{ color: '#94a3b8', fontWeight: 400 }}>Team count: </span>
+              <span style={{ color: '#fff' }}>{buddyNames.caller}</span>
+              <span style={{ color: '#475569', margin: '0 6px' }}>calls</span>
+              <span style={{ color: '#fff' }}>{buddyNames.marker}</span>
+              <span style={{ color: '#475569', margin: '0 6px' }}>marks</span>
+            </span>
+            <button
+              onClick={() => {
+                setBuddyMode(false)
+                setBuddyNames({ caller: '', marker: '' })
+                toast.info('Buddy mode ended')
+              }}
+              style={{
+                background: 'transparent', border: '0.5px solid #475569',
+                color: '#cbd5e1', padding: '3px 10px', borderRadius: 999,
+                fontSize: 10, fontWeight: 500, cursor: 'pointer',
+                fontFamily: 'inherit', marginLeft: 4,
+              }}
+            >
+              END
             </button>
           </div>
         )}
