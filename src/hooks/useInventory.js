@@ -67,7 +67,7 @@ export function useInventory(orgId, locationId, periodKey, user) {
         settingsSnap,
         sessionSnap
       ] = await Promise.all([
-        getDoc(doc(db, 'aurelia', 'inv_items')),
+        getDocs(collection(db, 'tenants', orgId, 'inventoryCatalog')),
         getDocs(collection(db, 'tenants', orgId, 'inventory', locId, 'items')),
         priorKey ? getDoc(doc(db, 'tenants', orgId, 'pnl', locId, 'periods', priorKey)) : Promise.resolve(null),
         getDoc(doc(db, 'tenants', orgId, 'pnl', locId, 'periods', periodKey)),
@@ -75,16 +75,29 @@ export function useInventory(orgId, locationId, periodKey, user) {
         getDoc(doc(db, 'tenants', orgId, 'inventorySessions', `${locId}_${periodKey}`))
       ])
 
-      // FIXED: Handle both string and array formats for masterItems
+      // Read master items from the per-tenant inventoryCatalog collection.
+      // Fall back to the legacy global aurelia/inv_items doc if the new
+      // collection is empty (safety net during the migration window).
       let masterItems = []
-      if (masterItemsSnap?.exists()) {
-        const data = masterItemsSnap.data()
-        let rawValue = data.value
-        if (typeof rawValue === 'string') {
-          try { rawValue = JSON.parse(rawValue) } catch(e) { rawValue = [] }
+      if (!masterItemsSnap.empty) {
+        masterItems = masterItemsSnap.docs.map(d => d.data())
+        console.log('masterItems loaded from inventoryCatalog:', masterItems.length)
+      } else {
+        // Fallback: read the legacy global catalog
+        try {
+          const legacySnap = await getDoc(doc(db, 'aurelia', 'inv_items'))
+          if (legacySnap.exists()) {
+            const data = legacySnap.data()
+            let rawValue = data.value
+            if (typeof rawValue === 'string') {
+              try { rawValue = JSON.parse(rawValue) } catch(e) { rawValue = [] }
+            }
+            masterItems = Array.isArray(rawValue) ? rawValue : []
+            console.warn('masterItems loaded from LEGACY aurelia/inv_items:', masterItems.length, '— per-tenant collection is empty')
+          }
+        } catch (e) {
+          console.error('Legacy catalog fallback failed:', e)
         }
-        masterItems = Array.isArray(rawValue) ? rawValue : []
-        console.log('masterItems loaded:', masterItems.length)
       }
 
       const locationOverrides = {}

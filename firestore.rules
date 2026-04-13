@@ -65,6 +65,15 @@ service cloud.firestore {
         allow write: if ownsTenant(tenantId) && isManager();
       }
 
+      // Per-tenant master inventory catalog — migrated from the legacy
+      // global aurelia/inv_items doc on Apr 12 2026. Each item is its own doc.
+      // Read by anyone in the tenant; only directors can modify the master
+      // catalog (managers can override per-location via the inventory rules above).
+      match /inventoryCatalog/{itemId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isDirector();
+      }
+
       match /pnl/{locationId}/periods/{periodId} {
         allow read:  if ownsTenant(tenantId);
         allow write: if ownsTenant(tenantId) && isManager();
