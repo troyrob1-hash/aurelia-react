@@ -11,3 +11,9 @@ scripts/
 # Firebase service account keys (NEVER commit)
 *service-account*.json
 *firebase-adminsdk*.json
+
+# Local env files
+.env
+.env.staging
+.env.production
+.env.*.local
