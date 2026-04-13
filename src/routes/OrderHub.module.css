@@ -293,9 +293,12 @@
 
 /* Vendor column in table */
 .tdVendor {
+  padding: 10px 14px;
+  padding-left: 20px;
   font-size: 12px;
   color: var(--text-muted, #64748b);
   white-space: nowrap;
+  min-width: 100px;
 }
 
 /* Budget Impact Preview */

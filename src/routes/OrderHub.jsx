@@ -1,9 +1,11 @@
 import { useState, useMemo, useEffect, Fragment, useCallback } from 'react'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { useToast } from '@/components/ui/Toast'
-import { Search, Download, X, Clock, LayoutGrid, List, TrendingUp, Package, CheckCircle, AlertTriangle, Truck, RefreshCw } from 'lucide-react'
+import { useVendors } from '@/hooks/useVendorsProducts'
+import VendorImportModal from './components/VendorImportModal'
+import { Search, Download, X, Clock, LayoutGrid, List, TrendingUp, Package, CheckCircle, AlertTriangle, Truck, RefreshCw, Upload } from 'lucide-react'
 import { db } from '@/lib/firebase'
-import { collection, addDoc, getDocs, query, orderBy, limit, serverTimestamp, doc, getDoc } from 'firebase/firestore'
+import { collection, addDoc, getDocs, query, orderBy, limit, serverTimestamp, doc, getDoc, where, writeBatch } from 'firebase/firestore'
 import { writePurchasingPnL, weekPeriod } from '@/lib/pnl'
 import { useAuthStore } from '@/store/authStore'
 import { submitToVendor } from '@/services/vendors'
@@ -13,60 +15,38 @@ import styles from './OrderHub.module.css'
 // Constants
 // ═══════════════════════════════════════════════════════════════════════════
 
-const VENDORS = [
-  { id:'sysco',       label:'Sysco',           url:'https://shop.sysco.com' },
-  { id:'nassau',      label:'Nassau',          url:'https://www.nassaucandy.com' },
-  { id:'vistar',      label:'Vistar',          url:'https://www.vistar.com' },
-  { id:'cafemoto',    label:'Café Moto',       url:'https://www.cafemoto.com' },
-  { id:'davidrio',    label:'David Rio',       url:'https://www.davidrio.com' },
-  { id:'amazon',      label:'Amazon Business', url:'https://business.amazon.com' },
-  { id:'webstaurant', label:'Webstaurant',     url:'https://www.webstaurantstore.com' },
-  { id:'bluecart',    label:'Blue Cart',       url:'https://www.bluecart.com' },
-  { id:'rtzn',        label:'RTZN',            url:'https://www.rtznbrands.com' },
-]
+// Category set aligned with Inventory's 8-category taxonomy
+const CATS = ['All', 'Beverages', 'Bar/Barista', 'Pantry/Snacks', 'Dairy', 'Frozen', 'Proteins', 'Produce', 'General']
 
-const ITEMS = [
-  // Sysco
-  { id:'s1',  vendor:'sysco',    cat:'Beverages', name:'Red Bull 12 oz',              sku:'SYS-1234567', pack:'case/24',   unitCost:1.98,  par:2, onHand:0 },
-  { id:'s2',  vendor:'sysco',    cat:'Beverages', name:'Celsius tropical vibe 12 oz', sku:'SYS-5541209', pack:'case/12',   unitCost:1.98,  par:2, onHand:2 },
-  { id:'s3',  vendor:'sysco',    cat:'Beverages', name:'Smart Water 20 oz',           sku:'SYS-8892341', pack:'case/24',   unitCost:1.63,  par:3, onHand:1 },
-  { id:'s4',  vendor:'sysco',    cat:'Beverages', name:'Gatorade lemon lime 20 oz',   sku:'SYS-4421890', pack:'case/24',   unitCost:1.04,  par:2, onHand:0 },
-  { id:'s5',  vendor:'sysco',    cat:'Beverages', name:'Diet Coke',                   sku:'SYS-3312091', pack:'case/24',   unitCost:0.84,  par:1, onHand:1 },
-  { id:'s6',  vendor:'sysco',    cat:'Dairy',     name:'Greek yogurt vanilla 5.3oz',  sku:'SYS-7123450', pack:'cs/12',     unitCost:1.14,  par:1, onHand:0 },
-  { id:'s7',  vendor:'sysco',    cat:'Dairy',     name:'Whole milk gallon',           sku:'SYS-4412890', pack:'case/2',    unitCost:4.76,  par:2, onHand:1 },
-  { id:'s8',  vendor:'sysco',    cat:'Dairy',     name:'2% milk gallon',              sku:'SYS-4412891', pack:'case/2',    unitCost:8.93,  par:1, onHand:0 },
-  { id:'s9',  vendor:'sysco',    cat:'Dairy',     name:'Oat milk Pacific',            sku:'SYS-9921034', pack:'case/12',   unitCost:2.78,  par:1, onHand:1 },
-  { id:'s10', vendor:'sysco',    cat:'Snacks',    name:'M&M peanuts',                 sku:'SYS-2219034', pack:'case/48',   unitCost:1.25,  par:1, onHand:0 },
-  { id:'s11', vendor:'sysco',    cat:'Snacks',    name:'Snickers',                    sku:'SYS-2219035', pack:'case/48',   unitCost:1.41,  par:1, onHand:0 },
-  { id:'s12', vendor:'sysco',    cat:'Snacks',    name:'Haribo goldbears',            sku:'SYS-8812398', pack:'case/12',   unitCost:1.81,  par:1, onHand:1 },
-  { id:'s13', vendor:'sysco',    cat:'Snacks',    name:'Uglies sea salt',             sku:'SYS-3312108', pack:'case/24',   unitCost:1.19,  par:1, onHand:0 },
-  { id:'s14', vendor:'sysco',    cat:'Snacks',    name:'Clif bar blueberry almond',   sku:'SYS-1109342', pack:'cs/12',     unitCost:2.45,  par:1, onHand:2 },
-  { id:'s15', vendor:'sysco',    cat:'Supplies',  name:'Ketchup packets',             sku:'SYS-0023411', pack:'case/1000', unitCost:0.04,  par:2, onHand:0 },
-  { id:'s16', vendor:'sysco',    cat:'Supplies',  name:'Mayonnaise packets',          sku:'SYS-0023412', pack:'case/500',  unitCost:0.13,  par:1, onHand:1 },
-  { id:'s17', vendor:'sysco',    cat:'Barista',   name:'Ghirardelli chocolate sauce', sku:'SYS-5512093', pack:'cs/6',      unitCost:21.34, par:1, onHand:0 },
-  { id:'s18', vendor:'sysco',    cat:'Barista',   name:'Agave organic Monin',         sku:'SYS-6612034', pack:'cs/6',      unitCost:6.87,  par:1, onHand:1 },
-  { id:'s19', vendor:'sysco',    cat:'Barista',   name:'Heavy cream',                 sku:'SYS-7712091', pack:'cs/12',     unitCost:4.17,  par:1, onHand:0 },
-  // Nassau
-  { id:'n1',  vendor:'nassau',   cat:'Beverages', name:'Joe strawberry lemonade',     sku:'NAS-1122334', pack:'case/12',   unitCost:1.88,  par:1, onHand:0 },
-  { id:'n2',  vendor:'nassau',   cat:'Snacks',    name:'North fork original',         sku:'NAS-2233445', pack:'case/24',   unitCost:1.23,  par:1, onHand:1 },
-  { id:'n3',  vendor:'nassau',   cat:'Snacks',    name:'Sahale fruit and nut',        sku:'NAS-3344556', pack:'case/9',    unitCost:2.43,  par:1, onHand:0 },
-  { id:'n4',  vendor:'nassau',   cat:'Snacks',    name:'Barebell cookies caramel',    sku:'NAS-4455667', pack:'cs/12',     unitCost:2.84,  par:1, onHand:0 },
-  // Cafe Moto
-  { id:'cm1', vendor:'cafemoto', cat:'Barista',   name:'Espresso moto 5lb',           sku:'CM-10001',    pack:'each',      unitCost:74.79, par:1, onHand:0 },
-  { id:'cm2', vendor:'cafemoto', cat:'Barista',   name:'Cafe moto brew 5lb',          sku:'CM-10002',    pack:'each',      unitCost:73.05, par:1, onHand:1 },
-  { id:'cm3', vendor:'cafemoto', cat:'Barista',   name:'Decaf moto brew 5lb',         sku:'CM-10003',    pack:'each',      unitCost:87.28, par:1, onHand:0 },
-  // David Rio
-  { id:'dr1', vendor:'davidrio', cat:'Barista',   name:'Tiger spice chai 4lb',        sku:'DR-20001',    pack:'case/4',    unitCost:11.75, par:1, onHand:0 },
-  { id:'dr2', vendor:'davidrio', cat:'Barista',   name:'Elephant vanilla chai 4lb',   sku:'DR-20002',    pack:'case/4',    unitCost:11.75, par:1, onHand:0 },
-  { id:'dr3', vendor:'davidrio', cat:'Barista',   name:'Masala chai concentrate',     sku:'DR-20003',    pack:'case/4',    unitCost:6.75,  par:1, onHand:1 },
-]
-
+// Category colors — extends Inventory's color palette
 const CAT_COLORS = {
-  Beverages: { color:'#1e40af', bg:'#dbeafe', light:'#eff6ff' },
-  Dairy:     { color:'#0369a1', bg:'#e0f2fe', light:'#f0f9ff' },
-  Snacks:    { color:'#92400e', bg:'#fef3c7', light:'#fffbeb' },
-  Barista:   { color:'#7c3aed', bg:'#ede9fe', light:'#f5f3ff' },
-  Supplies:  { color:'#374151', bg:'#f3f4f6', light:'#f9fafb' },
+  'Beverages':     { color:'#1e40af', bg:'#dbeafe', light:'#eff6ff' },
+  'Bar/Barista':   { color:'#7c3aed', bg:'#ede9fe', light:'#f5f3ff' },
+  'Pantry/Snacks': { color:'#92400e', bg:'#fef3c7', light:'#fffbeb' },
+  'Dairy':         { color:'#0369a1', bg:'#e0f2fe', light:'#f0f9ff' },
+  'Frozen':        { color:'#1d4ed8', bg:'#dbeafe', light:'#eff6ff' },
+  'Proteins':      { color:'#b91c1c', bg:'#fee2e2', light:'#fef2f2' },
+  'Produce':       { color:'#15803d', bg:'#dcfce7', light:'#f0fdf4' },
+  'General':       { color:'#374151', bg:'#f3f4f6', light:'#f9fafb' },
+}
+
+// Auto-categorize master items from their name. Matches Inventory's
+// default category rules in src/hooks/useInventory.js so counts align.
+function categorizeItem(item) {
+  const name = (item.name || '').toLowerCase()
+  const pairs = [
+    ['Beverages',     /(red bull|celsius|coke|sprite|juice|water|tea|coffee drink|lemonade|gatorade|smartwater|diet)/],
+    ['Bar/Barista',   /(espresso|syrup|chai|matcha|cold brew|latte|bean|ghirardelli|monin|moto|david rio)/],
+    ['Pantry/Snacks', /(chip|bar |snack|cookie|candy|nut|pretzel|popcorn|clif|m&m|snicker|haribo|uglies|sahale|barebell)/],
+    ['Dairy',         /(milk|cream|yogurt|cheese|butter|oat)/],
+    ['Frozen',        /(ice cream|frozen|popsicle)/],
+    ['Proteins',      /(chicken|beef|steak|salmon|fish|pork|turkey|shrimp|wenzel|jerky|meat stick)/],
+    ['Produce',       /(lettuce|tomato|onion|pepper|carrot|fruit|apple|banana|berry)/],
+  ]
+  for (const [cat, rx] of pairs) {
+    if (rx.test(name)) return cat
+  }
+  return 'General'
 }
 
 const STATUS_CONFIG = {
@@ -77,8 +57,6 @@ const STATUS_CONFIG = {
   Rejected:   { color:'#991b1b', bg:'#fee2e2', icon: X },
   Pending:    { color:'#92400e', bg:'#fef3c7', icon: AlertTriangle },
 }
-
-const CATS = ['All', 'Beverages', 'Dairy', 'Snacks', 'Barista', 'Supplies']
 
 // ═══════════════════════════════════════════════════════════════════════════
 // OrderHub Component
@@ -104,7 +82,19 @@ export default function OrderHub() {
   
   // Cart state
   const [qty, setQty] = useState({})
-  const [deliveryDate, setDeliveryDate] = useState('')
+  // Default delivery date: 2 business days from today (gives vendors ~48hr
+  // notice and skips Saturday/Sunday automatically).
+  const defaultDeliveryDate = (() => {
+    const d = new Date()
+    let added = 0
+    while (added < 2) {
+      d.setDate(d.getDate() + 1)
+      const dow = d.getDay() // 0=Sun, 6=Sat
+      if (dow !== 0 && dow !== 6) added++
+    }
+    return d.toISOString().slice(0, 10) // yyyy-mm-dd for <input type="date">
+  })()
+  const [deliveryDate, setDeliveryDate] = useState(defaultDeliveryDate)
   const [note, setNote] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [submitted, setSubmitted] = useState(false)
@@ -118,7 +108,49 @@ export default function OrderHub() {
   // Budget data from Firestore
   const [weeklyBudget, setWeeklyBudget] = useState({ cogs: 3500, spent: 0 })
 
+  // Vendor import modal
+  const [showImportModal, setShowImportModal] = useState(false)
+  // Bumped after each successful import — forces catalog reload
+  const [importNonce, setImportNonce] = useState(0)
+
+  // Master catalog + per-location inventory overrides merged into a single
+  // shopping catalog. Replaces the previous hardcoded ITEMS const.
+  const [items, setItems] = useState([])
+  const [itemsLoading, setItemsLoading] = useState(true)
+
+  // Vendors from the live tenants/{orgId}/vendors collection
+  const { vendors: firestoreVendors } = useVendors()
+
   const location = selectedLocation === 'all' ? null : selectedLocation
+
+  // Build the vendor list: prefer firestoreVendors if any exist, otherwise
+  // derive from distinct vendor strings in the catalog items themselves.
+  // Each vendor entry needs: { id, label, url }
+  const VENDORS = useMemo(() => {
+    if (firestoreVendors && firestoreVendors.length > 0) {
+      return firestoreVendors.map(v => ({
+        id: v.id,
+        label: v.name || v.label || 'Unknown',
+        url:   v.url || v.orderingUrl || null,
+      }))
+    }
+    // Fallback: derive from catalog. Dedupe by slug so vendor string
+    // variants ("David Rio" vs "david rio" vs "David Rio ") collapse to one.
+    const distinct = new Map()
+    items.forEach(i => {
+      if (!i.vendor) return
+      const label = i.vendor.trim()
+      if (!label) return
+      const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')
+      if (!slug) return
+      if (!distinct.has(slug)) {
+        // Prefer Title Case for display
+        const pretty = label.split(/\s+/).map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
+        distinct.set(slug, { id: slug, label: pretty, url: null })
+      }
+    })
+    return Array.from(distinct.values()).sort((a, b) => a.label.localeCompare(b.label))
+  }, [firestoreVendors, items])
 
   // Load weekly budget from Firestore
   useEffect(() => {
@@ -145,26 +177,104 @@ export default function OrderHub() {
     loadBudget()
   }, [orgId, location])
 
-  // Get items based on vendor filter
+  // Load master catalog from tenants/{orgId}/inventoryCatalog
+  // and merge with per-location inventory overrides for par + onHand.
+  useEffect(() => {
+    if (!orgId) {
+      setItems([])
+      setItemsLoading(false)
+      return
+    }
+    let cancelled = false
+    const loadCatalog = async () => {
+      setItemsLoading(true)
+      try {
+        // Master catalog — 428 items for Fooda after the Apr 12 migration.
+        const catalogSnap = await getDocs(collection(db, 'tenants', orgId, 'inventoryCatalog'))
+        const masterItems = catalogSnap.docs.map(d => {
+          const data = d.data()
+          return {
+            id:       d.id,
+            name:     data.name || '',
+            unitCost: data.unitCost || 0,
+            pack:     data.packSize || data.pack || '',
+            sku:      data.glCode || data.sku || '',
+            vendor:   data.vendor || 'Unknown',
+            cat:      categorizeItem(data),
+            par:      0,   // filled in from per-location overrides below
+            onHand:   0,   // filled in from per-location overrides below
+          }
+        })
+
+        // Per-location overrides — par, reorder, latest qty counted
+        // Only load if a specific location is selected. For 'all', par/onHand
+        // are left at 0 (OrderHub's below-par filter requires a location anyway).
+        let overrides = {}
+        if (location) {
+          const locId = (location || '').replace(/[^a-zA-Z0-9]/g, '_')
+          try {
+            const overrideSnap = await getDocs(collection(db, 'tenants', orgId, 'inventory', locId, 'items'))
+            overrideSnap.forEach(d => {
+              const od = d.data()
+              if (od.removed) return
+              overrides[d.id] = {
+                par:    od.parLevel || 0,
+                onHand: od.qty ?? 0,
+              }
+            })
+          } catch (e) {
+            console.warn('Failed to load per-location inventory overrides:', e)
+          }
+        }
+
+        // Merge
+        const merged = masterItems.map(mi => ({
+          ...mi,
+          par:    overrides[mi.id]?.par ?? mi.par,
+          onHand: overrides[mi.id]?.onHand ?? mi.onHand,
+        }))
+
+        if (!cancelled) {
+          setItems(merged)
+          setItemsLoading(false)
+          console.log('OrderHub: loaded ' + merged.length + ' items (catalog merged with ' + Object.keys(overrides).length + ' location overrides)')
+        }
+      } catch (err) {
+        console.error('Failed to load OrderHub catalog:', err)
+        if (!cancelled) {
+          setItems([])
+          setItemsLoading(false)
+        }
+      }
+    }
+    loadCatalog()
+    return () => { cancelled = true }
+  }, [orgId, location, importNonce])
+
+  // Slugify a vendor name the same way the VENDORS memo does so filtering works.
+  const vendorSlug = (name) => (name || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')
+
+  // Get items based on vendor filter. vendorFilter holds a vendor id (slug).
   const visibleItems = useMemo(() => {
-    if (vendorFilter === 'all') return ITEMS
-    return ITEMS.filter(i => i.vendor === vendorFilter)
-  }, [vendorFilter])
+    if (vendorFilter === 'all') return items
+    return items.filter(i => vendorSlug(i.vendor) === vendorFilter)
+  }, [items, vendorFilter])
 
   // Cart items from ALL vendors
   const cartItems = useMemo(() => {
     return Object.entries(qty).map(([id, q]) => {
-      const item = ITEMS.find(i => i.id === id)
+      const item = items.find(i => i.id === id)
       return item ? { ...item, qty: q } : null
     }).filter(Boolean)
-  }, [qty])
+  }, [qty, items])
 
-  // Group cart by vendor
+  // Group cart by vendor (keyed by vendor id slug, not the raw vendor name)
   const cartByVendor = useMemo(() => {
     const grouped = {}
     cartItems.forEach(item => {
-      if (!grouped[item.vendor]) grouped[item.vendor] = []
-      grouped[item.vendor].push(item)
+      const slug = vendorSlug(item.vendor) || 'unknown'
+      if (!grouped[slug]) grouped[slug] = []
+      grouped[slug].push(item)
     })
     return grouped
   }, [cartItems])
@@ -249,6 +359,19 @@ export default function OrderHub() {
       return
     }
 
+    // Delivery date is required
+    if (!deliveryDate) {
+      toast.error('Please select a delivery date before submitting')
+      return
+    }
+
+    // Delivery date must be today or later
+    const todayStr = new Date().toISOString().slice(0, 10)
+    if (deliveryDate < todayStr) {
+      toast.error('Delivery date cannot be in the past')
+      return
+    }
+
     setSubmitting(true)
     const now = new Date()
 
@@ -327,7 +450,16 @@ export default function OrderHub() {
         setQty({})
         setSubmitted(false)
         setNote('')
-        setDeliveryDate('')
+        // Reset delivery date back to the 2-business-days-out default,
+        // not empty — next order is ready to submit immediately.
+        const d = new Date()
+        let added = 0
+        while (added < 2) {
+          d.setDate(d.getDate() + 1)
+          const dow = d.getDay()
+          if (dow !== 0 && dow !== 6) added++
+        }
+        setDeliveryDate(d.toISOString().slice(0, 10))
       }, 2000)
 
     } catch (e) {
@@ -406,12 +538,16 @@ export default function OrderHub() {
             </div>
             <div className={styles.toolDivider}/>
             <div className={styles.toolGroup}>
-              <span className={styles.toolLabel}>Delivery date</span>
+              <span className={styles.toolLabel}>
+                Delivery date <span style={{color:'#dc2626'}}>*</span>
+              </span>
               <input 
                 type="date" 
                 value={deliveryDate} 
                 onChange={e => setDeliveryDate(e.target.value)} 
+                min={new Date().toISOString().slice(0, 10)}
                 className={styles.dateInput}
+                required
               />
             </div>
             <div className={styles.toolDivider}/>
@@ -420,7 +556,7 @@ export default function OrderHub() {
               <input 
                 value={search} 
                 onChange={e => setSearch(e.target.value)} 
-                placeholder="Search products or SKU..." 
+                placeholder="Search products..." 
                 className={styles.searchInput}
               />
             </div>
@@ -430,6 +566,13 @@ export default function OrderHub() {
                   ⚠ {belowParCnt} below par — add all
                 </button>
               )}
+              <button
+                className={styles.pastOrdersBtn}
+                onClick={() => setShowImportModal(true)}
+                title="Import a vendor catalog from CSV/Excel"
+              >
+                <Upload size={13}/> Import catalog
+              </button>
               <button 
                 className={styles.pastOrdersBtn} 
                 onClick={() => { setShowPast(v => !v); loadPastOrders() }}
@@ -614,7 +757,6 @@ export default function OrderHub() {
                 <tr>
                   {vendorFilter === 'all' && <th className={styles.th}>Vendor</th>}
                   <th className={styles.thProduct}>Product</th>
-                  <th className={styles.th}>SKU</th>
                   <th className={styles.th}>Pack</th>
                   <th className={`${styles.th} ${styles.r}`}>Unit cost</th>
                   <th className={`${styles.th} ${styles.r}`}>Par</th>
@@ -646,7 +788,6 @@ export default function OrderHub() {
                           <td className={styles.tdProduct}>
                             <div className={styles.itemName}>{item.name}</div>
                           </td>
-                          <td className={styles.tdSku}>{item.sku}</td>
                           <td><span className={styles.packBadge}>{item.pack}</span></td>
                           <td className={`${styles.td} ${styles.r}`}>${item.unitCost.toFixed(2)}</td>
                           <td 
@@ -841,6 +982,21 @@ export default function OrderHub() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Vendor catalog import modal */}
+      {showImportModal && (
+        <VendorImportModal
+          orgId={orgId}
+          onClose={() => setShowImportModal(false)}
+          onSuccess={() => {
+            // Import succeeded. Bump the nonce to force the catalog useEffect
+            // to reload so new items appear in the background. DO NOT close
+            // the modal here — the modal shows its own success screen and the
+            // user dismisses it with the Done button (which calls onClose).
+            setImportNonce(n => n + 1)
+          }}
+        />
       )}
     </div>
   )
