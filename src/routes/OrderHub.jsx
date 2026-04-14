@@ -2,7 +2,9 @@ import { useState, useMemo, useEffect, Fragment, useCallback } from 'react'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { useToast } from '@/components/ui/Toast'
 import { useVendors } from '@/hooks/useVendorsProducts'
+import { APPROVAL_THRESHOLDS } from '@/hooks/useOrders'
 import VendorImportModal from './components/VendorImportModal'
+import OrderItemWhyPanel from './components/OrderItemWhyPanel'
 import { Search, Download, X, Clock, LayoutGrid, List, TrendingUp, Package, CheckCircle, AlertTriangle, Truck, RefreshCw, Upload } from 'lucide-react'
 import { db } from '@/lib/firebase'
 import { collection, addDoc, getDocs, query, orderBy, limit, serverTimestamp, doc, getDoc, where, writeBatch } from 'firebase/firestore'
@@ -98,7 +100,6 @@ export default function OrderHub() {
   const [note, setNote] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [submitted, setSubmitted] = useState(false)
-  const [showBudgetPreview, setShowBudgetPreview] = useState(false)
   
   // Past orders
   const [pastOrders, setPastOrders] = useState([])
@@ -110,6 +111,7 @@ export default function OrderHub() {
 
   // Vendor import modal
   const [showImportModal, setShowImportModal] = useState(false)
+  const [whyPanelItem, setWhyPanelItem] = useState(null)
   // Bumped after each successful import — forces catalog reload
   const [importNonce, setImportNonce] = useState(0)
 
@@ -346,6 +348,59 @@ export default function OrderHub() {
       setPastOrdersLoading(false)
     }
   }, [orgId, toast])
+
+  // Reorder from a past order: load its line items into the current cart.
+  // Matches by item ID first, then falls back to SKU match if catalog has
+  // changed since the original order was placed.
+  const reorderFromPastOrder = useCallback((pastOrder) => {
+    if (!pastOrder?.items?.length) {
+      toast.warning('This order has no line items to reorder')
+      return
+    }
+
+    const newQty = { ...qty }
+    let matched = 0
+    let missing = 0
+
+    const normalize = (s) => (s || '').toString().trim().toLowerCase()
+
+    for (const lineItem of pastOrder.items) {
+      // First try ID match (exact)
+      let catalogItem = items.find(i => i.id === lineItem.id)
+      // Fall back to SKU match (normalized)
+      if (!catalogItem && lineItem.sku) {
+        const targetSku = normalize(lineItem.sku)
+        catalogItem = items.find(i => normalize(i.sku) === targetSku)
+      }
+      // Fall back to normalized name match (trimmed, case-insensitive)
+      if (!catalogItem && lineItem.name) {
+        const targetName = normalize(lineItem.name)
+        catalogItem = items.find(i => normalize(i.name) === targetName)
+      }
+
+      if (catalogItem) {
+        newQty[catalogItem.id] = (newQty[catalogItem.id] || 0) + (lineItem.qty || 0)
+        matched++
+      } else {
+        console.warn('[reorder] No match for:', { id: lineItem.id, sku: lineItem.sku, name: lineItem.name })
+        missing++
+      }
+    }
+
+    if (matched === 0) {
+      toast.error('None of the items from this order are in the current catalog')
+      return
+    }
+
+    setQty(newQty)
+    setShowPast(false)  // close the past orders panel
+
+    const msg = missing > 0
+      ? `Loaded ${matched} items from ${pastOrder.orderNum}. ${missing} items no longer in catalog.`
+      : `Loaded ${matched} items from ${pastOrder.orderNum}`
+    toast.success(msg)
+  }, [items, qty, toast])
+
 
   // Submit orders
   const submitOrders = useCallback(async () => {
@@ -616,6 +671,7 @@ export default function OrderHub() {
                   <th>Items</th>
                   <th>Total</th>
                   <th>Status</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -637,6 +693,15 @@ export default function OrderHub() {
                       >
                         {o.status}
                       </span>
+                    </td>
+                    <td>
+                      <button
+                        className={styles.reorderBtn}
+                        onClick={() => reorderFromPastOrder(o)}
+                        title={`Reorder ${o.items?.length || 0} items from this order`}
+                      >
+                        <RefreshCw size={12}/> Reorder
+                      </button>
                     </td>
                   </tr>
                 ))}
@@ -783,7 +848,16 @@ export default function OrderHub() {
                       const subtotal = q * item.unitCost
                       const vendor = VENDORS.find(v => v.id === item.vendor)
                       return (
-                        <tr key={item.id} className={`${styles.row} ${q > 0 ? styles.rowOrdered : ''}`}>
+                        <tr
+                          key={item.id}
+                          className={`${styles.row} ${q > 0 ? styles.rowOrdered : ''} ${styles.rowClickable}`}
+                          onClick={(e) => {
+                            // Don't trigger on button/input clicks (qty controls)
+                            const tag = e.target.tagName
+                            if (tag === 'BUTTON' || tag === 'INPUT' || e.target.closest('button') || e.target.closest('input')) return
+                            setWhyPanelItem(item)
+                          }}
+                        >
                           {vendorFilter === 'all' && <td className={styles.tdVendor}>{vendor?.label}</td>}
                           <td className={styles.tdProduct}>
                             <div className={styles.itemName}>{item.name}</div>
@@ -849,6 +923,73 @@ export default function OrderHub() {
               {vendorCount > 1 && <span className={styles.sumBadgeVendor}>{vendorCount} vendors</span>}
             </div>
 
+            {/* Budget burndown — always visible, live-updating as cart changes */}
+            {location && (() => {
+              const budget = weeklyBudget.cogs
+              const spent = weeklyBudget.spent
+              const inCart = cartTotal
+              const committed = spent
+              const projected = committed + inCart
+              const remaining = budget - projected
+              const percentUsed = budget > 0 ? (projected / budget) * 100 : 0
+              const percentCommitted = budget > 0 ? (committed / budget) * 100 : 0
+
+              let status = 'safe'
+              if (projected > budget) status = 'over'
+              else if (projected > budget * 0.85) status = 'caution'
+
+              const statusColors = {
+                safe:    { bar: '#10b981', text: '#065f46', bg: '#f0fdf4', border: '#a7f3d0' },
+                caution: { bar: '#f59e0b', text: '#92400e', bg: '#fffbeb', border: '#fde68a' },
+                over:    { bar: '#dc2626', text: '#991b1b', bg: '#fef2f2', border: '#fecaca' },
+              }
+              const c = statusColors[status]
+
+              return (
+                <div className={styles.budgetLive} style={{ background: c.bg, borderColor: c.border }}>
+                  <div className={styles.budgetLiveHeader}>
+                    <div className={styles.budgetLiveLabel}>
+                      <TrendingUp size={12}/> Weekly budget
+                    </div>
+                    <div className={styles.budgetLiveRemaining} style={{ color: c.text }}>
+                      ${Math.abs(remaining).toFixed(0)} {remaining < 0 ? 'over' : 'left'}
+                    </div>
+                  </div>
+                  <div className={styles.budgetLiveBar}>
+                    <div className={styles.budgetLiveBarCommitted} style={{ width: `${Math.min(100, percentCommitted)}%` }}/>
+                    {inCart > 0 && (
+                      <div
+                        className={styles.budgetLiveBarCart}
+                        style={{
+                          left: `${Math.min(100, percentCommitted)}%`,
+                          width: `${Math.min(100 - percentCommitted, (inCart / budget) * 100)}%`,
+                          background: c.bar,
+                        }}
+                      />
+                    )}
+                    {percentUsed > 100 && (
+                      <div className={styles.budgetLiveBarOver} style={{ background: c.bar }}/>
+                    )}
+                  </div>
+                  <div className={styles.budgetLiveStats}>
+                    <span>${spent.toFixed(0)} spent</span>
+                    {inCart > 0 && <span style={{ color: c.text, fontWeight: 600 }}>+ ${inCart.toFixed(0)} cart</span>}
+                    <span>of ${budget.toFixed(0)}</span>
+                  </div>
+                  {status === 'caution' && (
+                    <div className={styles.budgetLiveWarn} style={{ color: c.text }}>
+                      <AlertTriangle size={11}/> Approaching weekly limit
+                    </div>
+                  )}
+                  {status === 'over' && (
+                    <div className={styles.budgetLiveWarn} style={{ color: c.text }}>
+                      <AlertTriangle size={11}/> This cart would exceed weekly budget by ${Math.abs(remaining).toFixed(0)}
+                    </div>
+                  )}
+                </div>
+              )
+            })()}
+
             {cartLines === 0 ? (
               <div className={styles.sumEmpty}>
                 <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>No items added yet</div>
@@ -902,50 +1043,6 @@ export default function OrderHub() {
             )}
 
             {/* Budget Impact Preview */}
-            {cartLines > 0 && (
-              <div className={styles.budgetPreview}>
-                <button 
-                  className={styles.budgetToggle} 
-                  onClick={() => setShowBudgetPreview(v => !v)}
-                >
-                  <TrendingUp size={13}/> Budget Impact {showBudgetPreview ? '▲' : '▼'}
-                </button>
-                {showBudgetPreview && (
-                  <div className={styles.budgetDetails}>
-                    <div className={styles.budgetRow}>
-                      <span>Weekly COGS budget</span>
-                      <span>${weeklyBudget.cogs.toFixed(2)}</span>
-                    </div>
-                    <div className={styles.budgetRow}>
-                      <span>Already spent</span>
-                      <span>${weeklyBudget.spent.toFixed(2)}</span>
-                    </div>
-                    <div className={styles.budgetRow} style={{ color: '#1e40af', fontWeight: 600 }}>
-                      <span>This order</span>
-                      <span>+${cartTotal.toFixed(2)}</span>
-                    </div>
-                    <div className={styles.budgetBar}>
-                      <div 
-                        className={styles.budgetBarFill} 
-                        style={{ 
-                          width: `${Math.min(100, ((weeklyBudget.spent + cartTotal) / weeklyBudget.cogs) * 100)}%` 
-                        }}
-                      />
-                    </div>
-                    <div className={styles.budgetRow} style={{ fontWeight: 700 }}>
-                      <span>Remaining</span>
-                      <span 
-                        style={{ 
-                          color: (weeklyBudget.cogs - weeklyBudget.spent - cartTotal) < 0 ? '#991b1b' : '#065f46' 
-                        }}
-                      >
-                        ${(weeklyBudget.cogs - weeklyBudget.spent - cartTotal).toFixed(2)}
-                      </span>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
 
             <div className={styles.sumFooter}>
               <div className={styles.sumField}>
@@ -958,6 +1055,47 @@ export default function OrderHub() {
                   rows={2}
                 />
               </div>
+              {/* Approval routing preview — shows the user BEFORE submit what level
+                  of approval this cart will need, not after. */}
+              {cartLines > 0 && (() => {
+                // Highest tier wins if any single vendor sub-total crosses a threshold
+                let needsDirector = false
+                let needsManager = false
+                for (const items of Object.values(cartByVendor)) {
+                  const subtotal = items.reduce((s, i) => s + i.qty * i.unitCost, 0)
+                  if (subtotal > APPROVAL_THRESHOLDS.DIRECTOR_REQUIRED) needsDirector = true
+                  else if (subtotal > APPROVAL_THRESHOLDS.AUTO_APPROVE) needsManager = true
+                }
+                if (needsDirector) {
+                  return (
+                    <div className={styles.approvalPill} style={{
+                      background: '#fef2f2', borderColor: '#fecaca', color: '#991b1b',
+                    }}>
+                      <AlertTriangle size={12}/>
+                      <span><strong>Director approval required.</strong> Any single vendor order over ${APPROVAL_THRESHOLDS.DIRECTOR_REQUIRED.toLocaleString()} needs director sign-off before it submits to the vendor.</span>
+                    </div>
+                  )
+                }
+                if (needsManager) {
+                  return (
+                    <div className={styles.approvalPill} style={{
+                      background: '#fffbeb', borderColor: '#fde68a', color: '#92400e',
+                    }}>
+                      <AlertTriangle size={12}/>
+                      <span><strong>Manager approval required.</strong> Vendor orders over ${APPROVAL_THRESHOLDS.AUTO_APPROVE} route to a manager queue before vendor submission.</span>
+                    </div>
+                  )
+                }
+                return (
+                  <div className={styles.approvalPill} style={{
+                    background: '#f0fdf4', borderColor: '#a7f3d0', color: '#065f46',
+                  }}>
+                    <CheckCircle size={12}/>
+                    <span><strong>Auto-approved.</strong> Orders under ${APPROVAL_THRESHOLDS.AUTO_APPROVE} per vendor submit directly.</span>
+                  </div>
+                )
+              })()}
+
               <div className={styles.sumActions}>
                 {cartLines > 0 && (
                   <button className={styles.exportBtn} onClick={exportCSV}>
@@ -973,15 +1111,33 @@ export default function OrderHub() {
                     ? '✓ Submitted' 
                     : submitting 
                       ? 'Submitting...' 
-                      : vendorCount > 1 
-                        ? `Submit ${vendorCount} Orders` 
-                        : 'Submit Order'
+                      : (() => {
+                          // Dynamic label based on approval requirements
+                          let needsApproval = false
+                          for (const items of Object.values(cartByVendor)) {
+                            const subtotal = items.reduce((s, i) => s + i.qty * i.unitCost, 0)
+                            if (subtotal > APPROVAL_THRESHOLDS.AUTO_APPROVE) { needsApproval = true; break }
+                          }
+                          if (needsApproval) return 'Request Approval'
+                          return vendorCount > 1 ? `Submit ${vendorCount} Orders` : 'Submit Order'
+                        })()
                   }
                 </button>
               </div>
             </div>
           </div>
         </div>
+      )}
+
+      {/* Item why panel */}
+      {whyPanelItem && (
+        <OrderItemWhyPanel
+          item={whyPanelItem}
+          qty={qty}
+          items={items}
+          pastOrders={pastOrders}
+          onClose={() => setWhyPanelItem(null)}
+        />
       )}
 
       {/* Vendor catalog import modal */}
