@@ -655,7 +655,6 @@ export default function OrderHub() {
         {view === 'order' && (
           <>
             <div className={styles.toolGroup}>
-              <span className={styles.toolLabel}>Vendor</span>
               <select 
                 value={vendorFilter} 
                 onChange={e => setVendorFilter(e.target.value)} 
@@ -667,9 +666,6 @@ export default function OrderHub() {
             </div>
             <div className={styles.toolDivider}/>
             <div className={styles.toolGroup}>
-              <span className={styles.toolLabel}>
-                Delivery date <span style={{color:'#dc2626'}}>*</span>
-              </span>
               <input 
                 type="date" 
                 value={deliveryDate} 
@@ -723,75 +719,88 @@ export default function OrderHub() {
         )}
       </div>
 
-      {/* Past Orders Panel */}
+      {/* Past Orders side drawer (Block D Phase 1 rebuild) */}
       {showPast && view === 'order' && (
-        <div className={styles.pastPanel}>
-          <div className={styles.pastHeader}>
-            <span>Past Orders</span>
-            <button className={styles.pastClose} onClick={() => setShowPast(false)}>✕</button>
+        <>
+          <div className={styles.pastDrawerBackdrop} onClick={() => setShowPast(false)}/>
+          <div className={styles.pastDrawer}>
+            <div className={styles.pastDrawerHeader}>
+              <div>
+                <div className={styles.pastDrawerLabel}>Past orders</div>
+                <h2 className={styles.pastDrawerTitle}>
+                  {pastOrders.length} {pastOrders.length === 1 ? 'order' : 'orders'}
+                </h2>
+              </div>
+              <button className={styles.pastDrawerClose} onClick={() => setShowPast(false)}>
+                <X size={18}/>
+              </button>
+            </div>
+            <div className={styles.pastDrawerBody}>
+              {pastOrdersLoading ? (
+                <div className={styles.pastDrawerEmpty}>
+                  <RefreshCw size={20} className={styles.spin}/>
+                  <span>Loading orders…</span>
+                </div>
+              ) : pastOrders.length === 0 ? (
+                <div className={styles.pastDrawerEmpty}>
+                  <Package size={28}/>
+                  <strong>No orders yet</strong>
+                  <span>Orders you submit will appear here</span>
+                </div>
+              ) : (
+                pastOrders.map(o => {
+                  const statusConfig = STATUS_CONFIG[o.status] || {}
+                  const StatusIcon = statusConfig.icon
+                  const dateStr = o.createdAt?.toDate?.()?.toLocaleDateString?.('en-US', {
+                    month: 'short', day: 'numeric', year: 'numeric'
+                  }) || '—'
+                  const canReceive = ['Submitted','Approved','Ordered','Receiving'].includes(o.status)
+                  return (
+                    <div key={o.id} className={styles.pastCard}>
+                      <div className={styles.pastCardHeader}>
+                        <div className={styles.pastCardOrderNum}>{o.orderNum}</div>
+                        <div className={styles.pastCardStatus} style={{
+                          background: statusConfig.bg,
+                          color: statusConfig.color,
+                        }}>
+                          {StatusIcon && <StatusIcon size={11}/>}
+                          {o.status}
+                        </div>
+                      </div>
+                      <div className={styles.pastCardBody}>
+                        <div className={styles.pastCardVendor}>{o.vendor}</div>
+                        <div className={styles.pastCardMeta}>
+                          {cleanLocName(o.location || '')} · {dateStr} · {o.items?.length || 0} lines
+                        </div>
+                      </div>
+                      <div className={styles.pastCardFooter}>
+                        <div className={styles.pastCardTotal}>${(o.total || 0).toFixed(2)}</div>
+                        <div className={styles.pastCardActions}>
+                          {canReceive && (
+                            <button
+                              className={styles.receiveBtn}
+                              onClick={() => setReceivingOrder(o)}
+                              title={`Record receiving for ${o.orderNum}`}
+                            >
+                              <Truck size={12}/> Receive
+                            </button>
+                          )}
+                          <button
+                            className={styles.reorderBtn}
+                            onClick={() => reorderFromPastOrder(o)}
+                            title={`Reorder ${o.items?.length || 0} items`}
+                          >
+                            <RefreshCw size={12}/> Reorder
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })
+              )}
+            </div>
           </div>
-          {pastOrdersLoading ? (
-            <div className={styles.pastEmpty}>Loading orders...</div>
-          ) : pastOrders.length === 0 ? (
-            <div className={styles.pastEmpty}>No orders submitted yet</div>
-          ) : (
-            <table className={styles.pastTable}>
-              <thead>
-                <tr>
-                  <th>Order #</th>
-                  <th>Vendor</th>
-                  <th>Location</th>
-                  <th>Date</th>
-                  <th>Items</th>
-                  <th>Total</th>
-                  <th>Status</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {pastOrders.map(o => (
-                  <tr key={o.id}>
-                    <td style={{ fontWeight: 600, fontFamily: 'monospace' }}>{o.orderNum}</td>
-                    <td>{o.vendor}</td>
-                    <td>{cleanLocName(o.location || '')}</td>
-                    <td>{o.createdAt?.toDate?.()?.toLocaleDateString?.() || '—'}</td>
-                    <td>{o.items?.length || 0} lines</td>
-                    <td style={{ fontWeight: 700, color: '#185FA5' }}>${(o.total || 0).toFixed(2)}</td>
-                    <td>
-                      <span 
-                        className={styles.statusBadge} 
-                        style={{ 
-                          background: STATUS_CONFIG[o.status]?.bg, 
-                          color: STATUS_CONFIG[o.status]?.color 
-                        }}
-                      >
-                        {o.status}
-                      </span>
-                    </td>
-                    <td style={{display:'flex',gap:'6px',alignItems:'center'}}>
-                      {['Submitted','Approved','Ordered','Receiving'].includes(o.status) && (
-                        <button
-                          className={styles.receiveBtn}
-                          onClick={() => setReceivingOrder(o)}
-                          title={`Record receiving for ${o.orderNum}`}
-                        >
-                          <Truck size={12}/> Receive
-                        </button>
-                      )}
-                      <button
-                        className={styles.reorderBtn}
-                        onClick={() => reorderFromPastOrder(o)}
-                        title={`Reorder ${o.items?.length || 0} items from this order`}
-                      >
-                        <RefreshCw size={12}/> Reorder
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
+        </>
       )}
 
       {/* KANBAN VIEW */}
@@ -1004,7 +1013,14 @@ export default function OrderHub() {
               Order summary
               {cartLines > 0 && <span className={styles.sumBadge}>{cartLines} lines</span>}
               {vendorCount > 1 && <span className={styles.sumBadgeVendor}>{vendorCount} vendors</span>}
-            </div>
+              {draftDocId && draftSyncStatus !== 'idle' && (
+                <span className={`${styles.syncStatus} ${styles['syncStatus_' + draftSyncStatus]}`}>
+                  {draftSyncStatus === 'saving' && '○ Saving…'}
+                  {draftSyncStatus === 'saved'  && '✓ Saved'}
+                  {draftSyncStatus === 'error'  && '⚠ Sync error'}
+                </span>
+              )}
+</div>
 
             {/* Budget burndown — always visible, live-updating as cart changes */}
             {location && (() => {

@@ -506,3 +506,402 @@
   white-space: nowrap;
 }
 .receiveBtn:hover { background: #075985; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Past Orders Drawer (Block D Phase 1 rebuild)
+   Replaces the old .pastPanel / .pastTable styles
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.pastDrawerBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.35);
+  z-index: 80;
+  animation: fadeIn 0.15s;
+}
+
+.pastDrawer {
+  position: fixed;
+  top: 80px;
+  right: 0;
+  bottom: 0;
+  width: 460px;
+  max-width: 92vw;
+  background: white;
+  box-shadow: -16px 0 40px rgba(15, 23, 42, 0.12);
+  z-index: 81;
+  display: flex;
+  flex-direction: column;
+  animation: slideIn 0.2s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes slideIn {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+
+.pastDrawerHeader {
+  padding: 20px 22px 16px;
+  border-bottom: 1px solid #e5e7eb;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.pastDrawerLabel {
+  font-size: 10px;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 4px;
+}
+
+.pastDrawerTitle {
+  font-size: 18px;
+  font-weight: 700;
+  color: #0f172a;
+  margin: 0;
+}
+
+.pastDrawerClose {
+  background: none;
+  border: none;
+  padding: 6px;
+  cursor: pointer;
+  color: #64748b;
+  border-radius: 6px;
+}
+.pastDrawerClose:hover { background: #f1f5f9; }
+
+.pastDrawerBody {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 22px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pastDrawerEmpty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 60px 20px;
+  color: #94a3b8;
+  font-size: 13px;
+  text-align: center;
+}
+.pastDrawerEmpty strong {
+  color: #475569;
+  font-size: 15px;
+  margin-top: 6px;
+}
+.pastDrawerEmpty span {
+  font-size: 12px;
+}
+
+/* Spinner used in loading state */
+.spin {
+  animation: spinAnim 0.9s linear infinite;
+}
+@keyframes spinAnim {
+  to { transform: rotate(360deg); }
+}
+
+.pastCard {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 14px 16px;
+  background: white;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.pastCard:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+}
+
+.pastCardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.pastCardOrderNum {
+  font-size: 11px;
+  font-weight: 700;
+  color: #475569;
+  font-family: monospace;
+  letter-spacing: 0.02em;
+}
+
+.pastCardStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.pastCardBody {
+  margin-bottom: 12px;
+}
+
+.pastCardVendor {
+  font-size: 15px;
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 2px;
+}
+
+.pastCardMeta {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.pastCardFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid #f1f5f9;
+}
+
+.pastCardTotal {
+  font-size: 17px;
+  font-weight: 800;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
+}
+
+.pastCardActions {
+  display: flex;
+  gap: 6px;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Toolbar polish (Block D Phase 2)
+   Tighter grouping, inline labels, search-grows behavior
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.toolbar {
+  padding: 12px 16px;
+  background: white;
+  border-bottom: 1px solid #e5e7eb;
+  align-items: center;
+}
+
+.toolGroup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px;
+}
+
+.toolLabel {
+  font-size: 10px;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.toolDivider {
+  width: 1px;
+  height: 24px;
+  background: #e5e7eb;
+  flex-shrink: 0;
+}
+
+/* Search expands to fill available space */
+.searchWrap {
+  flex: 1;
+  min-width: 140px;
+  max-width: 280px;
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.searchInput {
+  width: 100%;
+  padding: 7px 12px 7px 32px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 13px;
+  background: #f8fafc;
+  transition: background 0.15s, border-color 0.15s;
+}
+.searchInput:focus {
+  outline: none;
+  background: white;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.searchIcon {
+  position: absolute;
+  left: 10px;
+  color: #94a3b8;
+  pointer-events: none;
+}
+
+.dateInput {
+  padding: 7px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 13px;
+  background: white;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: #0f172a;
+  cursor: pointer;
+}
+.dateInput:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.sel {
+  padding: 7px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 13px;
+  background: white;
+  font-weight: 500;
+  color: #0f172a;
+  cursor: pointer;
+  min-width: 140px;
+  max-width: 200px;
+}
+.sel:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+.toolRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  padding-left: 12px;
+  border-left: 1px solid #e5e7eb;
+}
+
+/* Make the toolbar buttons consistent — match Inventory tab styling */
+.pastOrdersBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  background: white;
+  color: #0f172a;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.pastOrdersBtn:hover:not(:disabled) {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+.pastOrdersBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* The view toggle (Order / Board) — segmented style */
+.viewToggle {
+  display: inline-flex;
+  background: #f1f5f9;
+  border-radius: 8px;
+  padding: 3px;
+  margin-right: 4px;
+}
+
+.viewBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  background: transparent;
+  border: none;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: all 0.15s;
+}
+.viewBtn:hover { color: #0f172a; }
+.viewActive {
+  background: white;
+  color: #0f172a;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+}
+
+/* Below par alert button — louder than the standard buttons */
+.belowParBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 12px;
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+.belowParBtn:hover {
+  background: #fde68a;
+  border-color: #fbbf24;
+}
+
+/* Sync status indicator (Block D Phase 3) */
+.syncStatus {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 5px;
+  white-space: nowrap;
+  transition: opacity 0.2s, background-color 0.2s, color 0.2s;
+}
+.syncStatus_saving {
+  background: #f1f5f9;
+  color: #64748b;
+}
+.syncStatus_saved {
+  background: #f0fdf4;
+  color: #065f46;
+}
+.syncStatus_error {
+  background: #fef2f2;
+  color: #991b1b;
+}
