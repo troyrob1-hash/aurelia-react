@@ -74,6 +74,25 @@ service cloud.firestore {
         allow write: if ownsTenant(tenantId) && isDirector();
       }
 
+      // Per-user cart drafts for OrderHub cross-device sync. Doc ID format
+      // is '{userId}__{locationId}'. Users can read/write only their own drafts.
+      match /orderDrafts/{draftId} {
+        allow read:  if ownsTenant(tenantId)
+                     && draftId.matches('^' + request.auth.uid + '__.*');
+        allow write: if ownsTenant(tenantId)
+                     && draftId.matches('^' + request.auth.uid + '__.*')
+                     && (request.resource.data.userId == null
+                         || request.resource.data.userId == request.auth.uid);
+      }
+
+      // Credit memos generated from receiving discrepancies. Anyone in the
+      // tenant can read (for AP review), managers+ can write (to create/
+      // approve them on behalf of the tenant).
+      match /creditMemos/{memoId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isManager();
+      }
+
       match /pnl/{locationId}/periods/{periodId} {
         allow read:  if ownsTenant(tenantId);
         allow write: if ownsTenant(tenantId) && isManager();

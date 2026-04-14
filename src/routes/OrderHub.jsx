@@ -1,13 +1,14 @@
-import { useState, useMemo, useEffect, Fragment, useCallback } from 'react'
+import { useState, useMemo, useEffect, Fragment, useCallback, useRef } from 'react'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { useToast } from '@/components/ui/Toast'
 import { useVendors } from '@/hooks/useVendorsProducts'
 import { APPROVAL_THRESHOLDS } from '@/hooks/useOrders'
 import VendorImportModal from './components/VendorImportModal'
 import OrderItemWhyPanel from './components/OrderItemWhyPanel'
+import ReceivingModal from './components/ReceivingModal'
 import { Search, Download, X, Clock, LayoutGrid, List, TrendingUp, Package, CheckCircle, AlertTriangle, Truck, RefreshCw, Upload } from 'lucide-react'
-import { db } from '@/lib/firebase'
-import { collection, addDoc, getDocs, query, orderBy, limit, serverTimestamp, doc, getDoc, where, writeBatch } from 'firebase/firestore'
+import { db, auth } from '@/lib/firebase'
+import { collection, addDoc, getDocs, query, orderBy, limit, serverTimestamp, doc, getDoc, where, writeBatch, setDoc, onSnapshot } from 'firebase/firestore'
 import { writePurchasingPnL, weekPeriod } from '@/lib/pnl'
 import { useAuthStore } from '@/store/authStore'
 import { submitToVendor } from '@/services/vendors'
@@ -112,6 +113,15 @@ export default function OrderHub() {
   // Vendor import modal
   const [showImportModal, setShowImportModal] = useState(false)
   const [whyPanelItem, setWhyPanelItem] = useState(null)
+  const [receivingOrder, setReceivingOrder] = useState(null)
+
+  // Cross-device cart sync — the cart state (qty, note, deliveryDate) is
+  // persisted to tenants/{orgId}/orderDrafts/{userId}__{locationId} and
+  // synced live via onSnapshot. Guards against infinite write-loops using
+  // a ref to track whether the current state change came from a remote
+  // snapshot vs a local edit.
+  const [draftSyncStatus, setDraftSyncStatus] = useState('idle') // idle | saving | saved | error
+  const skipNextWriteRef = useRef(false)
   // Bumped after each successful import — forces catalog reload
   const [importNonce, setImportNonce] = useState(0)
 
@@ -124,6 +134,12 @@ export default function OrderHub() {
   const { vendors: firestoreVendors } = useVendors()
 
   const location = selectedLocation === 'all' ? null : selectedLocation
+
+  // Draft doc ID — depends on `location` which is declared above.
+  // Uses Firebase Auth uid (from the Cognito bridge) since that's what
+  // request.auth.uid will be in the Firestore security rules.
+  const firebaseUid = auth?.currentUser?.uid || null
+  const draftDocId = orgId && location && firebaseUid ? `${firebaseUid}__${location}` : null
 
   // Build the vendor list: prefer firestoreVendors if any exist, otherwise
   // derive from distinct vendor strings in the catalog items themselves.
@@ -255,6 +271,64 @@ export default function OrderHub() {
 
   // Slugify a vendor name the same way the VENDORS memo does so filtering works.
   const vendorSlug = (name) => (name || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '')
+
+  // ─── Cross-device cart sync ─────────────────────────────────────────────
+  // Subscribe to the draft doc on the server. When it changes remotely,
+  // update local state (skipping the next write to avoid an echo).
+  useEffect(() => {
+    if (!draftDocId || !orgId) return
+    const ref = doc(db, 'tenants', orgId, 'orderDrafts', draftDocId)
+    const unsub = onSnapshot(
+      ref,
+      (snap) => {
+        if (!snap.exists()) return
+        const remote = snap.data()
+        // Only apply if the remote is newer than whatever we last saved locally
+        skipNextWriteRef.current = true
+        if (remote.qty !== undefined) setQty(remote.qty || {})
+        if (remote.note !== undefined) setNote(remote.note || '')
+        if (remote.deliveryDate !== undefined && remote.deliveryDate) {
+          setDeliveryDate(remote.deliveryDate)
+        }
+      },
+      (err) => {
+        console.warn('Cart draft subscription error:', err)
+      }
+    )
+    return unsub
+  }, [orgId, draftDocId])
+
+  // Debounced write to the draft doc whenever local cart state changes.
+  useEffect(() => {
+    if (!draftDocId || !orgId) return
+    // Skip the write that was triggered by a remote snapshot update
+    if (skipNextWriteRef.current) {
+      skipNextWriteRef.current = false
+      return
+    }
+    setDraftSyncStatus('saving')
+    const timer = setTimeout(async () => {
+      try {
+        const ref = doc(db, 'tenants', orgId, 'orderDrafts', draftDocId)
+        await setDoc(ref, {
+          qty,
+          note,
+          deliveryDate,
+          userId: firebaseUid,
+          userEmail: user?.email || null,
+          locationId: location,
+          updatedAt: serverTimestamp(),
+        }, { merge: true })
+        setDraftSyncStatus('saved')
+        // Clear saved status after 1.5s
+        setTimeout(() => setDraftSyncStatus('idle'), 1500)
+      } catch (e) {
+        console.error('[DRAFT WRITE] FAILED', draftDocId, e.code, e.message)
+        setDraftSyncStatus('error')
+      }
+    }, 800)
+    return () => clearTimeout(timer)
+  }, [qty, note, deliveryDate, orgId, draftDocId, user, location])
 
   // Get items based on vendor filter. vendorFilter holds a vendor id (slug).
   const visibleItems = useMemo(() => {
@@ -694,7 +768,16 @@ export default function OrderHub() {
                         {o.status}
                       </span>
                     </td>
-                    <td>
+                    <td style={{display:'flex',gap:'6px',alignItems:'center'}}>
+                      {['Submitted','Approved','Ordered','Receiving'].includes(o.status) && (
+                        <button
+                          className={styles.receiveBtn}
+                          onClick={() => setReceivingOrder(o)}
+                          title={`Record receiving for ${o.orderNum}`}
+                        >
+                          <Truck size={12}/> Receive
+                        </button>
+                      )}
                       <button
                         className={styles.reorderBtn}
                         onClick={() => reorderFromPastOrder(o)}
@@ -1127,6 +1210,21 @@ export default function OrderHub() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Receiving modal */}
+      {receivingOrder && (
+        <ReceivingModal
+          order={receivingOrder}
+          orgId={orgId}
+          user={user}
+          toast={toast}
+          onClose={() => setReceivingOrder(null)}
+          onSuccess={() => {
+            setReceivingOrder(null)
+            loadPastOrders()  // refresh past orders so status updates
+          }}
+        />
       )}
 
       {/* Item why panel */}
