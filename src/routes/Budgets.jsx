@@ -72,26 +72,69 @@ const fmt$ = v => {
 const fmtPct  = (v, base) => base > 0 ? (v/base*100).toFixed(1)+'%' : '—'
 const varColor = v => v == null ? undefined : v >= 0 ? '#059669' : '#dc2626'
 
-function parseExcel(rows) {
-  let monthCols = null, monthRowIdx = -1
+function parseExcel(rows, budgetYear) {
   const MONTH_NAMES = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec']
+  let monthCols = null, monthRowIdx = -1
 
-  for (let r = 0; r < Math.min(rows.length, 25); r++) {
-    const row = rows[r].map(c => String(c||'').toLowerCase().trim())
-    const janIdx = row.findIndex(c => c.startsWith('jan'))
-    if (janIdx !== -1) {
-      monthCols   = MONTH_NAMES.map(m => { const idx = row.findIndex(c => c.startsWith(m)); return idx !== -1 ? idx : janIdx + MONTH_NAMES.indexOf(m) })
-      monthRowIdx = r
-      break
+  // ── Strategy 1: find a row of Date objects for the budget year ──
+  // Real operator P&L files (e.g. Qualcomm) have date headers like 2026-01-31
+  // that SheetJS converts to JS Date objects with cellDates:true.
+  // We look for the row with the most date cells matching budgetYear and
+  // pick exactly the 12 monthly columns in calendar order.
+  const targetYear = parseInt(budgetYear) || new Date().getFullYear()
+
+  for (let r = 0; r < Math.min(rows.length, 20); r++) {
+    const row = rows[r]
+    const dateCols = []
+    for (let c = 0; c < row.length; c++) {
+      const cell = row[c]
+      if (cell instanceof Date && cell.getFullYear() === targetYear) {
+        dateCols.push({ col: c, month: cell.getMonth() }) // 0-indexed month
+      }
+    }
+    if (dateCols.length >= 12) {
+      // Found a row with 12+ date cells for the target year.
+      // Group by month, take the FIRST column per month (the Plan band,
+      // not the Override band which comes later in the same row).
+      const byMonth = {}
+      dateCols.forEach(({ col, month }) => {
+        if (byMonth[month] === undefined) byMonth[month] = col
+      })
+      if (Object.keys(byMonth).length >= 12) {
+        monthCols = MONTH_NAMES.map((_, i) => byMonth[i])
+        monthRowIdx = r
+        break
+      }
     }
   }
+
+  // ── Strategy 2 (fallback): template-style "Jan/Feb/Mar" text headers ──
+  if (!monthCols) {
+    for (let r = 0; r < Math.min(rows.length, 25); r++) {
+      const row = rows[r].map(c => String(c||'').toLowerCase().trim())
+      const janIdx = row.findIndex(c => c === 'jan' || c === 'january')
+      if (janIdx !== -1) {
+        const found = MONTH_NAMES.map(m => {
+          const idx = row.findIndex(c => c === m || c.startsWith(m) && c.length <= m.length + 5)
+          return idx !== -1 ? idx : -1
+        })
+        if (found.filter(x => x !== -1).length >= 10) {
+          monthCols = found.map((idx, i) => idx !== -1 ? idx : janIdx + i)
+          monthRowIdx = r
+          break
+        }
+      }
+    }
+  }
+
   if (!monthCols) return null
 
+  // ── Row walker (unchanged logic) ──
   const sections = {}, sectionOrder = [], data = {}
 
   for (let r = monthRowIdx + 1; r < rows.length; r++) {
     const row   = rows[r]
-    const raw   = String(row[0] || row[1] || '').trim()
+    const raw   = String(row[0] || row[1] || row[2] || '').trim()
     if (!raw || raw.length < 2) continue
     const lower = raw.toLowerCase()
     if (lower.includes('seasonality') || lower.includes('business days') || lower.includes('days in') ||
@@ -102,10 +145,17 @@ function parseExcel(rows) {
     const months = {}
     let hasData = false
     monthCols.forEach((col, i) => {
-      const cell  = String(row[col] || '').replace(/[$,\s]/g,'').trim()
-      const isNeg = cell.startsWith('(') && cell.endsWith(')')
-      const val   = parseFloat(cell.replace(/[()]/g,''))
-      if (!isNaN(val) && val !== 0) { months[i+1] = isNeg ? -val : val; hasData = true }
+      const cell = row[col]
+      let val
+      if (typeof cell === 'number') {
+        val = cell
+      } else {
+        const str = String(cell || '').replace(/[$,\s]/g,'').trim()
+        const isNeg = str.startsWith('(') && str.endsWith(')')
+        val = parseFloat(str.replace(/[()]/g,''))
+        if (isNeg && !isNaN(val)) val = -val
+      }
+      if (!isNaN(val) && val !== 0) { months[i+1] = val; hasData = true }
     })
     if (!hasData) continue
 
@@ -161,6 +211,10 @@ export default function Budgets() {
   const isLocked = approvalStatus === 'approved'
 
   useEffect(() => { if (location) load() }, [location, year])
+
+
+
+
 
   async function load() {
     setLoading(true)
@@ -318,7 +372,7 @@ export default function Budgets() {
   function doParseSheet(wb, sheetName, XLSX) {
     const ws     = wb.Sheets[sheetName]
     const rows   = XLSX.utils.sheet_to_json(ws, { header:1, defval:'' })
-    const result = parseExcel(rows)
+    const result = parseExcel(rows, year)
     if (!result || result.schema.length === 0) { toast.error('No data found. Make sure the file has month columns (Jan–Dec).'); return }
     setPreview({ ...result, sheetName, lineCount: Object.keys(result.data).length })
   }
