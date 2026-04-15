@@ -49,6 +49,20 @@ function isGFSBase(label) {
 function slugify(str) { return str.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'') }
 function locId(n)    { return (n||'').replace(/[^a-zA-Z0-9]/g,'_') }
 
+// ── SAFETY GUARD ─────────────────────────────────────────────
+// Blocks destructive writes when pointed at prod unless the selected
+// location is explicitly a test sandbox. Client-side only — not a security
+// boundary, just a midnight-mistake preventer. Remove after staging is on
+// Blaze and we can do destructive work there instead.
+const IS_PROD_FIREBASE = import.meta.env.VITE_FIREBASE_PROJECT_ID === 'the-grove-70180'
+function assertSafeToWrite(location) {
+  if (!IS_PROD_FIREBASE) return
+  const name = String(location || '').toLowerCase()
+  if (!/test|sandbox|dev|qa/.test(name)) {
+    throw new Error('Budget writes blocked: location "' + location + '" is not a test sandbox. Safety guard active in Budgets.jsx. Select a Test/Sandbox location or remove the guard post-pilot.')
+  }
+}
+
 const fmt$ = v => {
   if (v === null || v === undefined || isNaN(v)) return '—'
   const abs = Math.abs(v)
@@ -193,6 +207,7 @@ export default function Budgets() {
 
   async function handleSave() {
     if (!location) return
+    try { assertSafeToWrite(location) } catch (err) { toast.error(err.message); return }
     setSaving(true)
     try {
       // Save budget doc
@@ -212,6 +227,7 @@ export default function Budgets() {
 
   async function handleApprove() {
     if (!location) return
+    try { assertSafeToWrite(location) } catch (err) { toast.error(err.message); return }
     try {
       // Approve the budget
       await updateDoc(doc(db,'tenants',orgId,'budgets',`${locId(location)}-${year}`), {
