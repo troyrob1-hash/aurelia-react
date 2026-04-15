@@ -182,7 +182,7 @@ export default function Budgets() {
   const { selectedLocation, visibleLocations } = useLocations()
   const { year: ctxYear }    = usePeriod()
   const toast                = useToast()
-  const isDirector           = user?.role === 'Admin' || user?.role === 'Director'
+  const isDirector           = /^(admin|director)$/i.test(user?.role || '')
 
   const [year,          setYear]          = useState(String(ctxYear || new Date().getFullYear()))
   const [schema,        setSchema]        = useState([])
@@ -211,6 +211,8 @@ export default function Budgets() {
   const isLocked = approvalStatus === 'approved'
 
   useEffect(() => { if (location) load() }, [location, year])
+
+
 
 
 
@@ -294,7 +296,6 @@ export default function Budgets() {
 
       await Promise.all(MONTHS.map(async (_, i) => {
         const mo        = i + 1
-        const periodKey = monthToPeriodKey(year, mo)
         const gfs       = budget[gfsLine?.key]?.[mo] || 0
         const labor     = allLines.filter(l => detectSection(l.label) === 'Labor')
           .reduce((s, l) => s + (budget[l.key]?.[mo] || 0), 0)
@@ -305,13 +306,22 @@ export default function Budgets() {
         const ebitdaLine = allLines.find(l => l.label.toLowerCase() === 'ebitda')
         const ebitda    = budget[ebitdaLine?.key]?.[mo] || 0
 
-        await writePnL(location, periodKey, {
-          budget_gfs:     gfs,
-          budget_revenue: revenue,
-          budget_cogs:    cogs,
-          budget_labor:   labor,
-          budget_ebitda:  ebitda,
-        })
+        const expenses  = allLines.filter(l => detectSection(l.label) === 'Expenses')
+          .reduce((s, l) => s + (budget[l.key]?.[mo] || 0), 0)
+        const budgetData = {
+          budget_gfs:      gfs,
+          budget_revenue:  revenue,
+          budget_cogs:     cogs,
+          budget_labor:    labor,
+          budget_expenses: expenses,
+          budget_ebitda:   ebitda,
+        }
+        // Write to all 4 weeks of the period so Dashboard shows variance
+        // regardless of which week the user is viewing
+        const basePeriod = `${year}-P${String(mo).padStart(2,'0')}`
+        await Promise.all([1,2,3,4].map(w =>
+          writePnL(location, `${basePeriod}-W${w}`, budgetData)
+        ))
       }))
 
       setApproval('approved')

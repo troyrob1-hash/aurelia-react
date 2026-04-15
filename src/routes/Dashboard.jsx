@@ -93,7 +93,7 @@ const DEFAULT_SCHEMA = [
     id: 'expenses', label: 'Expenses', color: '#d97706',
     lines: [
       { key: 'exp_comp_benefits', label: 'Compensation & Benefits', indent: 1, drillTo: '/labor' },
-      { key: '_total_exp', label: 'Total Expenses', bold: true, budgetKey: 'budget_labor',
+      { key: '_total_exp', label: 'Total Expenses', bold: true, budgetKey: 'budget_expenses',
         computeFn: p => (p.exp_comp_benefits||0) },
     ]
   },
