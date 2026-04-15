@@ -17,3 +17,9 @@ scripts/
 .env.staging
 .env.production
 .env.*.local
+
+# Customer data — never commit
+*QC*Budget*.xlsx
+*Qualcomm*.xlsx
+src/fixtures/real/
+.env.local*
