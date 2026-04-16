@@ -438,18 +438,23 @@ export default function WasteLog() {
           {/* ── DASHBOARD VIEW ── */}
           {view === 'Dashboard' && (
             <div className={styles.page}>
-              <div className={styles.pageTitle}>Waste <em>Intelligence</em></div>
-              <div className={styles.pageSub}>{cleanLocName(location)} · {periodKey}</div>
+              <div className={styles.pageTitle}>Waste Log</div>
+              <div className={styles.pageSub}>Shrinkage tracking, diversion targets, and ESG reporting · {cleanLocName(location)} · {periodKey}</div>
 
-              {/* Hero metric — dollar value */}
+              {/* Hero metric — diversion rate (primary), waste value (supporting) */}
               <div className={styles.heroCard}>
                 <div className={styles.heroLeft}>
-                  <div className={styles.heroLabel}>Estimated Waste Value</div>
-                  <div className={styles.heroValue}>{fmt$(totalCostAmt)}</div>
+                  <div className={styles.heroLabel}>Landfill Diversion Rate</div>
+                  <div
+                    className={styles.heroValue}
+                    style={{ color: divPct >= 70 ? '#4a7c3f' : divPct >= 40 ? '#c77a1a' : '#E8593C' }}
+                  >
+                    {divPct}%
+                  </div>
                   <div className={styles.heroSub}>
                     {priorTotal > 0 && (
                       <span style={{ color: total <= priorTotal ? '#4a7c3f' : '#E8593C' }}>
-                        {total <= priorTotal ? '▼' : '▲'} {Math.abs(((total - priorTotal) / priorTotal) * 100).toFixed(1)}% vs prior period
+                        {total <= priorTotal ? '▼' : '▲'} {Math.abs(((total - priorTotal) / priorTotal) * 100).toFixed(1)}% total waste vs prior period
                       </span>
                     )}
                     {shrinkRate != null && <span className={styles.shrinkRate}>Shrinkage: {shrinkRate.toFixed(2)}% of GFS</span>}
@@ -457,8 +462,8 @@ export default function WasteLog() {
                 </div>
                 <div className={styles.heroRight}>
                   <div className={styles.heroStat}>
-                    <div className={styles.heroStatV}>{divPct}%</div>
-                    <div className={styles.heroStatL}>Diverted</div>
+                    <div className={styles.heroStatV}>{fmt$(totalCostAmt)}</div>
+                    <div className={styles.heroStatL}>Waste value</div>
                   </div>
                   <div className={styles.heroStat}>
                     <div className={styles.heroStatV}>{fmt(total)}</div>
