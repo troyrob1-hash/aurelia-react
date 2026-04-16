@@ -8,7 +8,6 @@ import {
   doc, getDoc, serverTimestamp, updateDoc
 } from 'firebase/firestore'
 import { useToast } from '@/components/ui/Toast'
-import { writeWastePnL } from '@/lib/pnl'
 import { Download, CheckCircle, Clock, AlertCircle, Leaf, Droplets, Wind } from 'lucide-react'
 import styles from './WasteLog.module.css'
 
@@ -204,7 +203,6 @@ export default function WasteLog() {
       const periodEntries = entries.filter(e => e.periodKey === periodKey)
       const wasteCost = periodEntries.reduce((s, e) => s + (e.estimatedCost || 0), 0)
       const wasteOz   = periodEntries.reduce((s, e) => s + (e.oz || 0), 0)
-      await writeWastePnL(location, periodKey, { wasteCost, wasteOz })
       setApproval('approved')
       toast.success('Waste approved and posted to P&L')
     } catch { toast.error('Approval failed') }

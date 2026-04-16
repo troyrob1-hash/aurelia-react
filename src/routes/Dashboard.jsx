@@ -46,21 +46,20 @@ const DEFAULT_SCHEMA = [
         computeFn: p => (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0) },
       { key: 'cogs_inventory',  label: 'Inventory Usage',   indent: 1, drillTo: '/inventory' },
       { key: 'cogs_purchases',  label: 'Purchases (AP)',    indent: 1, drillTo: '/purchasing' },
-      { key: 'cogs_waste',      label: 'Waste / Shrinkage', indent: 1, danger: true, drillTo: '/waste' },
       { key: '_cogs_payproc',   label: 'Payment Processing (1.8%)', indent: 1,
         computeFn: p => (p.gfs_total||0) * 0.018 },
       { key: '_total_cogs', label: 'Total COGS', bold: true, budgetKey: 'budget_cogs',
         computeFn: p => {
           const labor   = (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
           const payproc = (p.gfs_total||0) * 0.018
-          return labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + (p.cogs_waste||0) + payproc
+          return labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + payproc
         }
       },
       { key: '_pct_cogs_rev', label: 'COGS % of Revenue', pct: true, indent: 1,
         computeFn: p => {
           const labor   = (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
           const payproc = (p.gfs_total||0) * 0.018
-          const total   = labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + (p.cogs_waste||0) + payproc
+          const total   = labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + payproc
           const rev     = p.revenue_total || (p.gfs_total||0) * 0.82
           return rev > 0 ? total / rev : null
         }
@@ -75,7 +74,7 @@ const DEFAULT_SCHEMA = [
           const rev     = p.revenue_total || (p.gfs_total||0) * 0.82
           const labor   = (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
           const payproc = (p.gfs_total||0) * 0.018
-          return rev - (labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + (p.cogs_waste||0) + payproc)
+          return rev - (labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + payproc)
         }
       },
       { key: '_pct_gm_rev', label: 'Gross Margin % of Revenue', pct: true, indent: 1,
@@ -83,7 +82,7 @@ const DEFAULT_SCHEMA = [
           const rev     = p.revenue_total || (p.gfs_total||0) * 0.82
           const labor   = (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
           const payproc = (p.gfs_total||0) * 0.018
-          const gm      = rev - (labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + (p.cogs_waste||0) + payproc)
+          const gm      = rev - (labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + payproc)
           return rev > 0 ? gm / rev : null
         }
       },
@@ -105,7 +104,7 @@ const DEFAULT_SCHEMA = [
           const rev     = p.revenue_total || (p.gfs_total||0) * 0.82
           const labor   = (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
           const payproc = (p.gfs_total||0) * 0.018
-          const gm      = rev - (labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + (p.cogs_waste||0) + payproc)
+          const gm      = rev - (labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + payproc)
           return gm - (p.exp_comp_benefits||0)
         }
       },
@@ -114,7 +113,7 @@ const DEFAULT_SCHEMA = [
           const rev     = p.revenue_total || (p.gfs_total||0) * 0.82
           const labor   = (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
           const payproc = (p.gfs_total||0) * 0.018
-          const ebitda  = (rev - (labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + (p.cogs_waste||0) + payproc)) - (p.exp_comp_benefits||0)
+          const ebitda  = (rev - (labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + payproc)) - (p.exp_comp_benefits||0)
           return (p.gfs_total||0) > 0 ? ebitda / (p.gfs_total||0) : null
         }
       },
@@ -127,7 +126,6 @@ const SOURCES = [
   { label: 'Labor',      key: 'cogs_onsite_labor',  path: '/labor'      },
   { label: 'Purchasing', key: 'cogs_purchases',      path: '/purchasing' },
   { label: 'Inventory',  key: 'cogs_inventory',      path: '/inventory'  },
-  { label: 'Waste',      key: 'cogs_waste',          path: '/waste'      },
 ]
 
 const fmt$ = v => {
@@ -155,7 +153,7 @@ function computeEBITDA(p) {
   const rev     = p.revenue_total || (p.gfs_total||0) * 0.82
   const labor   = (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
   const payproc = (p.gfs_total||0) * 0.018
-  const gm      = rev - (labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + (p.cogs_waste||0) + payproc)
+  const gm      = rev - (labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + payproc)
   return gm - (p.exp_comp_benefits||0)
 }
 
@@ -175,7 +173,7 @@ function computePrimeCost(p) {
 //   laborDelta:   percentage POINTS (-5 to +5) added to current labor %.
 //                 Recomputes onsite + 3rd party labor proportionally.
 //   foodCostDelta: percentage POINTS added to current food cost %.
-//                  Recomputes inventory + purchases + waste proportionally.
+//                  Recomputes inventory + purchases proportionally.
 //
 // All adjustments preserve the relative mix of sub-lines so we don't
 // arbitrarily reweight the underlying components.
@@ -213,10 +211,10 @@ function applyScenario(baselinePnl, scenario) {
   }
 
   // 3. Food cost adjustment (in percentage points of revenue)
-  // Current food cost = inventory + purchases + waste. Same approach.
+  // Current food cost = inventory + purchases. Same approach.
   if (scenario.foodCostDelta !== 0) {
     const revForCalc = out.revenue_total || baselinePnl.revenue_total || 0
-    const currentFood = (baselinePnl.cogs_inventory || 0) + (baselinePnl.cogs_purchases || 0) + (baselinePnl.cogs_waste || 0)
+    const currentFood = (baselinePnl.cogs_inventory || 0) + (baselinePnl.cogs_purchases || 0)
     if (revForCalc > 0 && currentFood > 0) {
       const currentFoodPct = currentFood / revForCalc
       const newFoodPct = currentFoodPct + (scenario.foodCostDelta / 100)
@@ -224,7 +222,6 @@ function applyScenario(baselinePnl, scenario) {
       const scale = currentFood > 0 ? newFood / currentFood : 1
       out.cogs_inventory = (baselinePnl.cogs_inventory || 0) * scale
       out.cogs_purchases = (baselinePnl.cogs_purchases || 0) * scale
-      out.cogs_waste     = (baselinePnl.cogs_waste     || 0) * scale
     }
   }
 
@@ -376,7 +373,7 @@ export default function Dashboard() {
   const revenue      = pnl.revenue_total || 0
   const labor        = (pnl.cogs_onsite_labor||0) + (pnl.cogs_3rd_party||0)
   const payproc      = gfs * 0.018
-  const totalCOGS    = labor + (pnl.cogs_inventory||0) + (pnl.cogs_purchases||0) + (pnl.cogs_waste||0) + payproc
+  const totalCOGS    = labor + (pnl.cogs_inventory||0) + (pnl.cogs_purchases||0) + payproc
   const grossMargin  = revenue - totalCOGS
   const ebitda       = grossMargin - (pnl.exp_comp_benefits||0)
   const primeCost    = computePrimeCost(pnl)
@@ -390,7 +387,7 @@ export default function Dashboard() {
   const priorRev    = priorPnl.revenue_total || 0
   const priorLabor  = (priorPnl.cogs_onsite_labor||0) + (priorPnl.cogs_3rd_party||0)
   const priorPayp   = priorGFS * 0.018
-  const priorCOGS   = priorLabor + (priorPnl.cogs_inventory||0) + (priorPnl.cogs_purchases||0) + (priorPnl.cogs_waste||0) + priorPayp
+  const priorCOGS   = priorLabor + (priorPnl.cogs_inventory||0) + (priorPnl.cogs_purchases||0) + priorPayp
   const priorEBITDA = (priorRev - priorCOGS) - (priorPnl.exp_comp_benefits||0)
 
   // Budget pacing
@@ -409,7 +406,7 @@ export default function Dashboard() {
   const scenRev     = scenarioPnl.revenue_total || 0
   const scenLabor   = (scenarioPnl.cogs_onsite_labor || 0) + (scenarioPnl.cogs_3rd_party || 0)
   const scenPayp    = scenGfs * 0.018
-  const scenCogs    = scenLabor + (scenarioPnl.cogs_inventory || 0) + (scenarioPnl.cogs_purchases || 0) + (scenarioPnl.cogs_waste || 0) + scenPayp
+  const scenCogs    = scenLabor + (scenarioPnl.cogs_inventory || 0) + (scenarioPnl.cogs_purchases || 0) + scenPayp
   const scenGm      = scenRev - scenCogs
   const scenEbitda  = scenGm - (scenarioPnl.exp_comp_benefits || 0)
   const scenPrime   = scenRev > 0 ? (scenLabor + scenCogs - scenPayp) / scenRev : null
@@ -434,7 +431,7 @@ export default function Dashboard() {
       const r = p.revenue_total || 0
       const l = (p.cogs_onsite_labor || 0) + (p.cogs_3rd_party || 0)
       const pp = g * 0.018
-      const cogsT = l + (p.cogs_inventory || 0) + (p.cogs_purchases || 0) + (p.cogs_waste || 0) + pp
+      const cogsT = l + (p.cogs_inventory || 0) + (p.cogs_purchases || 0) + pp
       const gm = r - cogsT
       const eb = gm - (p.exp_comp_benefits || 0)
       const pc = r > 0 ? (l + cogsT - pp) / r : null  // prime cost = labor+COGS (excl payproc double-count)
