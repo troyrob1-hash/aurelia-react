@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { usePeriod } from '@/store/PeriodContext'
+import { readPeriodClose } from '@/lib/pnl'
 import { db } from '@/lib/firebase'
 import {
   collection, query, orderBy, getDocs, addDoc, deleteDoc,
@@ -62,6 +63,17 @@ export default function WasteLog() {
   const [qty,           setQty]           = useState({ ...EMPTY_QTY })
   const [form,          setForm]          = useState({ date: new Date().toISOString().slice(0, 10), partner: '', item: '', notes: '' })
   const [saving,        setSaving]        = useState(false)
+
+  const [periodClosed, setPeriodClosed] = useState(false)
+  useEffect(() => {
+    if (!selectedLocation || selectedLocation === 'all' || !periodKey) return
+    (async () => {
+      try {
+        const close = await readPeriodClose(selectedLocation, periodKey)
+        setPeriodClosed(close.periodStatus === 'closed')
+      } catch {}
+    })()
+  }, [selectedLocation, periodKey])
   const [partnerFilter, setPartnerFilter] = useState('all')
   const location = selectedLocation === 'all' ? null : selectedLocation
 
@@ -80,6 +92,39 @@ export default function WasteLog() {
     if (!location) { setEntries([]); return }
     load()
   }, [location, periodKey])
+
+  const [tabClosed, setTabClosed] = useState(false)
+  useEffect(() => {
+    if (!location || location === 'all' || !periodKey) return
+    (async () => {
+      try {
+        const { getDoc, doc: fbDoc } = await import('firebase/firestore')
+        const oid = user?.tenantId || 'fooda'
+        const ref = fbDoc(db, 'tenants', oid, 'wasteClose', `${(location||'').replace(/[^a-zA-Z0-9]/g,'_')}-${periodKey}`)
+        const snap = await getDoc(ref)
+        if (snap.exists()) setTabClosed(true)
+      } catch {}
+    })()
+  }, [location, periodKey])
+
+  async function handleCloseTab() {
+    if (!location || location === 'all') return
+    if (!window.confirm(`Close Waste for ${periodKey}?`)) return
+    try {
+      const { setDoc, doc: fbDoc, serverTimestamp } = await import('firebase/firestore')
+      const oid = user?.tenantId || 'fooda'
+      await setDoc(fbDoc(db, 'tenants', oid, 'wasteClose', `${(location||'').replace(/[^a-zA-Z0-9]/g,'_')}-${periodKey}`), {
+        location: location, period: periodKey,
+        closedBy: user?.name || user?.email, closedAt: serverTimestamp(),
+      })
+      const { writePnL: wp } = await import('@/lib/pnl')
+      await wp(location, periodKey, { source_waste: 'closed' })
+      setTabClosed(true)
+      toast.success('Waste closed for ' + periodKey)
+    } catch (err) {
+      toast.error('Failed: ' + (err.message || ''))
+    }
+  }
 
   async function load() {
     setLoading(true)

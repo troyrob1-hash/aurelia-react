@@ -4,6 +4,7 @@ import { Upload, Download, CheckCircle, Clock, AlertCircle, RefreshCw, Plus } fr
 import { useLocations } from '@/store/LocationContext'
 import { useAuthStore } from '@/store/authStore'
 import { usePeriod } from '@/store/PeriodContext'
+import { readPeriodClose } from '@/lib/pnl'
 import { writeLaborPnL } from '@/lib/pnl'
 import { db } from '@/lib/firebase'
 import {
@@ -75,6 +76,51 @@ export default function LaborPlanner() {
   const [importedAt, setImportedAt]   = useState(null)
   const [importedBy, setImportedBy]   = useState('')
   const [approvalStatus, setApproval] = useState(null)
+
+  const [periodClosed, setPeriodClosed] = useState(false)
+  useEffect(() => {
+    if (!selectedLocation || selectedLocation === 'all' || !periodKey) return
+    (async () => {
+      try {
+        const close = await readPeriodClose(selectedLocation, periodKey)
+        setPeriodClosed(close.periodStatus === 'closed')
+      } catch {}
+    })()
+  }, [selectedLocation, periodKey])
+
+  const [tabClosed, setTabClosed] = useState(false)
+  useEffect(() => {
+    if (!selectedLocation || selectedLocation === 'all' || !periodKey) return
+    (async () => {
+      try {
+        const { getDoc, doc: fbDoc } = await import('firebase/firestore')
+        const oid = user?.tenantId || 'fooda'
+        const ref = fbDoc(db, 'tenants', oid, 'laborClose', `${(selectedLocation||'').replace(/[^a-zA-Z0-9]/g,'_')}-${periodKey}`)
+        const snap = await getDoc(ref)
+        if (snap.exists()) setTabClosed(true)
+      } catch {}
+    })()
+  }, [selectedLocation, periodKey])
+
+  async function handleCloseTab() {
+    if (!selectedLocation || selectedLocation === 'all') return
+    if (!window.confirm(`Close Labor for ${periodKey}?`)) return
+    try {
+      const { setDoc, doc: fbDoc, serverTimestamp } = await import('firebase/firestore')
+      const oid = user?.tenantId || 'fooda'
+      await setDoc(fbDoc(db, 'tenants', oid, 'laborClose', `${(selectedLocation||'').replace(/[^a-zA-Z0-9]/g,'_')}-${periodKey}`), {
+        location: selectedLocation, period: periodKey,
+        closedBy: user?.name || user?.email, closedAt: serverTimestamp(),
+      })
+      const { writePnL: wp } = await import('@/lib/pnl')
+      await wp(selectedLocation, periodKey, { source_labor: 'closed' })
+      setTabClosed(true)
+      toast.success('Labor closed for ' + periodKey)
+    } catch (err) {
+      toast.error('Failed: ' + (err.message || ''))
+    }
+  }
+
   const [submissionId, setSubmissionId] = useState(null)
   const [rejectedReason, setRejectedReason] = useState('')
   const [glMap, setGlMap]             = useState(DEFAULT_GL_MAP)
@@ -231,7 +277,7 @@ export default function LaborPlanner() {
         await writeLaborPnL(location, periodKey, { onsiteLabor, thirdParty, compBenefits, glRows: rows })
       }
       setApproval('approved')
-      toast.success('Labor approved and posted to P&L')
+      toast.success('Labor approved — period closed')
     } catch {
       toast.error('Approval failed — please try again')
     }
@@ -347,8 +393,8 @@ export default function LaborPlanner() {
             {approvalStatus === 'rejected' && <AlertCircle size={13} className={styles.iconRejected} />}
             <span className={styles.statusText}>
               {importedAtStr ? `Imported ${importedAtStr} by ${importedBy} · ` : ''}
-              {approvalStatus === 'pending'  && 'Pending director approval before posting to P&L'}
-              {approvalStatus === 'approved' && 'Approved and posted to P&L'}
+              {approvalStatus === 'pending'  && 'Pending director approval before closing'}
+              {approvalStatus === 'approved' && 'Approved & closed'}
               {approvalStatus === 'rejected' && `Rejected${rejectedReason ? ` — "${rejectedReason}"` : ''} · Re-import to resubmit`}
             </span>
           </div>
@@ -358,7 +404,7 @@ export default function LaborPlanner() {
             </span>
             {approvalStatus === 'pending' && isDirector && (
               <>
-                <button className={styles.btnApprove} onClick={handleApprove}>Approve &amp; Post</button>
+                <button className={styles.btnApprove} onClick={handleApprove}>Approve &amp; Close</button>
                 <button className={styles.btnReject} onClick={() => setShowRejectModal(true)}>Reject</button>
               </>
             )}
@@ -580,7 +626,7 @@ export default function LaborPlanner() {
                 <Clock size={13} /> Pending your approval before posting to P&L.
               </span>
               <div style={{ display: 'flex', gap: 8 }}>
-                <button className={styles.btnApprove} onClick={handleApprove}>Approve &amp; Post to P&L</button>
+                <button className={styles.btnApprove} onClick={handleApprove}>Approve &amp; Close Period</button>
                 <button className={styles.btnReject} onClick={() => setShowRejectModal(true)}>Reject</button>
               </div>
             </div>

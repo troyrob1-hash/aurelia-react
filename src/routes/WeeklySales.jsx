@@ -6,6 +6,7 @@ import { doc, getDoc, setDoc, addDoc, updateDoc, collection, query, where, order
 import { Download, Upload, CheckCircle, Clock, AlertCircle, TrendingUp, TrendingDown } from 'lucide-react'
 import { useToast } from '@/components/ui/Toast'
 import { usePeriod } from '@/store/PeriodContext'
+import { readPeriodClose } from '@/lib/pnl'
 import { writeSalesPnL } from '@/lib/pnl'
 import Breadcrumb from '@/components/ui/Breadcrumb'
 import { useDragDropUpload } from '@/hooks/useDragDropUpload'
@@ -86,6 +87,50 @@ export default function WeeklySales() {
   const [saving,       setSaving]       = useState(false)
   const [dirty,        setDirty]        = useState(false)
   const [approvalStatus, setApproval]   = useState(null)
+
+  const [periodClosed, setPeriodClosed] = useState(false)
+  useEffect(() => {
+    if (!selectedLocation || selectedLocation === 'all' || !periodKey) return
+    (async () => {
+      try {
+        const close = await readPeriodClose(selectedLocation, periodKey)
+        setPeriodClosed(close.periodStatus === 'closed')
+      } catch {}
+    })()
+  }, [selectedLocation, periodKey])
+
+  const [tabClosed, setTabClosed] = useState(false)
+  useEffect(() => {
+    if (!selectedLocation || selectedLocation === 'all' || !periodKey) return
+    (async () => {
+      try {
+        const { getDoc, doc: fbDoc } = await import('firebase/firestore')
+        const oid = user?.tenantId || 'fooda'
+        const ref = fbDoc(db, 'tenants', oid, 'salesClose', `${(selectedLocation||'').replace(/[^a-zA-Z0-9]/g,'_')}-${periodKey}`)
+        const snap = await getDoc(ref)
+        if (snap.exists()) setTabClosed(true)
+      } catch {}
+    })()
+  }, [selectedLocation, periodKey])
+
+  async function handleCloseTab() {
+    if (!selectedLocation || selectedLocation === 'all') return
+    if (!window.confirm(`Close Sales for ${periodKey}?`)) return
+    try {
+      const { setDoc, doc: fbDoc, serverTimestamp } = await import('firebase/firestore')
+      const oid = user?.tenantId || 'fooda'
+      await setDoc(fbDoc(db, 'tenants', oid, 'salesClose', `${(selectedLocation||'').replace(/[^a-zA-Z0-9]/g,'_')}-${periodKey}`), {
+        location: selectedLocation, period: periodKey,
+        closedBy: user?.name || user?.email, closedAt: serverTimestamp(),
+      })
+      const { writePnL: wp } = await import('@/lib/pnl')
+      await wp(selectedLocation, periodKey, { source_sales: 'closed' })
+      setTabClosed(true)
+      toast.success('Sales closed for ' + periodKey)
+    } catch (err) {
+      toast.error('Failed: ' + (err.message || ''))
+    }
+  }
   const [submissionId,   setSubmissionId] = useState(null)
   const [showRejectModal, setShowRejectModal] = useState(false)
   const [rejectNote,   setRejectNote]   = useState(false)
@@ -658,7 +703,7 @@ export default function WeeklySales() {
       )
 
       setApproval('approved')
-      toast.success('Sales approved and posted to P&L')
+      toast.success('Sales approved — period closed')
     } catch (e) {
       console.error('Approval failed:', e)
       toast.error('Approval failed — ' + (e.message || 'unknown error'))
@@ -1330,8 +1375,8 @@ export default function WeeklySales() {
             {approvalStatus === 'rejected' && <AlertCircle size={13} className={styles.iconRejected} />}
             <span className={styles.statusText}>
               {lastSaved ? `Saved ${new Date(lastSaved).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} by ${savedBy} · ` : ''}
-              {approvalStatus === 'pending'  && 'Pending director approval before posting to P&L'}
-              {approvalStatus === 'approved' && 'Approved and posted to P&L — period is locked'}
+              {approvalStatus === 'pending'  && 'Pending director approval before closing'}
+              {approvalStatus === 'approved' && 'Approved & closed — period is locked'}
               {approvalStatus === 'rejected' && 'Rejected — re-enter and resubmit'}
             </span>
           </div>
@@ -1342,7 +1387,7 @@ export default function WeeklySales() {
             {approvalStatus === 'pending' && isDirector && (
               <>
                 <button className={styles.btnApprove} onClick={handleApprove} disabled={approving} style={{ opacity: approving ? 0.5 : 1, cursor: approving ? 'wait' : 'pointer' }}>
-                  {approving ? 'Posting…' : 'Approve & Post'}
+                  {approving ? 'Closing…' : 'Approve & Close'}
                 </button>
                 <button className={styles.btnReject} onClick={() => setShowRejectModal(true)} disabled={approving}>Reject</button>
               </>
@@ -2115,7 +2160,7 @@ export default function WeeklySales() {
         </div>
         {approvalStatus !== 'approved' && (
           <button className={styles.btnSave} onClick={handleSave} disabled={saving || !dirty}>
-            {saving ? 'Saving...' : 'Save & Submit for Approval'}
+            {saving ? 'Saving...' : 'Save & Close Period'}
           </button>
         )}
       </div>

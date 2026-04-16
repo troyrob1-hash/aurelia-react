@@ -1,8 +1,9 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { usePeriod, getWeekLabel } from '@/store/PeriodContext'
+import { readPeriodClose, writePeriodClose } from '@/lib/pnl'
 import {
   LayoutDashboard, ShoppingCart, Package, TrendingUp,
   Trash2, FileText, PieChart, ArrowLeftRight,
@@ -29,6 +30,48 @@ export default function AppShell() {
   const navigate                                                     = useNavigate()
   const [menuOpen, setMenuOpen]       = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [periodClosed, setPeriodClosed] = useState(false)
+  const [closedBy, setClosedBy] = useState(null)
+  const isDirector = /^(admin|director)$/i.test(user?.role || '')
+  const periodKey = `${year}-P${String(period).padStart(2,'0')}-W${week}`
+
+  useEffect(() => {
+    if (!selectedLocation || selectedLocation === 'all') { setPeriodClosed(false); return }
+    (async () => {
+      try {
+        const info = await readPeriodClose(selectedLocation, periodKey)
+        setPeriodClosed(info.periodStatus === 'closed')
+        setClosedBy(info.closedBy || null)
+      } catch {}
+    })()
+  }, [selectedLocation, periodKey])
+
+  async function handleClosePeriod() {
+    if (!selectedLocation || selectedLocation === 'all') return
+    if (!window.confirm(`Close period ${periodKey} for ${cleanLocName(selectedLocation)}?\n\nThis locks all data for this period across all tabs.`)) return
+    try {
+      const actor = user?.name || user?.email || 'unknown'
+      await writePeriodClose(selectedLocation, periodKey, { status: 'closed', actor })
+      setPeriodClosed(true)
+      setClosedBy(actor)
+    } catch (err) {
+      alert('Failed to close period: ' + (err.message || ''))
+    }
+  }
+
+  async function handleReopenPeriod() {
+    if (!selectedLocation || selectedLocation === 'all') return
+    const reason = window.prompt('Reason for reopening:')
+    if (!reason?.trim()) return
+    try {
+      const actor = user?.name || user?.email || 'unknown'
+      await writePeriodClose(selectedLocation, periodKey, { status: 'reopened', actor, reason: reason.trim() })
+      setPeriodClosed(false)
+      setClosedBy(null)
+    } catch (err) {
+      alert('Failed to reopen: ' + (err.message || ''))
+    }
+  }
 
   function handleSignOut() { signOut(); navigate('/login') }
   function handleNavClick() { setSidebarOpen(false) }
@@ -94,6 +137,33 @@ export default function AppShell() {
           <div className={styles.liveBadge}>
             <span className={styles.liveDot}/> live
           </div>
+          {selectedLocation && selectedLocation !== 'all' && isDirector && !periodClosed && (
+            <button onClick={handleClosePeriod} style={{
+              display:'inline-flex', alignItems:'center', gap:5,
+              padding:'6px 14px', fontSize:11, fontWeight:600,
+              background:'#059669', color:'#fff',
+              border:'none', borderRadius:8,
+              cursor:'pointer', whiteSpace:'nowrap',
+            }}>🔒 Close Period</button>
+          )}
+          {selectedLocation && selectedLocation !== 'all' && periodClosed && (
+            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+              <span style={{
+                display:'inline-flex', alignItems:'center', gap:4,
+                padding:'5px 10px', fontSize:11, fontWeight:500,
+                background:'#dcfce7', color:'#166534',
+                borderRadius:999, whiteSpace:'nowrap',
+              }}>🔒 Closed{closedBy ? ` by ${closedBy.split(' ')[0]}` : ''}</span>
+              {isDirector && (
+                <button onClick={handleReopenPeriod} style={{
+                  padding:'5px 10px', fontSize:11, fontWeight:500,
+                  background:'#fff', color:'#dc2626',
+                  border:'1px solid #fecaca', borderRadius:8,
+                  cursor:'pointer', whiteSpace:'nowrap',
+                }}>🔓 Reopen</button>
+              )}
+            </div>
+          )}
         </div>
 
         <div className={styles.topbarRight}>

@@ -1,7 +1,8 @@
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { usePeriod } from '@/store/PeriodContext'
+import { readPeriodClose } from '@/lib/pnl'
 import { useInventory, fmt$, sanitizeDocId } from '@/hooks/useInventory'
 import { getTopVarianceIssues, calcParStatus } from '@/lib/variance'
 import { Search, Download, RefreshCw, Eye, EyeOff, TrendingUp, TrendingDown, Minus, AlertTriangle } from 'lucide-react'
@@ -64,6 +65,50 @@ export default function Inventory() {
   const [showBuddySetup, setShowBuddySetup] = useState(false)
   const [buddyDraft, setBuddyDraft] = useState({ caller: '', marker: '' })
 
+  const [periodClosed, setPeriodClosed] = useState(false)
+  useEffect(() => {
+    if (!selectedLocation || selectedLocation === 'all' || !periodKey) return
+    (async () => {
+      try {
+        const close = await readPeriodClose(selectedLocation, periodKey)
+        setPeriodClosed(close.periodStatus === 'closed')
+      } catch {}
+    })()
+  }, [selectedLocation, periodKey])
+
+  const [tabClosed, setTabClosed] = useState(false)
+  useEffect(() => {
+    if (!selectedLocation || selectedLocation === 'all' || !periodKey) return
+    (async () => {
+      try {
+        const { getDoc, doc: fbDoc } = await import('firebase/firestore')
+        const oid = user?.tenantId || 'fooda'
+        const ref = fbDoc(db, 'tenants', oid, 'inventoryClose', `${(selectedLocation||'').replace(/[^a-zA-Z0-9]/g,'_')}-${periodKey}`)
+        const snap = await getDoc(ref)
+        if (snap.exists()) setTabClosed(true)
+      } catch {}
+    })()
+  }, [selectedLocation, periodKey])
+
+  async function handleCloseTab() {
+    if (!selectedLocation || selectedLocation === 'all') return
+    if (!window.confirm(`Close Inventory for ${periodKey}?`)) return
+    try {
+      const { setDoc, doc: fbDoc, serverTimestamp } = await import('firebase/firestore')
+      const oid = user?.tenantId || 'fooda'
+      await setDoc(fbDoc(db, 'tenants', oid, 'inventoryClose', `${(selectedLocation||'').replace(/[^a-zA-Z0-9]/g,'_')}-${periodKey}`), {
+        location: selectedLocation, period: periodKey,
+        closedBy: user?.name || user?.email, closedAt: serverTimestamp(),
+      })
+      const { writePnL: wp } = await import('@/lib/pnl')
+      await wp(selectedLocation, periodKey, { source_inventory: 'closed' })
+      setTabClosed(true)
+      toast.success('Inventory closed for ' + periodKey)
+    } catch (err) {
+      toast.error('Failed: ' + (err.message || ''))
+    }
+  }
+
   const location = selectedLocation === 'all' ? null : selectedLocation
 
   // ─── Use Inventory Hook ────────────────────────────────────────────────────
@@ -107,7 +152,7 @@ export default function Inventory() {
     try {
       const success = await save()
       if (success) {
-        toast.success('Inventory saved & COGS posted to P&L')
+        toast.success('Inventory saved — period closed')
       } else {
         toast.error('Save failed. Please try again.')
       }
@@ -338,7 +383,7 @@ export default function Inventory() {
             </button>
             {dirty && (
               <button className={styles.btnSave} onClick={handleSave} disabled={saving}>
-                {saving ? 'Saving...' : 'Save & Post to P&L'}
+                {saving ? 'Saving...' : 'Save & Close Period'}
               </button>
             )}
             <button className={styles.btnIcon} onClick={handleExport} title="Export Excel">
@@ -731,7 +776,7 @@ export default function Inventory() {
               </span>
             </div>
             <button className={styles.btnSaveFooter} onClick={handleSave} disabled={saving}>
-              {saving ? 'Saving...' : 'Save & Post to P&L'}
+              {saving ? 'Saving...' : 'Save & Close Period'}
             </button>
           </div>
         )}

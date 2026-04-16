@@ -3,6 +3,7 @@ import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { useToast } from '@/components/ui/Toast'
 import { usePeriod } from '@/store/PeriodContext'
+import { readPeriodClose, writePnL, locId } from '@/lib/pnl'
 import { db, storage } from '@/lib/firebase'
 import {
   collection, query, orderBy, getDocs, addDoc, updateDoc,
@@ -71,6 +72,51 @@ export default function Purchasing() {
   const toast       = useToast()
   const { selectedLocation, visibleLocations } = useLocations()
   const { periodKey } = usePeriod()
+  const [apClosed, setApClosed] = useState(false)
+  const [periodClosed, setPeriodClosed] = useState(false)
+
+  // Check period close status
+  useEffect(() => {
+    if (!selectedLocation || selectedLocation === 'all' || !periodKey) return
+    (async () => {
+      try {
+        const close = await readPeriodClose(selectedLocation, periodKey)
+        setPeriodClosed(close.periodStatus === 'closed')
+        // Check AP-specific close
+        const { getDoc, doc: fbDoc } = await import('firebase/firestore')
+        const orgId = user?.tenantId || 'fooda'
+        const apRef = fbDoc(db, 'tenants', orgId, 'apClose', `${locId(selectedLocation)}-${periodKey}`)
+        const apSnap = await getDoc(apRef)
+        if (apSnap.exists()) setApClosed(true)
+      } catch {}
+    })()
+  }, [selectedLocation, periodKey])
+
+  async function handleCloseAP() {
+    if (!selectedLocation || selectedLocation === 'all') return
+    const pending = invoices.filter(i => i.periodKey === periodKey && i.status === 'Pending')
+    if (pending.length > 0) {
+      if (!window.confirm(`There are ${pending.length} pending invoice(s) for this period. Close AP anyway?`)) return
+    }
+    const confirmMsg = `Close Accounts Payable for ${periodKey}?\n\nThis signals that all invoices for this period have been entered.`
+    if (!window.confirm(confirmMsg)) return
+    try {
+      const orgId = user?.tenantId || 'fooda'
+      const { setDoc, doc: fbDoc, serverTimestamp } = await import('firebase/firestore')
+      await setDoc(fbDoc(db, 'tenants', orgId, 'apClose', `${locId(selectedLocation)}-${periodKey}`), {
+        location: selectedLocation, period: periodKey,
+        closedBy: user?.name || user?.email, closedAt: serverTimestamp(),
+        totalInvoices: invoices.filter(i => i.periodKey === periodKey).length,
+        totalPaid: invoices.filter(i => i.periodKey === periodKey && i.status === 'Paid').reduce((s, i) => s + i.amount, 0),
+      })
+      // Also write to PnL doc so Dashboard can read it
+      await writePnL(selectedLocation, periodKey, { source_purchasing: 'closed' })
+      setApClosed(true)
+      toast.success('AP closed for ' + periodKey)
+    } catch (err) {
+      toast.error('Failed to close AP: ' + (err.message || ''))
+    }
+  }
 
   const [invoices,      setInvoices]      = useState([])
   const [vendors,       setVendors]       = useState(DEFAULT_VENDORS)
@@ -832,11 +878,25 @@ export default function Purchasing() {
             <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }} onChange={handleImport} />
           </label>
 
-          <button className={styles.btnPrimary} onClick={() => { setForm({ ...EMPTY_FORM, location: location || '', periodKey }); setEditId(null); setShowForm(v => !v) }}>
+          <button className={styles.btnPrimary} onClick={() => { setForm({ ...EMPTY_FORM, location: location || '', periodKey }); setEditId(null); setShowForm(v => !v) }}
+            disabled={periodClosed || apClosed}>
             <Plus size={15} /> Add Invoice
           </button>
+
         </div>
       </div>
+
+      {/* Period closed banner */}
+      {periodClosed && (
+        <div style={{
+          padding: '10px 20px', marginBottom: 12,
+          background: '#fef3c7', border: '0.5px solid #fde68a',
+          borderRadius: 8, fontSize: 13, color: '#92400e',
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          🔒 Period {periodKey} is closed. Invoice editing is disabled.
+        </div>
+      )}
 
       {/* ── KPI bar ── */}
       <div className={styles.kpiBar}>

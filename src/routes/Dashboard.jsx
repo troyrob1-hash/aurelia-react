@@ -5,7 +5,8 @@ import { useToast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/store/authStore'
 import { db } from '@/lib/firebase'
 import { doc, getDoc } from 'firebase/firestore'
-import { readPnL, getPriorKey, getTrailingPeriodKeys } from '@/lib/pnl'
+import { readPnL, getPriorKey, getTrailingPeriodKeys, writePeriodClose } from '@/lib/pnl'
+import { usePeriodStatus } from '@/hooks/usePeriodStatus'
 import { usePnL, useMultiLocationPnL, usePnLHistory } from '@/lib/usePnL'
 import { usePeriod } from '@/store/PeriodContext'
 import { ChevronDown, ChevronRight, RefreshCw, Download, ExternalLink } from 'lucide-react'
@@ -341,6 +342,7 @@ export default function Dashboard() {
   const toast    = useToast()
   const navigate = useNavigate()
   const { user } = useAuthStore()
+  const isDirector = /^(admin|director)$/i.test(user?.role || '')
   const orgId    = user?.tenantId || 'fooda'
   const { selectedLocation, visibleLocations } = useLocations()
   const { periodKey } = usePeriod()
@@ -367,6 +369,38 @@ export default function Dashboard() {
   const isAll     = selectedLocation === 'all'
   const locNames  = visibleLocations.map(l => l.name)
   const priorKey  = getPriorKey(periodKey)
+
+  // Period close status
+  const closeStatus = usePeriodStatus(location, periodKey)
+  const isClosed = closeStatus.periodStatus === 'closed'
+
+  async function handleClosePeriod() {
+    if (!location || !periodKey) return
+    const actor = user?.name || user?.email || 'unknown'
+    const confirmMsg = `Close ${periodKey} for ${cleanLocName(location)}?\n\nThis will lock all source data for this period. You can reopen later if needed.`
+    if (!window.confirm(confirmMsg)) return
+    try {
+      await writePeriodClose(location, periodKey, { status: 'closed', actor })
+      toast.success(`Period ${periodKey} closed`)
+      window.location.reload()
+    } catch (err) {
+      toast.error('Failed to close period: ' + (err.message || 'unknown'))
+    }
+  }
+
+  async function handleReopenPeriod() {
+    if (!location || !periodKey) return
+    const actor = user?.name || user?.email || 'unknown'
+    const reason = window.prompt('Reason for reopening this period:')
+    if (!reason || !reason.trim()) return
+    try {
+      await writePeriodClose(location, periodKey, { status: 'reopened', actor, reason: reason.trim() })
+      toast.success(`Period ${periodKey} reopened`)
+      window.location.reload()
+    } catch (err) {
+      toast.error('Failed to reopen period: ' + (err.message || 'unknown'))
+    }
+  }
 
   // Live subscriptions for current + prior period, single or multi location.
   // Two of each get created but only one pair is actually "active" at a time
@@ -734,6 +768,82 @@ export default function Dashboard() {
           </button>
         </div>
       </div>
+
+      {/* ── Period Status + Close ── */}
+      {location && !isAll && (
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          padding: '12px 20px',
+          background: isClosed ? '#f0fdf4' : '#f8fafc',
+          border: `0.5px solid ${isClosed ? '#bbf7d0' : '#e2e8f0'}`,
+          borderRadius: 10,
+          marginBottom: 16,
+          fontSize: 13,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            <span style={{ fontWeight: 600, color: '#334155', fontSize: 12, textTransform: 'uppercase', letterSpacing: '0.03em' }}>
+              {isClosed ? '🔒 Period Closed' : 'Period Status'}
+            </span>
+            {!closeStatus.loading && closeStatus.sources.map(s => (
+              <div key={s.key} style={{
+                display: 'flex', alignItems: 'center', gap: 5,
+                padding: '3px 10px',
+                borderRadius: 999,
+                fontSize: 11,
+                fontWeight: 500,
+                background: s.status === 'approved' ? '#dcfce7' : s.status === 'posted' ? '#dbeafe' : s.status === 'optional' ? '#f1f5f9' : '#fef3c7',
+                color: s.status === 'approved' ? '#166534' : s.status === 'posted' ? '#1e40af' : s.status === 'optional' ? '#64748b' : '#92400e',
+              }}>
+                <span style={{
+                  width: 6, height: 6, borderRadius: '50%',
+                  background: s.status === 'approved' ? '#22c55e' : s.status === 'posted' ? '#3b82f6' : s.status === 'optional' ? '#94a3b8' : '#f59e0b',
+                }} />
+                {s.label}
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {isClosed && closeStatus.closedBy && (
+              <span style={{ fontSize: 11, color: '#64748b' }}>
+                Closed by {closeStatus.closedBy}
+              </span>
+            )}
+            {!isClosed && isDirector && (
+              <button
+                onClick={handleClosePeriod}
+                disabled={!closeStatus.allReady}
+                title={closeStatus.allReady ? 'Close this period' : 'All sources must be posted or approved before closing'}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 5,
+                  padding: '6px 14px', fontSize: 12, fontWeight: 600,
+                  background: closeStatus.allReady ? '#059669' : '#f1f5f9',
+                  color: closeStatus.allReady ? '#fff' : '#cbd5e1',
+                  opacity: closeStatus.allReady ? 1 : 0.6,
+                  border: 'none', borderRadius: 8,
+                  cursor: closeStatus.allReady ? 'pointer' : 'not-allowed',
+                  transition: 'all 0.15s ease',
+                }}
+              >
+                🔒 Close Period
+              </button>
+            )}
+            {isClosed && isDirector && (
+              <button
+                onClick={handleReopenPeriod}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 5,
+                  padding: '6px 14px', fontSize: 12, fontWeight: 500,
+                  background: '#fff', color: '#dc2626',
+                  border: '1px solid #fecaca', borderRadius: 8,
+                  cursor: 'pointer',
+                }}
+              >
+                🔓 Reopen
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ── Period-over-period narrative diff (executive summary) ── */}
       {(() => {

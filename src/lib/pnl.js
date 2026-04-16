@@ -203,3 +203,32 @@ export async function writeBudgetPnL(location, year, monthlyBudgets) {
   })
   await Promise.all(writes)
 }
+
+
+// ── Period close ─────────────────────────────────────────────
+
+// Write period close status to the P&L period doc.
+// Status: 'open' | 'closed' | 'reopened'
+export async function writePeriodClose(location, period, { status, actor, reason }) {
+  const closeData = {
+    periodStatus: status,
+    [`${status}By`]: actor,
+    [`${status}At`]: serverTimestamp(),
+  }
+  if (reason) closeData.reopenReason = reason
+  await writePnL(location, period, closeData)
+}
+
+// Read period close status from the P&L period doc.
+// Returns { periodStatus, closedBy, closedAt, reopenedBy, reopenedAt, reopenReason }
+export async function readPeriodClose(location, period) {
+  const data = await readPnL(location, period)
+  return {
+    periodStatus: data.periodStatus || 'open',
+    closedBy: data.closedBy || null,
+    closedAt: data.closedAt || null,
+    reopenedBy: data.reopenedBy || null,
+    reopenedAt: data.reopenedAt || null,
+    reopenReason: data.reopenReason || null,
+  }
+}
