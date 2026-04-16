@@ -43,7 +43,7 @@ export default function Transfers() {
   const { selectedLocation, groupedLocations, visibleLocations } = useLocations()
   const { periodKey }        = usePeriod()
   const toast                = useToast()
-  const isDirector           = user?.role === 'Admin' || user?.role === 'Director'
+  const isDirector           = /^(admin|director)$/i.test(user?.role || '')
 
   const [entries,      setEntries]      = useState([])
   const [loading,      setLoading]      = useState(false)

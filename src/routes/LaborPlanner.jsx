@@ -303,7 +303,7 @@ export default function LaborPlanner() {
       ' at ' + importedAt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
     : null
 
-  const isDirector = user?.role === 'Admin' || user?.role === 'Director'
+  const isDirector = /^(admin|director)$/i.test(user?.role || '')
 
   return (
     <div className={styles.page}>

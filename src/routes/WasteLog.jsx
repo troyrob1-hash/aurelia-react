@@ -50,7 +50,7 @@ export default function WasteLog() {
   const orgId                = user?.tenantId || 'fooda'
   const { selectedLocation } = useLocations()
   const { periodKey }        = usePeriod()
-  const isDirector           = user?.role === 'Admin' || user?.role === 'Director'
+  const isDirector           = /^(admin|director)$/i.test(user?.role || '')
 
   const [entries,       setEntries]       = useState([])
   const [priorEntries,  setPriorEntries]  = useState([])
