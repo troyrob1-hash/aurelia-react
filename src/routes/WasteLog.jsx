@@ -8,7 +8,7 @@ import {
   doc, getDoc, serverTimestamp, updateDoc
 } from 'firebase/firestore'
 import { useToast } from '@/components/ui/Toast'
-import { Download, CheckCircle, Clock, AlertCircle, Leaf, Droplets, Wind } from 'lucide-react'
+import { Download, Leaf, Droplets, Wind } from 'lucide-react'
 import styles from './WasteLog.module.css'
 
 const CATS = {
@@ -63,11 +63,6 @@ export default function WasteLog() {
   const [form,          setForm]          = useState({ date: new Date().toISOString().slice(0, 10), partner: '', item: '', notes: '' })
   const [saving,        setSaving]        = useState(false)
   const [partnerFilter, setPartnerFilter] = useState('all')
-  const [approvalStatus, setApproval]    = useState(null)
-  const [submissionId,   setSubmissionId] = useState(null)
-  const [showRejectModal, setShowRejectModal] = useState(false)
-  const [rejectNote,    setRejectNote]    = useState('')
-
   const location = selectedLocation === 'all' ? null : selectedLocation
 
   // Derive prior period key
@@ -120,14 +115,6 @@ export default function WasteLog() {
         if (pnlSnap.exists()) setGfsSales(pnlSnap.data().gfs_total || 0)
       } catch { /* no sales yet */ }
 
-      // Load pending approval
-      const subRef  = collection(db, 'tenants', orgId, 'wasteSubmissions')
-      const subSnap = await getDocs(query(subRef, orderBy('createdAt', 'desc')))
-      const pending = subSnap.docs.find(d => d.data().period === periodKey && d.data().location === location)
-      if (pending) {
-        setSubmissionId(pending.id)
-        setApproval(pending.data().status)
-      }
     } catch { toast.error('Something went wrong loading waste data.') }
     setLoading(false)
   }
@@ -158,7 +145,6 @@ export default function WasteLog() {
           location, periodKey,
           createdBy: user?.name || user?.email || 'unknown',
           createdAt: serverTimestamp(),
-          status: 'pending',
         }
         const d = await addDoc(ref, entry)
         newEntries.push({ id: d.id, ...entry })
@@ -166,59 +152,14 @@ export default function WasteLog() {
 
       setEntries(prev => [...newEntries, ...prev])
 
-      // Create/update submission for approval
-      const totalCostAmt = newEntries.reduce((s, e) => s + e.estimatedCost, 0)
-      const totalOzAll   = newEntries.reduce((s, e) => s + e.oz, 0)
-      if (submissionId) {
-        await updateDoc(doc(db, 'tenants', orgId, 'wasteSubmissions', submissionId), {
-          status: 'pending', updatedAt: serverTimestamp(),
-          totalOz: totalOzAll, totalCost: totalCostAmt,
-        })
-      } else {
-        const subRef = await addDoc(collection(db, 'tenants', orgId, 'wasteSubmissions'), {
-          period: periodKey, location,
-          totalOz: totalOzAll, totalCost: totalCostAmt,
-          submittedBy: user?.name || user?.email,
-          status: 'pending', createdAt: serverTimestamp(),
-        })
-        setSubmissionId(subRef.id)
-      }
-      setApproval('pending')
-
       setQty({ ...EMPTY_QTY })
       setForm({ date: new Date().toISOString().slice(0, 10), partner: '', item: '', notes: '' })
       setShowModal(false)
-      toast.success('Waste logged — pending director approval before posting to P&L')
+      toast.success('Waste logged')
     } catch { toast.error('Something went wrong. Please try again.') }
     setSaving(false)
   }
 
-  async function handleApprove() {
-    if (!submissionId) return
-    try {
-      await updateDoc(doc(db, 'tenants', orgId, 'wasteSubmissions', submissionId), {
-        status: 'approved', approvedBy: user?.name || user?.email, approvedAt: serverTimestamp(),
-      })
-      // Now post to P&L
-      const periodEntries = entries.filter(e => e.periodKey === periodKey)
-      const wasteCost = periodEntries.reduce((s, e) => s + (e.estimatedCost || 0), 0)
-      const wasteOz   = periodEntries.reduce((s, e) => s + (e.oz || 0), 0)
-      setApproval('approved')
-      toast.success('Waste approved and posted to P&L')
-    } catch { toast.error('Approval failed') }
-  }
-
-  async function handleRejectConfirm() {
-    if (!rejectNote.trim()) { toast.error('Please enter a reason'); return }
-    await updateDoc(doc(db, 'tenants', orgId, 'wasteSubmissions', submissionId), {
-      status: 'rejected', rejectedBy: user?.name || user?.email,
-      rejectedAt: serverTimestamp(), rejectNote: rejectNote.trim(),
-    })
-    setApproval('rejected')
-    setShowRejectModal(false)
-    setRejectNote('')
-    toast.success('Submission rejected')
-  }
 
   async function handleDelete(id) {
     await deleteDoc(doc(db, 'tenants', orgId, 'locations', locationId(location), 'waste', id))
@@ -304,14 +245,6 @@ export default function WasteLog() {
           ))}
         </nav>
         <div className={styles.headerRight}>
-          {approvalStatus && (
-            <span className={`${styles.statusPill} ${styles['pill_' + approvalStatus]}`}>
-              {approvalStatus === 'pending' && <Clock size={11} />}
-              {approvalStatus === 'approved' && <CheckCircle size={11} />}
-              {approvalStatus === 'rejected' && <AlertCircle size={11} />}
-              {approvalStatus}
-            </span>
-          )}
           <button className={styles.btnExport} onClick={exportCSV}><Download size={13} /></button>
           <select className={styles.filterSel} value={partnerFilter} onChange={e => setPartnerFilter(e.target.value)}>
             <option value="all">All Partners</option>
@@ -321,30 +254,6 @@ export default function WasteLog() {
         </div>
       </div>
 
-      {/* ── Approval bar ── */}
-      {approvalStatus === 'pending' && isDirector && (
-        <div className={styles.approvalBar}>
-          <span>Waste entries for {periodKey} are pending your approval before posting to P&L.</span>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button className={styles.btnApprove} onClick={handleApprove}>Approve &amp; Post</button>
-            <button className={styles.btnReject} onClick={() => setShowRejectModal(true)}>Reject</button>
-          </div>
-        </div>
-      )}
-
-      {/* ── Reject modal ── */}
-      {showRejectModal && (
-        <div className={styles.overlay} onClick={e => e.target === e.currentTarget && setShowRejectModal(false)}>
-          <div className={styles.modal} style={{ maxWidth: 460 }}>
-            <div className={styles.modalTitle}>Reject Waste Submission</div>
-            <textarea className={styles.rejectTextarea} placeholder="Reason for rejection..." value={rejectNote} onChange={e => setRejectNote(e.target.value)} rows={3} autoFocus />
-            <div className={styles.formActions}>
-              <button className={styles.btnCancel} onClick={() => setShowRejectModal(false)}>Cancel</button>
-              <button className={styles.btnSave} onClick={handleRejectConfirm}>Confirm Rejection</button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* ── Log entry modal ── */}
       {showModal && (
@@ -482,8 +391,16 @@ export default function WasteLog() {
                   const pct      = total > 0 ? Math.round(t[k] / total * 100) : 0
                   const priorOz  = priorT[k] || 0
                   const trend    = priorOz > 0 ? ((t[k] - priorOz) / priorOz * 100) : null
+                  const landfillAlert = k === 'landfill' && pct > 50 ? '#E8593C' : k === 'landfill' && pct > 30 ? '#c77a1a' : null
                   return (
-                    <div key={k} className={styles.kpiCard} style={{ borderTopColor: c.color }}>
+                    <div
+                      key={k}
+                      className={styles.kpiCard}
+                      style={{
+                        borderTopColor: c.color,
+                        ...(landfillAlert ? { outline: `2px solid ${landfillAlert}`, outlineOffset: '-2px' } : {})
+                      }}
+                    >
                       <div className={styles.kpiLabel}>{c.icon} {c.label}</div>
                       <div className={styles.kpiValue} style={{ color: c.color }}>{fmt(t[k])}</div>
                       <div className={styles.kpiPct} style={{ color: c.color }}>{pct}% of total</div>
