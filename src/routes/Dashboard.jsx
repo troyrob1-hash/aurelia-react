@@ -31,69 +31,139 @@ const DEFAULT_SCHEMA = [
   {
     id: 'revenue', label: 'Revenue', color: '#2563eb',
     lines: [
-      { key: 'revenue_commission', label: 'Restaurant Commission', indent: 1 },
-      { key: 'revenue_total',      label: 'Total Revenue',         bold: true, budgetKey: 'budget_revenue' },
-      { key: '_pct_rev_gfs', label: 'Revenue % of GFS', pct: true, indent: 1,
-        computeFn: p => p.gfs_total > 0 ? p.revenue_total / p.gfs_total : null },
-    ]
-  },
-  {
-    id: 'cogs', label: 'Cost of Goods Sold', color: '#dc2626',
-    lines: [
-      { key: 'cogs_onsite_labor', label: 'Onsite Labor (GL 50410)',    indent: 2, drillTo: '/labor' },
-      { key: 'cogs_3rd_party',    label: '3rd Party Labor (GL 50420)', indent: 2, drillTo: '/labor' },
-      { key: '_labor_subtotal',   label: 'Total Onsite Labor',         bold: true, indent: 1, budgetKey: 'budget_labor',
-        computeFn: p => (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0) },
-      { key: 'cogs_inventory',  label: 'Inventory Usage',   indent: 1, drillTo: '/inventory' },
-      { key: 'cogs_purchases',  label: 'Purchases (AP)',    indent: 1, drillTo: '/purchasing' },
-      { key: '_cogs_payproc',   label: 'Payment Processing (1.8%)', indent: 1,
-        computeFn: p => (p.gfs_total||0) * 0.018 },
-      { key: '_total_cogs', label: 'Total COGS', bold: true, budgetKey: 'budget_cogs',
+      // Popup revenue sub-lines
+      { key: 'rev_popup_cogs',       label: 'Popup COGS',                       indent: 2, negative: true },
+      { key: 'rev_popup_food_sales', label: 'Popup Gross Food Sales',           indent: 2 },
+      { key: 'rev_popup_tax',        label: 'Popup Tax',                        indent: 2 },
+      { key: 'rev_popup_pp_fee',     label: 'Popup PP Fee Revenue',             indent: 2 },
+      // Catering revenue sub-lines
+      { key: 'rev_catering_cogs',    label: 'Catering COGS',                    indent: 2, negative: true },
+      { key: 'rev_catering_revenue', label: 'Catering Revenue',                 indent: 2 },
+      { key: 'rev_catering_pp_fee',  label: 'Payment Processing Fee - Catering', indent: 2 },
+      // Delivery
+      { key: 'rev_delivery_cogs',    label: 'Delivery COGS',                    indent: 2, negative: true },
+      // Retail
+      { key: 'rev_retail_barista',   label: 'Retail Revenue - Barista',         indent: 2 },
+      { key: 'rev_retail_cafeteria', label: 'Retail Revenue - Cafeteria',       indent: 2 },
+      // Retail COGS (tax)
+      { key: 'rev_retail_cogs_tax',  label: 'Retail COGS - Tax',               indent: 2, negative: true },
+      // Customer Fees
+      { key: 'rev_client_fees',      label: 'Popup Client Fees',                indent: 2 },
+      // Total
+      { key: 'revenue_total',        label: 'Total Revenue',                    bold: true, budgetKey: 'budget_revenue',
         computeFn: p => {
-          const labor   = (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
-          const payproc = (p.gfs_total||0) * 0.018
-          return labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + payproc
-        }
-      },
-      { key: '_pct_cogs_rev', label: 'COGS % of Revenue', pct: true, indent: 1,
-        computeFn: p => {
-          const labor   = (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
-          const payproc = (p.gfs_total||0) * 0.018
-          const total   = labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + payproc
-          const rev     = p.revenue_total || (p.gfs_total||0) * 0.82
-          return rev > 0 ? total / rev : null
+          return (p.rev_popup_cogs||0) + (p.rev_popup_food_sales||0) + (p.rev_popup_tax||0) + (p.rev_popup_pp_fee||0)
+               + (p.rev_catering_cogs||0) + (p.rev_catering_revenue||0) + (p.rev_catering_pp_fee||0)
+               + (p.rev_delivery_cogs||0)
+               + (p.rev_retail_barista||0) + (p.rev_retail_cafeteria||0) + (p.rev_retail_cogs_tax||0)
+               + (p.rev_client_fees||0)
         }
       },
     ]
   },
   {
-    id: 'gm', label: 'Gross Margin', color: '#059669',
+    id: 'cogs', label: 'COGS', color: '#dc2626',
     lines: [
-      { key: '_gross_margin', label: 'Gross Margin', bold: true, highlight: true,
-        computeFn: p => {
-          const rev     = p.revenue_total || (p.gfs_total||0) * 0.82
-          const labor   = (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
-          const payproc = (p.gfs_total||0) * 0.018
-          return rev - (labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + payproc)
-        }
+      // Location Costs — Onsite Labor
+      { key: 'cogs_labor_salaries',  label: 'Onsite Labor (Fooda) Salaries and Wages', indent: 2, drillTo: '/labor' },
+      { key: 'cogs_labor_401k',      label: 'Onsite Labor 401k',               indent: 2, drillTo: '/labor' },
+      { key: 'cogs_labor_benefits',  label: 'Onsite Labor Benefits',            indent: 2, drillTo: '/labor' },
+      { key: 'cogs_labor_taxes',     label: 'Onsite Labor Taxes',               indent: 2, drillTo: '/labor' },
+      { key: 'cogs_labor_bonus',     label: 'Onsite Bonus',                     indent: 2, drillTo: '/labor' },
+      { key: '_labor_subtotal',      label: 'Total Onsite Labor',               bold: true, indent: 1, budgetKey: 'budget_labor',
+        computeFn: p => (p.cogs_labor_salaries||0) + (p.cogs_labor_401k||0) + (p.cogs_labor_benefits||0)
+                      + (p.cogs_labor_taxes||0) + (p.cogs_labor_bonus||0)
+                      + (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)  // backward compat with old single-line writes
       },
-      { key: '_pct_gm_rev', label: 'Gross Margin % of Revenue', pct: true, indent: 1,
+      // Location Costs — Equipment & Consumables
+      { key: 'cogs_cleaning',        label: 'Cleaning Supplies & Chemicals',    indent: 2 },
+      { key: 'cogs_equipment',       label: 'Onsite Equipment',                 indent: 2 },
+      { key: 'cogs_ec_barista',      label: 'Equipment and Consumables - Barista', indent: 2 },
+      { key: 'cogs_paper',           label: 'Paper Products & Consumables',     indent: 2 },
+      { key: 'cogs_supplies',        label: 'Onsite Supplies',                  indent: 2 },
+      { key: 'cogs_uniforms',        label: 'Onsite Uniforms',                  indent: 2 },
+      { key: '_ec_subtotal',         label: 'Total Onsite Equipment and Consumables', bold: true, indent: 1,
+        computeFn: p => (p.cogs_cleaning||0) + (p.cogs_equipment||0) + (p.cogs_ec_barista||0)
+                      + (p.cogs_paper||0) + (p.cogs_supplies||0) + (p.cogs_uniforms||0)
+      },
+      // Location Costs — Maintenance & Other
+      { key: 'cogs_maintenance',     label: 'Onsite Other',                     indent: 1 },
+      // Payment Processing
+      { key: 'cogs_payment_processing', label: 'Bank Charges, Merchant Fees',   indent: 1 },
+      // Retail COGS
+      { key: 'cogs_retail_barista',  label: 'Retail COGS - Barista',            indent: 2 },
+      { key: 'cogs_retail_cafeteria', label: 'Retail COGS - Cafeteria',         indent: 2 },
+      { key: 'cogs_retail_managed',  label: 'Retail COGS - Managed Service Cost', indent: 2 },
+      { key: '_retail_cogs_subtotal', label: 'Total Retail COGS',               bold: true, indent: 1,
+        computeFn: p => (p.cogs_retail_barista||0) + (p.cogs_retail_cafeteria||0) + (p.cogs_retail_managed||0)
+      },
+      // Inventory and Purchases (backward compat)
+      { key: 'cogs_inventory',       label: 'Inventory Usage',                  indent: 1, drillTo: '/inventory' },
+      { key: 'cogs_purchases',       label: 'Purchases (AP)',                   indent: 1, drillTo: '/purchasing' },
+      // Total COGS
+      { key: '_total_cogs',          label: 'Total COGS',                       bold: true, budgetKey: 'budget_cogs',
         computeFn: p => {
-          const rev     = p.revenue_total || (p.gfs_total||0) * 0.82
-          const labor   = (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
-          const payproc = (p.gfs_total||0) * 0.018
-          const gm      = rev - (labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + payproc)
-          return rev > 0 ? gm / rev : null
+          const labor = (p.cogs_labor_salaries||0) + (p.cogs_labor_401k||0) + (p.cogs_labor_benefits||0)
+                      + (p.cogs_labor_taxes||0) + (p.cogs_labor_bonus||0)
+                      + (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
+          const ec    = (p.cogs_cleaning||0) + (p.cogs_equipment||0) + (p.cogs_ec_barista||0)
+                      + (p.cogs_paper||0) + (p.cogs_supplies||0) + (p.cogs_uniforms||0)
+          const retail = (p.cogs_retail_barista||0) + (p.cogs_retail_cafeteria||0) + (p.cogs_retail_managed||0)
+          return labor + ec + (p.cogs_maintenance||0) + (p.cogs_payment_processing||0)
+               + retail + (p.cogs_inventory||0) + (p.cogs_purchases||0)
         }
       },
     ]
   },
   {
-    id: 'expenses', label: 'Expenses', color: '#d97706',
+    id: 'gp', label: 'Gross Profit', color: '#059669',
     lines: [
-      { key: 'exp_comp_benefits', label: 'Compensation & Benefits', indent: 1, drillTo: '/labor' },
-      { key: '_total_exp', label: 'Total Expenses', bold: true, budgetKey: 'budget_expenses',
-        computeFn: p => (p.exp_comp_benefits||0) },
+      { key: '_gross_profit', label: 'Gross Profit', bold: true, highlight: true,
+        computeFn: p => {
+          const rev = (p.rev_popup_cogs||0) + (p.rev_popup_food_sales||0) + (p.rev_popup_tax||0) + (p.rev_popup_pp_fee||0)
+                    + (p.rev_catering_cogs||0) + (p.rev_catering_revenue||0) + (p.rev_catering_pp_fee||0)
+                    + (p.rev_delivery_cogs||0)
+                    + (p.rev_retail_barista||0) + (p.rev_retail_cafeteria||0) + (p.rev_retail_cogs_tax||0)
+                    + (p.rev_client_fees||0)
+          // Fallback to old revenue_total if new sub-lines not populated yet
+          const revenue = rev !== 0 ? rev : (p.revenue_total || (p.gfs_total||0) * 0.82)
+          const labor = (p.cogs_labor_salaries||0) + (p.cogs_labor_401k||0) + (p.cogs_labor_benefits||0)
+                      + (p.cogs_labor_taxes||0) + (p.cogs_labor_bonus||0)
+                      + (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
+          const ec    = (p.cogs_cleaning||0) + (p.cogs_equipment||0) + (p.cogs_ec_barista||0)
+                      + (p.cogs_paper||0) + (p.cogs_supplies||0) + (p.cogs_uniforms||0)
+          const retail = (p.cogs_retail_barista||0) + (p.cogs_retail_cafeteria||0) + (p.cogs_retail_managed||0)
+          const cogs  = labor + ec + (p.cogs_maintenance||0) + (p.cogs_payment_processing||0)
+                      + retail + (p.cogs_inventory||0) + (p.cogs_purchases||0)
+          return revenue - cogs
+        }
+      },
+    ]
+  },
+  {
+    id: 'expenses', label: 'Expenses (General and Other)', color: '#d97706',
+    lines: [
+      { key: 'exp_office_supplies',  label: 'Office Supplies & Equipment',      indent: 1 },
+      { key: 'exp_mktg_cashier',     label: 'Cashier Discounts',                indent: 2 },
+      { key: 'exp_mktg_coupons',     label: 'Coupons',                          indent: 2 },
+      { key: 'exp_mktg_marketing',   label: 'Marketing',                        indent: 2 },
+      { key: 'exp_mktg_other',       label: 'Other Marketing and Advertising',  indent: 2 },
+      { key: '_mktg_subtotal',       label: 'Total Marketing & Advertising',    bold: true, indent: 1,
+        computeFn: p => (p.exp_mktg_cashier||0) + (p.exp_mktg_coupons||0) + (p.exp_mktg_marketing||0) + (p.exp_mktg_other||0)
+      },
+      { key: 'exp_technology',       label: 'Technology Services',              indent: 1 },
+      { key: 'exp_travel',           label: 'Travel and Entertainment',         indent: 1 },
+      { key: 'exp_professional',     label: 'Professional Fees',                indent: 1 },
+      { key: 'exp_facilities',       label: 'Facilities',                       indent: 1 },
+      { key: 'exp_licenses',         label: 'Licenses, Permits and Fines',      indent: 1 },
+      { key: 'exp_other',            label: 'Other Expenses',                   indent: 1 },
+      { key: 'exp_comp_benefits',    label: 'Compensation & Benefits',          indent: 1 },
+      { key: '_total_exp',           label: 'Total Expenses',                   bold: true, budgetKey: 'budget_expenses',
+        computeFn: p => (p.exp_office_supplies||0) + (p.exp_mktg_cashier||0) + (p.exp_mktg_coupons||0)
+                      + (p.exp_mktg_marketing||0) + (p.exp_mktg_other||0) + (p.exp_technology||0)
+                      + (p.exp_travel||0) + (p.exp_professional||0) + (p.exp_facilities||0)
+                      + (p.exp_licenses||0) + (p.exp_other||0) + (p.exp_comp_benefits||0)
+      },
     ]
   },
   {
@@ -101,19 +171,50 @@ const DEFAULT_SCHEMA = [
     lines: [
       { key: '_ebitda', label: 'EBITDA', bold: true, highlight: true, budgetKey: 'budget_ebitda',
         computeFn: p => {
-          const rev     = p.revenue_total || (p.gfs_total||0) * 0.82
-          const labor   = (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
-          const payproc = (p.gfs_total||0) * 0.018
-          const gm      = rev - (labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + payproc)
-          return gm - (p.exp_comp_benefits||0)
+          const rev = (p.rev_popup_cogs||0) + (p.rev_popup_food_sales||0) + (p.rev_popup_tax||0) + (p.rev_popup_pp_fee||0)
+                    + (p.rev_catering_cogs||0) + (p.rev_catering_revenue||0) + (p.rev_catering_pp_fee||0)
+                    + (p.rev_delivery_cogs||0)
+                    + (p.rev_retail_barista||0) + (p.rev_retail_cafeteria||0) + (p.rev_retail_cogs_tax||0)
+                    + (p.rev_client_fees||0)
+          const revenue = rev !== 0 ? rev : (p.revenue_total || (p.gfs_total||0) * 0.82)
+          const labor = (p.cogs_labor_salaries||0) + (p.cogs_labor_401k||0) + (p.cogs_labor_benefits||0)
+                      + (p.cogs_labor_taxes||0) + (p.cogs_labor_bonus||0)
+                      + (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
+          const ec    = (p.cogs_cleaning||0) + (p.cogs_equipment||0) + (p.cogs_ec_barista||0)
+                      + (p.cogs_paper||0) + (p.cogs_supplies||0) + (p.cogs_uniforms||0)
+          const retail = (p.cogs_retail_barista||0) + (p.cogs_retail_cafeteria||0) + (p.cogs_retail_managed||0)
+          const cogs  = labor + ec + (p.cogs_maintenance||0) + (p.cogs_payment_processing||0)
+                      + retail + (p.cogs_inventory||0) + (p.cogs_purchases||0)
+          const gp    = revenue - cogs
+          const exp   = (p.exp_office_supplies||0) + (p.exp_mktg_cashier||0) + (p.exp_mktg_coupons||0)
+                      + (p.exp_mktg_marketing||0) + (p.exp_mktg_other||0) + (p.exp_technology||0)
+                      + (p.exp_travel||0) + (p.exp_professional||0) + (p.exp_facilities||0)
+                      + (p.exp_licenses||0) + (p.exp_other||0) + (p.exp_comp_benefits||0)
+          return gp - exp
         }
       },
       { key: '_pct_ebitda_gfs', label: 'EBITDA % of GFS', pct: true, indent: 1,
         computeFn: p => {
-          const rev     = p.revenue_total || (p.gfs_total||0) * 0.82
-          const labor   = (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
-          const payproc = (p.gfs_total||0) * 0.018
-          const ebitda  = (rev - (labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + payproc)) - (p.exp_comp_benefits||0)
+          const rev = (p.rev_popup_cogs||0) + (p.rev_popup_food_sales||0) + (p.rev_popup_tax||0) + (p.rev_popup_pp_fee||0)
+                    + (p.rev_catering_cogs||0) + (p.rev_catering_revenue||0) + (p.rev_catering_pp_fee||0)
+                    + (p.rev_delivery_cogs||0)
+                    + (p.rev_retail_barista||0) + (p.rev_retail_cafeteria||0) + (p.rev_retail_cogs_tax||0)
+                    + (p.rev_client_fees||0)
+          const revenue = rev !== 0 ? rev : (p.revenue_total || (p.gfs_total||0) * 0.82)
+          const labor = (p.cogs_labor_salaries||0) + (p.cogs_labor_401k||0) + (p.cogs_labor_benefits||0)
+                      + (p.cogs_labor_taxes||0) + (p.cogs_labor_bonus||0)
+                      + (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
+          const ec    = (p.cogs_cleaning||0) + (p.cogs_equipment||0) + (p.cogs_ec_barista||0)
+                      + (p.cogs_paper||0) + (p.cogs_supplies||0) + (p.cogs_uniforms||0)
+          const retail = (p.cogs_retail_barista||0) + (p.cogs_retail_cafeteria||0) + (p.cogs_retail_managed||0)
+          const cogs  = labor + ec + (p.cogs_maintenance||0) + (p.cogs_payment_processing||0)
+                      + retail + (p.cogs_inventory||0) + (p.cogs_purchases||0)
+          const gp    = revenue - cogs
+          const exp   = (p.exp_office_supplies||0) + (p.exp_mktg_cashier||0) + (p.exp_mktg_coupons||0)
+                      + (p.exp_mktg_marketing||0) + (p.exp_mktg_other||0) + (p.exp_technology||0)
+                      + (p.exp_travel||0) + (p.exp_professional||0) + (p.exp_facilities||0)
+                      + (p.exp_licenses||0) + (p.exp_other||0) + (p.exp_comp_benefits||0)
+          const ebitda = gp - exp
           return (p.gfs_total||0) > 0 ? ebitda / (p.gfs_total||0) : null
         }
       },
@@ -122,10 +223,10 @@ const DEFAULT_SCHEMA = [
 ]
 
 const SOURCES = [
-  { label: 'Sales',      key: 'gfs_total',         path: '/sales'      },
-  { label: 'Labor',      key: 'cogs_onsite_labor',  path: '/labor'      },
-  { label: 'Purchasing', key: 'cogs_purchases',      path: '/purchasing' },
-  { label: 'Inventory',  key: 'cogs_inventory',      path: '/inventory'  },
+  { label: 'Sales',      key: 'gfs_total',           path: '/sales'      },
+  { label: 'Labor',      key: 'cogs_labor_salaries',  path: '/labor'      },
+  { label: 'Purchasing', key: 'cogs_purchases',        path: '/purchasing' },
+  { label: 'Inventory',  key: 'cogs_inventory',        path: '/inventory'  },
 ]
 
 const fmt$ = v => {
@@ -294,16 +395,20 @@ export default function Dashboard() {
 
   // Schema is still a one-shot read — it rarely changes and doesn't need
   // a live subscription. Loaded once per org + period change.
-  useEffect(() => {
-    (async () => {
-      try {
-        const schemaSnap = await getDoc(doc(db, 'tenants', orgId, 'config', 'plSchema'))
-        if (schemaSnap.exists() && schemaSnap.data().sections?.length) {
-          setSchema(schemaSnap.data().sections)
-        }
-      } catch {/* fall back to DEFAULT_SCHEMA */}
-    })()
-  }, [orgId])
+  // Schema is fixed to DEFAULT_SCHEMA (Enterprise P&L structure).
+  // Budget uploads populate the Budget column via field keys but don't
+  // override the P&L layout. Dynamic schema from budgetSchema disabled
+  // until field-key mapping layer is built post-pilot.
+  // useEffect(() => {
+  //   (async () => {
+  //     try {
+  //       const schemaSnap = await getDoc(doc(db, 'tenants', orgId, 'config', 'budgetSchema'))
+  //       if (schemaSnap.exists() && schemaSnap.data().sections?.length) {
+  //         setSchema(schemaSnap.data().sections)
+  //       }
+  //     } catch {/* fall back to DEFAULT_SCHEMA */}
+  //   })()
+  // }, [orgId])
 
   // Location ranking for the All Locations view. Still uses one-shot reads
   // because this is a secondary panel that doesn't need to be live. Will
@@ -334,10 +439,11 @@ export default function Dashboard() {
   async function refresh() {
     setRefreshing(true)
     try {
-      const schemaSnap = await getDoc(doc(db, 'tenants', orgId, 'config', 'plSchema'))
-      if (schemaSnap.exists() && schemaSnap.data().sections?.length) {
-        setSchema(schemaSnap.data().sections)
-      }
+      // Schema reload disabled — using fixed DEFAULT_SCHEMA
+      // const schemaSnap = await getDoc(doc(db, 'tenants', orgId, 'config', 'budgetSchema'))
+      // if (schemaSnap.exists() && schemaSnap.data().sections?.length) {
+      //   setSchema(schemaSnap.data().sections)
+      // }
     } catch { toast.error('Failed to refresh.') }
     setRefreshing(false)
   }
