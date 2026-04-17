@@ -188,6 +188,47 @@ service cloud.firestore {
         }
       }
 
+      // Journal entries + templates (Operating Ledger)
+      match /journalEntries/{entryId} {
+        allow read:   if ownsTenant(tenantId);
+        allow create: if ownsTenant(tenantId) && isManager();
+        allow update: if ownsTenant(tenantId) && isDirector();
+        allow delete: if ownsTenant(tenantId) && isDirector();
+      }
+
+      match /jeTemplates/{templateId} {
+        allow read:   if ownsTenant(tenantId);
+        allow create: if ownsTenant(tenantId) && isManager();
+        allow update: if ownsTenant(tenantId) && isDirector();
+        allow delete: if ownsTenant(tenantId) && isDirector();
+      }
+
+      // Period close status docs
+      match /apClose/{closeId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isManager();
+      }
+
+      match /laborClose/{closeId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isManager();
+      }
+
+      match /salesClose/{closeId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isManager();
+      }
+
+      match /wasteClose/{closeId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isManager();
+      }
+
+      match /inventoryClose/{closeId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isManager();
+      }
+
       match /legacy/{doc} {
         allow read:  if ownsTenant(tenantId);
         allow write: if ownsTenant(tenantId) && isAdmin();
