@@ -86,7 +86,7 @@ export function usePeriodStatus(location, periodKey) {
         sources.push({
           key: 'inventory',
           label: 'Inventory',
-          status: (pnl.inv_closing !== undefined && pnl.inv_closing !== null) ? 'posted' : 'missing',
+          status: (pnl.cogs_inventory !== undefined && pnl.cogs_inventory !== null) || (pnl.closingValue !== undefined && pnl.closingValue !== null) ? 'posted' : 'missing',
         })
 
         // Waste — check if any waste entries exist (read from entries or just check P&L doc)

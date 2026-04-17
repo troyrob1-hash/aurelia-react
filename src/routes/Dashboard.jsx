@@ -231,7 +231,8 @@ const SOURCES = [
 ]
 
 const fmt$ = v => {
-  if (v === null || v === undefined || v === 0) return '—'
+  if (v === null || v === undefined) return '—'
+  if (v === 0) return '$0.00'
   const abs = Math.abs(v)
   const s   = '$' + abs.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
   return v < 0 ? `(${s})` : s
