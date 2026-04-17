@@ -19,7 +19,7 @@ const NAV = [
   { to: '/waste',      icon: Trash2,          label: 'Waste Log',    category: 'Shrinkage' },
   { to: '/purchasing', icon: FileText,        label: 'Purchasing',   category: 'AP' },
   { to: '/budgets',    icon: PieChart,        label: 'Budgets',      category: 'Planning' },
-  { to: '/transfers',  icon: ArrowLeftRight,  label: 'Transfers',    category: 'Logistics' },
+  { to: '/transfers',  icon: ArrowLeftRight,  label: 'Operating Ledger', category: 'Finance' },
 { to: '/labor',      icon: Users,           label: 'Labor',        category: 'Labor' },
 ]
 
