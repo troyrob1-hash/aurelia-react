@@ -8,6 +8,7 @@ import { useToast } from '@/components/ui/Toast'
 import { usePeriod } from '@/store/PeriodContext'
 import { readPeriodClose } from '@/lib/pnl'
 import { writeSalesPnL } from '@/lib/pnl'
+import { parseEventExport, mergeEventData } from '@/lib/parseEventExport'
 import Breadcrumb from '@/components/ui/Breadcrumb'
 import { useDragDropUpload } from '@/hooks/useDragDropUpload'
 import DropZoneOverlay from '@/components/ui/DropZoneOverlay'
@@ -89,6 +90,47 @@ export default function WeeklySales() {
   const [approvalStatus, setApproval]   = useState(null)
 
   const [periodClosed, setPeriodClosed] = useState(false)
+  const [showEventModal, setShowEventModal] = useState(false)
+  const [eventFiles, setEventFiles] = useState([])       // { type, data, summary }
+  const [eventMerged, setEventMerged] = useState(null)   // merged P&L data
+  const [eventImporting, setEventImporting] = useState(false)
+
+  async function handleEventFiles(files) {
+    const results = []
+    for (const file of files) {
+      try {
+        const parsed = await parseEventExport(file)
+        results.push(parsed)
+      } catch (err) {
+        toast.error(`${file.name}: ${err.message}`)
+      }
+    }
+    if (results.length === 0) return
+    setEventFiles(results)
+
+    // Merge popup + catering data
+    const popupData = results.find(r => r.type === 'popup')?.data || null
+    const cateringData = results.find(r => r.type === 'catering')?.data || null
+    const merged = mergeEventData(popupData, cateringData)
+    setEventMerged(merged)
+    setShowEventModal(true)
+  }
+
+  async function handleEventConfirm() {
+    if (!eventMerged || !selectedLocation || selectedLocation === 'all') return
+    setEventImporting(true)
+    try {
+      await writeSalesPnL(selectedLocation, periodKey, eventMerged)
+      toast.success('Event data imported — Revenue actuals posted to P&L')
+      setShowEventModal(false)
+      setEventFiles([])
+      setEventMerged(null)
+    } catch (err) {
+      toast.error('Import failed: ' + (err.message || ''))
+    } finally {
+      setEventImporting(false)
+    }
+  }
   useEffect(() => {
     if (!selectedLocation || selectedLocation === 'all' || !periodKey) return
     (async () => {
@@ -1363,6 +1405,17 @@ export default function WeeklySales() {
             <Upload size={13} /> Import
             <input type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }} onChange={handleImport} />
           </label>
+          <label style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            padding: '8px 16px', fontSize: 12, fontWeight: 600,
+            background: '#2563eb', color: '#fff',
+            border: 'none', borderRadius: 8,
+            cursor: 'pointer',
+          }}>
+            <Upload size={13} /> Import Events
+            <input type="file" accept=".xlsx,.xls" multiple style={{ display: 'none' }}
+              onChange={(e) => handleEventFiles(Array.from(e.target.files))} />
+          </label>
         </div>
       </div>
 
@@ -2145,6 +2198,123 @@ export default function WeeklySales() {
               </tr>
             </tfoot>
           </table>
+        </div>
+      )}
+
+      
+      {/* ── Event Import Modal ── */}
+      {showEventModal && eventMerged && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          zIndex: 9999,
+        }} onClick={() => setShowEventModal(false)}>
+          <div style={{
+            background: '#fff', borderRadius: 16, width: '90%', maxWidth: 700,
+            maxHeight: '85vh', overflow: 'auto',
+            boxShadow: '0 25px 50px rgba(0,0,0,0.15)',
+          }} onClick={e => e.stopPropagation()}>
+            <div style={{ padding: '24px 28px 0' }}>
+              <h2 style={{ margin: '0 0 4px', fontSize: 20, fontWeight: 600, color: '#0f172a' }}>
+                Import Event Data
+              </h2>
+              <p style={{ margin: '0 0 20px', fontSize: 13, color: '#64748b' }}>
+                Review the summary below before posting to P&L for {periodKey}
+              </p>
+
+              {/* File info */}
+              <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
+                {eventFiles.map((ef, i) => (
+                  <span key={i} style={{
+                    padding: '4px 10px', fontSize: 11, fontWeight: 500, borderRadius: 999,
+                    background: ef.type === 'popup' ? '#dbeafe' : '#fef3c7',
+                    color: ef.type === 'popup' ? '#1e40af' : '#92400e',
+                  }}>
+                    {ef.type === 'popup' ? '📊' : '🍽️'} {ef.summary.fileName} · {ef.summary.rowCount} rows · {ef.summary.vendorCount} vendors
+                  </span>
+                ))}
+              </div>
+
+              {/* P&L Summary Table */}
+              <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: '#f8fafc' }}>
+                      <th style={{ textAlign: 'left', padding: '10px 16px', color: '#475569', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Line Item</th>
+                      <th style={{ textAlign: 'right', padding: '10px 16px', color: '#475569', fontWeight: 600, fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[
+                      { label: 'GROSS FOOD SALES', bold: true, section: true },
+                      { label: 'Popup', value: eventMerged.gfs_popup },
+                      { label: 'Catering', value: eventMerged.gfs_catering },
+                      { label: 'Retail', value: eventMerged.gfs_retail },
+                      { label: 'Total GFS', value: eventMerged.gfs_total, bold: true },
+                      { label: 'REVENUE', bold: true, section: true },
+                      { label: 'Popup COGS', value: eventMerged.rev_popup_cogs },
+                      { label: 'Popup Food Sales', value: eventMerged.rev_popup_food_sales },
+                      { label: 'Popup Tax', value: eventMerged.rev_popup_tax },
+                      { label: 'Popup PP Fee', value: eventMerged.rev_popup_pp_fee },
+                      { label: 'Catering COGS', value: eventMerged.rev_catering_cogs },
+                      { label: 'Catering Revenue', value: eventMerged.rev_catering_revenue },
+                      { label: 'Retail - Barista', value: eventMerged.rev_retail_barista },
+                      { label: 'Retail - Cafeteria', value: eventMerged.rev_retail_cafeteria },
+                      { label: 'Retail COGS Tax', value: eventMerged.rev_retail_cogs_tax },
+                      { label: 'Client Fees', value: eventMerged.rev_client_fees },
+                      { label: 'Total Revenue', value: eventMerged.revenue_total, bold: true },
+                    ].map((row, i) => (
+                      <tr key={i} style={{
+                        background: row.section ? '#f0f9ff' : i % 2 === 0 ? '#fff' : '#fafafa',
+                        borderTop: row.section ? '2px solid #2563eb' : row.bold ? '1px solid #e2e8f0' : 'none',
+                      }}>
+                        <td style={{
+                          padding: row.section ? '10px 16px' : '8px 16px 8px 28px',
+                          fontWeight: row.bold || row.section ? 600 : 400,
+                          color: row.section ? '#2563eb' : row.bold ? '#0f172a' : '#334155',
+                          fontSize: row.section ? 11 : 13,
+                          textTransform: row.section ? 'uppercase' : 'none',
+                          letterSpacing: row.section ? '0.05em' : 'normal',
+                        }}>
+                          {row.label}
+                        </td>
+                        <td style={{
+                          padding: '8px 16px', textAlign: 'right',
+                          fontWeight: row.bold ? 600 : 400,
+                          color: row.value < 0 ? '#dc2626' : '#0f172a',
+                          fontFamily: 'ui-monospace, monospace',
+                        }}>
+                          {row.section ? '' : row.value != null ?
+                            (row.value < 0 ? `($${Math.abs(row.value).toLocaleString('en-US', {minimumFractionDigits:2})})` :
+                             `$${row.value.toLocaleString('en-US', {minimumFractionDigits:2})}`) : '—'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div style={{
+              display: 'flex', justifyContent: 'flex-end', gap: 10,
+              padding: '20px 28px', borderTop: '1px solid #f1f5f9', marginTop: 20,
+            }}>
+              <button onClick={() => setShowEventModal(false)} style={{
+                padding: '10px 20px', fontSize: 13, fontWeight: 500,
+                background: '#fff', color: '#475569',
+                border: '1px solid #e2e8f0', borderRadius: 8, cursor: 'pointer',
+              }}>Cancel</button>
+              <button onClick={handleEventConfirm} disabled={eventImporting} style={{
+                padding: '10px 24px', fontSize: 13, fontWeight: 600,
+                background: eventImporting ? '#94a3b8' : '#059669', color: '#fff',
+                border: 'none', borderRadius: 8,
+                cursor: eventImporting ? 'wait' : 'pointer',
+              }}>
+                {eventImporting ? 'Posting...' : 'Confirm & Post to P&L'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

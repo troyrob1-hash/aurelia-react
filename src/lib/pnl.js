@@ -134,19 +134,28 @@ export async function fetchPnLHistory(location, periodKeys) {
 // ── Module writers ────────────────────────────────────────────
 
 // Weekly Sales → GFS + Revenue lines
-export async function writeSalesPnL(location, period, { retail, catering, popup }) {
-  const gfs       = retail + catering + popup
-  const commission = gfs * 0.18
-  const revenue   = gfs - commission
-  await writePnL(location, period, {
-    gfs_retail:   retail,
-    gfs_catering: catering,
-    gfs_popup:    popup,
-    gfs_total:    gfs,
-    revenue_commission: commission,
-    revenue_total: revenue,
-    revenue_pct_gfs: gfs > 0 ? revenue / gfs : 0,
-  })
+export async function writeSalesPnL(location, period, salesData) {
+  // Supports both legacy { retail, catering, popup } and new event import data
+  // with full Revenue sub-line fields.
+  if (salesData.rev_popup_cogs !== undefined) {
+    // New event import — write all fields directly
+    await writePnL(location, period, salesData)
+  } else {
+    // Legacy manual entry — { retail, catering, popup }
+    const { retail = 0, catering = 0, popup = 0 } = salesData
+    const gfs = retail + catering + popup
+    const commission = gfs * 0.18
+    const revenue = gfs - commission
+    await writePnL(location, period, {
+      gfs_retail:   retail,
+      gfs_catering: catering,
+      gfs_popup:    popup,
+      gfs_total:    gfs,
+      revenue_commission: commission,
+      revenue_total: revenue,
+      revenue_pct_gfs: gfs > 0 ? revenue / gfs : 0,
+    })
+  }
 }
 
 // Inventory week close → COGS (opening - closing)
