@@ -1331,7 +1331,7 @@ export default function Dashboard() {
                                : line.highlight ? (actual >= 0 ? '#059669' : '#dc2626')
                                : undefined
                         }}>
-                          {actual != null && actual !== 0 ? fmt$(actual) : '—'}
+                          {actual != null ? fmt$(actual) : '—'}
                         </td>
                         <td className={styles.val} style={{ color: '#64748b', fontStyle: 'italic' }}>
                           {projected != null ? fmt$(projected) : '—'}
@@ -1341,7 +1341,7 @@ export default function Dashboard() {
                           const scenDelta = scenVal != null && actual != null ? scenVal - actual : null
                           return (
                             <td className={styles.val} style={{ color: '#b45309', fontWeight: 500 }}>
-                              {scenVal != null && scenVal !== 0 ? fmt$(scenVal) : '—'}
+                              {scenVal != null ? fmt$(scenVal) : '—'}
                               {scenDelta != null && Math.abs(scenDelta) > 0.5 && (
                                 <div style={{ fontSize: 10, color: scenDelta > 0 ? '#dc2626' : '#059669', marginTop: 2 }}>
                                   {scenDelta >= 0 ? '+' : ''}{fmt$(scenDelta)}
