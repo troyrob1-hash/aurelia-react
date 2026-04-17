@@ -57,6 +57,7 @@ const AMORT_OPTIONS = [
 const EMPTY_JE = {
   glCode: '', description: '', amount: '', amortization: 'once',
   amortMonths: 1, startPeriod: '', location: '',
+  saveAsTemplate: false, templateName: '',
 }
 
 function locId(n) { return (n || '').replace(/[^a-zA-Z0-9]/g, '_') }
@@ -91,11 +92,81 @@ export default function Transfers() {
   const [filterFrom,   setFilterFrom]   = useState('')
   const [filterTo,     setFilterTo]     = useState('')
   const [view,         setView]         = useState('board') // 'board' | 'timeline' | 'list'
-  const [activeTab, setActiveTab] = useState('transfers')
+  const [activeTab, setActiveTab] = useState('journal')
   const [journalEntries, setJournalEntries] = useState([])
   const [showJeForm, setShowJeForm] = useState(false)
   const [jeForm, setJeForm] = useState({ ...EMPTY_JE })
   const [jeSaving, setJeSaving] = useState(false)
+  const [jeTemplates, setJeTemplates] = useState([])
+  const [showTemplates, setShowTemplates] = useState(false)
+
+  // Load JE templates
+  useEffect(() => {
+    (async () => {
+      try {
+        const ref = collection(db, 'tenants', orgId, 'jeTemplates')
+        const snap = await getDocs(query(ref, orderBy('createdAt', 'desc')))
+        setJeTemplates(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+      } catch {}
+    })()
+  }, [orgId])
+
+  function applyTemplate(tpl) {
+    setJeForm({
+      ...EMPTY_JE,
+      glCode: tpl.glCode,
+      description: tpl.description,
+      amount: String(tpl.amount || ''),
+      amortization: tpl.amortization || 'once',
+      amortMonths: tpl.amortMonths || 1,
+      location: selectedLocation,
+    })
+    setShowTemplates(false)
+    setShowJeForm(true)
+  }
+
+  async function handleReversal(je) {
+    if (!window.confirm(`Reverse this journal entry?\n\n${je.glLabel}: ${fmt$(je.totalAmount)}\n${je.description}\n\nThis will post a negative entry to the same GL account for the current period.`)) return
+    try {
+      const actor = user?.name || user?.email || 'unknown'
+      const reverseAmount = -je.totalAmount
+
+      // Save reversal doc
+      await addDoc(collection(db, 'tenants', orgId, 'journalEntries'), {
+        glCode: je.glCode,
+        glLabel: je.glLabel,
+        description: `REVERSAL: ${je.description}`,
+        totalAmount: reverseAmount,
+        amortization: 'once',
+        amortMonths: 1,
+        location: je.location,
+        periods: [periodKey],
+        createdBy: actor,
+        createdAt: serverTimestamp(),
+        status: 'posted',
+        reversalOf: je.id,
+      })
+
+      // Write negative to P&L
+      await writePnL(je.location, periodKey, { [je.glCode]: reverseAmount })
+
+      // Mark original as reversed
+      await updateDoc(doc(db, 'tenants', orgId, 'journalEntries', je.id), {
+        status: 'reversed',
+        reversedBy: actor,
+        reversedAt: serverTimestamp(),
+      })
+
+      toast.success('Journal entry reversed')
+
+      // Reload
+      const snap = await getDocs(query(collection(db, 'tenants', orgId, 'journalEntries'), orderBy('createdAt', 'desc')))
+      setJournalEntries(snap.docs.map(d => ({ id: d.id, ...d.data() }))
+        .filter(e => e.location === selectedLocation || e.location === 'all'))
+    } catch (err) {
+      toast.error('Reversal failed: ' + (err.message || ''))
+    }
+  }
 
   // Load journal entries
   useEffect(() => {
@@ -162,6 +233,24 @@ export default function Transfers() {
       // Write to P&L period docs
       for (const { period, amount: amt } of periods) {
         await writePnL(loc, period, { [jeForm.glCode]: amt })
+      }
+
+      // Save as template if requested
+      if (jeForm.saveAsTemplate && jeForm.description) {
+        await addDoc(collection(db, 'tenants', orgId, 'jeTemplates'), {
+          name: jeForm.templateName || jeForm.description,
+          glCode: jeForm.glCode,
+          glLabel: JE_GL_CODES.find(g => g.code === jeForm.glCode)?.label || jeForm.glCode,
+          description: jeForm.description,
+          amount: parseFloat(jeForm.amount) || 0,
+          amortization: jeForm.amortization,
+          amortMonths: jeForm.amortization === 'once' ? 1 : (jeForm.amortization === 'annual' ? 12 : jeForm.amortization === 'quarterly' ? 3 : parseInt(jeForm.amortMonths) || 1),
+          createdBy: actor,
+          createdAt: serverTimestamp(),
+        })
+        // Reload templates
+        const tSnap = await getDocs(query(collection(db, 'tenants', orgId, 'jeTemplates'), orderBy('createdAt', 'desc')))
+        setJeTemplates(tSnap.docs.map(d => ({ id: d.id, ...d.data() })))
       }
 
       toast.success(`Journal entry posted — ${jeForm.amortization === 'once' ? '1 period' : periods.length + ' period-weeks'}`)
@@ -408,9 +497,44 @@ export default function Transfers() {
             </>
           )}
           {activeTab === 'journal' && (
-            <button className={styles.btnPrimary} onClick={()=>{ setJeForm({ ...EMPTY_JE, location: selectedLocation }); setShowJeForm(true) }}>
-              <Plus size={15}/> New Entry
-            </button>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              {jeTemplates.length > 0 && (
+                <div style={{ position: 'relative' }}>
+                  <button className={styles.btnSecondary} onClick={() => setShowTemplates(v => !v)}
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                    <FileText size={13}/> From Template
+                  </button>
+                  {showTemplates && (
+                    <div style={{
+                      position: 'absolute', top: '100%', right: 0, marginTop: 4,
+                      background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10,
+                      boxShadow: '0 10px 25px rgba(0,0,0,0.1)', minWidth: 280, zIndex: 100,
+                      maxHeight: 300, overflow: 'auto',
+                    }}>
+                      <div style={{ padding: '8px 12px', fontSize: 11, fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', borderBottom: '1px solid #f1f5f9' }}>
+                        Saved Templates
+                      </div>
+                      {jeTemplates.map(tpl => (
+                        <button key={tpl.id} onClick={() => applyTemplate(tpl)} style={{
+                          display: 'block', width: '100%', textAlign: 'left',
+                          padding: '10px 12px', border: 'none', background: 'none',
+                          cursor: 'pointer', borderBottom: '1px solid #f8fafc',
+                          fontSize: 13,
+                        }}>
+                          <div style={{ fontWeight: 500, color: '#0f172a' }}>{tpl.name || tpl.description}</div>
+                          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>
+                            {tpl.glLabel} · {fmt$(tpl.amount)} · {tpl.amortization === 'once' ? 'One-time' : tpl.amortization}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              <button className={styles.btnPrimary} onClick={()=>{ setJeForm({ ...EMPTY_JE, location: selectedLocation }); setShowJeForm(true) }}>
+                <Plus size={15}/> New Entry
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -421,8 +545,8 @@ export default function Transfers() {
         borderBottom: '2px solid #e2e8f0',
       }}>
         {[
-          { key: 'transfers', label: 'Transfers', icon: '↔' },
           { key: 'journal',   label: 'Journal Entries', icon: '📋' },
+          { key: 'transfers', label: 'Transfers', icon: '↔' },
         ].map(tab => (
           <button key={tab.key} onClick={() => setActiveTab(tab.key)} style={{
             padding: '10px 20px', fontSize: 13, fontWeight: activeTab === tab.key ? 600 : 400,
@@ -818,7 +942,13 @@ export default function Transfers() {
                     </div>
                   )}
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 24 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 16 }}>
+                  <input type="checkbox" id="saveTemplate" checked={jeForm.saveAsTemplate}
+                    onChange={e => setJeForm(f => ({...f, saveAsTemplate: e.target.checked}))}
+                    style={{ width: 16, height: 16 }} />
+                  <label htmlFor="saveTemplate" style={{ fontSize: 12, color: '#64748b' }}>Save as recurring template</label>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
                   <button onClick={() => setShowJeForm(false)} style={{
                     padding: '10px 20px', fontSize: 13, background: '#fff', color: '#475569',
                     border: '1px solid #e2e8f0', borderRadius: 8, cursor: 'pointer',
@@ -847,6 +977,7 @@ export default function Transfers() {
                   <th style={{ textAlign: 'right', padding: '10px 16px', fontWeight: 600, fontSize: 11, color: '#475569', textTransform: 'uppercase' }}>Amount</th>
                   <th style={{ textAlign: 'center', padding: '10px 16px', fontWeight: 600, fontSize: 11, color: '#475569', textTransform: 'uppercase' }}>Type</th>
                   <th style={{ textAlign: 'left', padding: '10px 16px', fontWeight: 600, fontSize: 11, color: '#475569', textTransform: 'uppercase' }}>Posted By</th>
+                  <th style={{ textAlign: 'center', padding: '10px 16px', fontWeight: 600, fontSize: 11, color: '#475569', textTransform: 'uppercase' }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -855,7 +986,7 @@ export default function Transfers() {
                     je.periods?.includes(periodKey) || je.periods?.some(p => p.startsWith(periodKey.split('-W')[0]))
                   )
                   if (periodEntries.length === 0) return (
-                    <tr><td colSpan={6} style={{ padding: '40px 16px', textAlign: 'center', color: '#94a3b8' }}>
+                    <tr><td colSpan={7} style={{ padding: '40px 16px', textAlign: 'center', color: '#94a3b8' }}>
                       No journal entries for this period. Click "New Entry" to add one.
                     </td></tr>
                   )
@@ -888,6 +1019,21 @@ export default function Transfers() {
                             </span>
                           </td>
                           <td style={{ padding: '10px 16px', color: '#64748b' }}>{je.createdBy}</td>
+                          <td style={{ padding: '10px 16px' }}>
+                            <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                              {je.status === 'reversed' ? (
+                                <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 999, background: '#fef2f2', color: '#dc2626', fontWeight: 500 }}>Reversed</span>
+                              ) : je.reversalOf ? (
+                                <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 999, background: '#f1f5f9', color: '#64748b', fontWeight: 500 }}>Reversal</span>
+                              ) : (
+                                <button onClick={() => handleReversal(je)} style={{
+                                  fontSize: 11, padding: '3px 8px', borderRadius: 6,
+                                  background: '#fff', color: '#dc2626', border: '1px solid #fecaca',
+                                  cursor: 'pointer', fontWeight: 500,
+                                }}>↩ Reverse</button>
+                              )}
+                            </div>
+                          </td>
                         </tr>
                       )
                     })}
@@ -898,7 +1044,7 @@ export default function Transfers() {
                       <td style={{ padding: '12px 16px', textAlign: 'right', fontWeight: 700, fontFamily: 'ui-monospace, monospace', color: '#0f172a', fontSize: 14 }}>
                         {fmt$(totalAmount)}
                       </td>
-                      <td colSpan={2}></td>
+                      <td colSpan={3}></td>
                     </tr>
                   </>)
                 })()}
