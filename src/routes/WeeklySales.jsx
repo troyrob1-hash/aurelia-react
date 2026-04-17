@@ -72,7 +72,7 @@ function getYoYKey(key) {
 export default function WeeklySales() {
   const { user }             = useAuthStore()
   const orgId                = user?.tenantId || 'fooda'
-  const { selectedLocation, visibleLocations, currentLocation } = useLocations()
+  const { selectedLocation, setSelectedLocation, visibleLocations, currentLocation } = useLocations()
   const { year, period, week: weekNum, currentWeek, periodKey, prevWeek, nextWeek } = usePeriod()
   const toast                = useToast()
 

@@ -137,9 +137,17 @@ export async function fetchPnLHistory(location, periodKeys) {
 export async function writeSalesPnL(location, period, salesData) {
   // Supports both legacy { retail, catering, popup } and new event import data
   // with full Revenue sub-line fields.
-  if (salesData.rev_popup_cogs !== undefined) {
-    // New event import — write all fields directly
-    await writePnL(location, period, salesData)
+  if (salesData.rev_popup_cogs !== undefined || salesData.rev_catering_cogs !== undefined) {
+    // New event import — only write non-zero fields to avoid overwriting
+    // data from a separate import (e.g. catering overwriting popup data).
+    // Skip gfs_total and revenue_total — Dashboard computes these from sub-lines.
+    const skipKeys = new Set(['gfs_total', 'revenue_total', 'revenue_pct_gfs'])
+    const filtered = {}
+    for (const [k, v] of Object.entries(salesData)) {
+      if (skipKeys.has(k)) continue
+      if (v !== 0 && v !== undefined && v !== null) filtered[k] = v
+    }
+    await writePnL(location, period, filtered)
   } else {
     // Legacy manual entry — { retail, catering, popup }
     const { retail = 0, catering = 0, popup = 0 } = salesData
