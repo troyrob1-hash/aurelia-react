@@ -1367,29 +1367,7 @@ export default function Dashboard() {
               )
             })}
 
-            {/* EBITDA footer */}
-            <tbody>
-              <tr className={`${styles.row} ${styles.bold} ${styles.ebitdaRow}`}>
-                <td className={styles.label} style={{ paddingLeft: 16, fontSize: 14, letterSpacing: '.02em' }}>EBITDA</td>
-                <td className={styles.val} style={{ color: ebitda >= 0 ? '#059669' : '#dc2626', fontSize: 15, fontWeight: 800 }}>{fmt$(ebitda)}</td>
-                <td className={styles.val} style={{ color: '#64748b', fontStyle: 'italic' }}>
-                  {(() => {
-                    const p = projectedClose(ebitda)
-                    return p != null ? fmt$(p) : '—'
-                  })()}
-                </td>
-                {applyToTable && scenarioActive && (
-                  <td className={styles.val} style={{ color: '#b45309', fontWeight: 600, fontSize: 14 }}>
-                    {fmt$(scenEbitda)}
-                  </td>
-                )}
-                <td className={styles.val} style={{ color: '#888' }}>{budgetEBITDA ? fmt$(budgetEBITDA) : '—'}</td>
-                <td className={styles.val} style={{ color: varColor(varEBITDA) }}>{varEBITDA != null ? (varEBITDA >= 0 ? '+' : '') + fmt$(varEBITDA) : '—'}</td>
-                <td className={styles.val} style={{ color: priorEBITDA !== 0 ? varColor(ebitda - priorEBITDA) : '#bbb', fontSize: 12 }}>
-                  {priorEBITDA !== 0 ? (ebitda >= priorEBITDA ? '▲' : '▼') + ' ' + fmt$(Math.abs(ebitda - priorEBITDA)) : '—'}
-                </td>
-              </tr>
-            </tbody>
+
           </table>
         </div>
       )}

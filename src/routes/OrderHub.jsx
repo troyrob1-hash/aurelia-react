@@ -187,12 +187,25 @@ export default function OrderHub() {
     
     const loadBudget = async () => {
       try {
+        // Read GFS from all 4 weeks of the current period and sum
         const period = weekPeriod()
-        const pnlRef = doc(db, 'tenants', orgId, 'pnl', location, 'periods', period)
-        const pnlSnap = await getDoc(pnlRef)
-        
-        if (pnlSnap.exists()) {
-          const data = pnlSnap.data()
+        const basePeriod = period.replace(/-W\d+$/, '')
+        let combinedData = {}
+        for (let w = 1; w <= 4; w++) {
+          const wk = `${basePeriod}-W${w}`
+          const wkRef = doc(db, 'tenants', orgId, 'pnl', location, 'periods', wk)
+          const wkSnap = await getDoc(wkRef)
+          if (wkSnap.exists()) {
+            const wkData = wkSnap.data()
+            for (const [k, v] of Object.entries(wkData)) {
+              if (typeof v === 'number') {
+                combinedData[k] = (combinedData[k] || 0) + v
+              }
+            }
+          }
+        }
+        const data = combinedData
+        if (Object.keys(data).length > 0) {
           const actualGFS = data.gfs_total || 0
           // Budget = % of actual GFS per category
           const catBudgets = {}
@@ -211,7 +224,7 @@ export default function OrderHub() {
             gfs: actualGFS,
             categories: catBudgets,
           })
-        }
+        }  // end if combinedData has data
       } catch (err) {
         console.error('Failed to load budget:', err)
       }
