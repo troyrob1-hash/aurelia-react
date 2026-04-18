@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { useToast } from '@/components/ui/Toast'
@@ -713,8 +713,8 @@ export default function Budgets() {
               </thead>
               <tbody>
                 {schema.map(section => (
-                  <>
-                    <tr key={section.id} className={styles.sectionRow} onClick={()=>setCollapsed(p=>({...p,[section.id]:!p[section.id]}))}>
+                  <React.Fragment key={section.id}>
+                    <tr className={styles.sectionRow} onClick={()=>setCollapsed(p=>({...p,[section.id]:!p[section.id]}))}>
                       <td colSpan={15} className={styles.sectionLabel} style={{borderTopColor:section.color,color:section.color}}>
                         <span className={styles.sectionToggle}>{collapsed[section.id]?<ChevronRight size={11}/>:<ChevronDown size={11}/>}</span>
                         {section.label.toUpperCase()}
@@ -771,7 +771,7 @@ export default function Budgets() {
                         </tr>
                       )
                     })}
-                  </>
+                  </React.Fragment>
                 ))}
               </tbody>
             </table>

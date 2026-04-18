@@ -30,13 +30,39 @@ export function monthPeriod(date = new Date()) {
 // Walk back one period from a period key like '2026-P04-W2'.
 // Assumes 4 weeks per period (Fooda fiscal calendar).
 // Returns null if the key doesn't parse.
+// Fooda fiscal calendar: periods = calendar months.
+// Week 1 starts on the 1st, ends on the first Sunday.
+// Middle weeks are full Mon-Sun. Last week ends on the last day of the month.
+// Number of weeks per period depends on the month.
+export function weeksInPeriod(year, period) {
+  // period 1=Jan, 2=Feb, ..., 12=Dec
+  const firstDay = new Date(year, period - 1, 1)        // 1st of the month
+  const lastDay  = new Date(year, period, 0)             // last day of the month
+  const daysInMonth = lastDay.getDate()
+  // Week 1: day 1 through first Sunday
+  const firstSunday = firstDay.getDay() === 0 ? 1 : (7 - firstDay.getDay() + 1)
+  // Remaining days after first Sunday
+  const remainingDays = daysInMonth - firstSunday
+  // Full Mon-Sun weeks in the middle + 1 partial last week if leftover days
+  const fullWeeks = Math.floor(remainingDays / 7)
+  const leftover = remainingDays % 7
+  // Total: week 1 (partial) + full weeks + last partial week (if any)
+  return 1 + fullWeeks + (leftover > 0 ? 1 : 0)
+}
+
 export function getPriorKey(key) {
   const parts = key?.match(/(\d+)-P(\d+)-W(\d+)/)
   if (!parts) return null
   let [, yr, p, w] = parts.map(Number)
   if (w > 1) return `${yr}-P${String(p).padStart(2,'0')}-W${w-1}`
-  if (p > 1) return `${yr}-P${String(p-1).padStart(2,'0')}-W4`
-  return `${yr-1}-P12-W4`
+  // Go to last week of prior period
+  if (p > 1) {
+    const priorWeeks = weeksInPeriod(yr, p - 1)
+    return `${yr}-P${String(p-1).padStart(2,'0')}-W${priorWeeks}`
+  }
+  // Go to last week of December of prior year
+  const decWeeks = weeksInPeriod(yr - 1, 12)
+  return `${yr-1}-P12-W${decWeeks}`
 }
 
 // Build a list of N trailing period keys ending at (and including) currentKey.
