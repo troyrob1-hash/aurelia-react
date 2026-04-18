@@ -33,6 +33,17 @@ const DEFAULT_VENDORS = [
   { id: 'other',       label: 'Other',           glCode: '' },
 ]
 
+
+const SPEND_CATEGORIES = [
+  { key: 'cogs_equipment',  label: 'Onsite Equipment',               pctGFS: 0.010 },
+  { key: 'cogs_supplies',   label: 'Onsite Supplies',                pctGFS: 0.001 },
+  { key: 'cogs_cleaning',   label: 'Cleaning Supplies & Chemicals',  pctGFS: 0.005 },
+  { key: 'cogs_paper',      label: 'Paper Products',                 pctGFS: 0.025 },
+  { key: 'cogs_ec_other',   label: 'Other Equipment & Consumables',  pctGFS: 0.003 },
+  { key: 'cogs_maintenance',label: 'Onsite Other',                   pctGFS: 0.005 },
+]
+const TOTAL_SPEND_PCT = SPEND_CATEGORIES.reduce((s, c) => s + c.pctGFS, 0) // 4.9%
+
 const STATUSES = ['Pending', 'Approved', 'Paid', 'Overdue', 'Disputed', 'Void']
 
 const STATUS_META = {
@@ -73,6 +84,32 @@ export default function Purchasing() {
   const { selectedLocation, visibleLocations } = useLocations()
   const { periodKey } = usePeriod()
   const [apClosed, setApClosed] = useState(false)
+  const [spendTracker, setSpendTracker] = useState(null)
+
+  // Load declining balance from P&L period doc
+  useEffect(() => {
+    if (!selectedLocation || selectedLocation === 'all' || !periodKey) return
+    (async () => {
+      try {
+        const pnlRef = doc(db, 'tenants', orgId, 'pnl', locId(selectedLocation), 'periods', periodKey)
+        const snap = await getDoc(pnlRef)
+        if (snap.exists()) {
+          const data = snap.data()
+          const actualGFS = data.gfs_total || 0
+          const cats = {}
+          let totalBudget = 0, totalSpent = 0
+          for (const cat of SPEND_CATEGORIES) {
+            const budget = Math.round(actualGFS * cat.pctGFS * 100) / 100
+            const spent = data[cat.key] || 0
+            cats[cat.key] = { budget, spent, remaining: budget - spent, label: cat.label }
+            totalBudget += budget
+            totalSpent += spent
+          }
+          setSpendTracker({ gfs: actualGFS, totalBudget, totalSpent, remaining: totalBudget - totalSpent, categories: cats })
+        }
+      } catch {}
+    })()
+  }, [selectedLocation, periodKey])
   const [periodClosed, setPeriodClosed] = useState(false)
 
   // Check period close status
@@ -928,6 +965,44 @@ export default function Purchasing() {
           <div className={styles.kpiSub}>{invoices.filter(i => i.status === 'Pending').length} pending approval</div>
         </div>
       </div>
+
+      {/* ── Declining Balance Tracker ── */}
+      {spendTracker && spendTracker.gfs > 0 && (
+        <div style={{
+          padding: '14px 20px', marginBottom: 16,
+          background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10,
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>
+              Spend Tracker — {(TOTAL_SPEND_PCT * 100).toFixed(1)}% of ${spendTracker.gfs.toLocaleString()} GFS
+            </div>
+            <div style={{
+              fontSize: 13, fontWeight: 700,
+              color: spendTracker.remaining < 0 ? '#dc2626' : spendTracker.remaining < spendTracker.totalBudget * 0.15 ? '#d97706' : '#059669',
+            }}>
+              ${Math.abs(spendTracker.remaining).toFixed(0)} {spendTracker.remaining < 0 ? 'over budget' : 'remaining'}
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr auto auto auto', gap: '4px 12px', fontSize: 12 }}>
+            <span style={{ fontWeight: 600, color: '#94a3b8', fontSize: 10, textTransform: 'uppercase' }}>Category</span>
+            <span style={{ fontWeight: 600, color: '#94a3b8', fontSize: 10, textTransform: 'uppercase', textAlign: 'right' }}>Spent</span>
+            <span style={{ fontWeight: 600, color: '#94a3b8', fontSize: 10, textTransform: 'uppercase', textAlign: 'right' }}>Budget</span>
+            <span style={{ fontWeight: 600, color: '#94a3b8', fontSize: 10, textTransform: 'uppercase', textAlign: 'right' }}>Remaining</span>
+            {SPEND_CATEGORIES.map(cat => {
+              const cd = spendTracker.categories[cat.key] || {}
+              const pctUsed = cd.budget > 0 ? cd.spent / cd.budget : 0
+              return [
+                <span key={cat.key+'l'} style={{ color: '#334155' }}>{cat.label}</span>,
+                <span key={cat.key+'s'} style={{ textAlign: 'right', fontFamily: 'ui-monospace, monospace', color: '#334155' }}>${(cd.spent||0).toFixed(0)}</span>,
+                <span key={cat.key+'b'} style={{ textAlign: 'right', fontFamily: 'ui-monospace, monospace', color: '#94a3b8' }}>${(cd.budget||0).toFixed(0)}</span>,
+                <span key={cat.key+'r'} style={{ textAlign: 'right', fontFamily: 'ui-monospace, monospace', fontWeight: 600,
+                  color: pctUsed > 1 ? '#dc2626' : pctUsed > 0.85 ? '#d97706' : '#059669',
+                }}>${Math.abs(cd.remaining||0).toFixed(0)} {(cd.remaining||0) < 0 ? 'over' : 'left'}</span>,
+              ]
+            })}
+          </div>
+        </div>
+      )}
 
       {/* ── Visual aging bar ── */}
       <div className={styles.agingCard}>

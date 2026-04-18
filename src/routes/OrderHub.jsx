@@ -65,6 +65,17 @@ const STATUS_CONFIG = {
 // OrderHub Component
 // ═══════════════════════════════════════════════════════════════════════════
 
+
+const SPEND_CATEGORIES = [
+  { key: 'cogs_equipment',  label: 'Onsite Equipment',               pctGFS: 0.010 },
+  { key: 'cogs_supplies',   label: 'Onsite Supplies',                pctGFS: 0.001 },
+  { key: 'cogs_cleaning',   label: 'Cleaning Supplies & Chemicals',  pctGFS: 0.005 },
+  { key: 'cogs_paper',      label: 'Paper Products',                 pctGFS: 0.025 },
+  { key: 'cogs_ec_other',   label: 'Other Equipment & Consumables',  pctGFS: 0.003 },
+  { key: 'cogs_maintenance',label: 'Onsite Other',                   pctGFS: 0.005 },
+]
+const TOTAL_SPEND_PCT = SPEND_CATEGORIES.reduce((s, c) => s + c.pctGFS, 0) // 4.9%
+
 export default function OrderHub() {
   const { selectedLocation } = useLocations()
   const toast = useToast()
@@ -182,9 +193,23 @@ export default function OrderHub() {
         
         if (pnlSnap.exists()) {
           const data = pnlSnap.data()
+          const actualGFS = data.gfs_total || 0
+          // Budget = % of actual GFS per category
+          const catBudgets = {}
+          let totalBudget = 0
+          let totalSpent = 0
+          for (const cat of SPEND_CATEGORIES) {
+            const budget = Math.round(actualGFS * cat.pctGFS * 100) / 100
+            const spent = data[cat.key] || 0
+            catBudgets[cat.key] = { budget, spent, remaining: budget - spent, label: cat.label, pct: cat.pctGFS }
+            totalBudget += budget
+            totalSpent += spent
+          }
           setWeeklyBudget({
-            cogs: data.cogs_budget || 3500,
-            spent: data.cogs_purchases || 0
+            cogs: totalBudget,
+            spent: totalSpent,
+            gfs: actualGFS,
+            categories: catBudgets,
           })
         }
       } catch (err) {
@@ -1073,8 +1098,24 @@ export default function OrderHub() {
                   <div className={styles.budgetLiveStats}>
                     <span>${spent.toFixed(0)} spent</span>
                     {inCart > 0 && <span style={{ color: c.text, fontWeight: 600 }}>+ ${inCart.toFixed(0)} cart</span>}
-                    <span>of ${budget.toFixed(0)}</span>
+                    <span>of ${budget.toFixed(0)} ({weeklyBudget.gfs ? (TOTAL_SPEND_PCT * 100).toFixed(1) + '% of $' + weeklyBudget.gfs.toLocaleString() + ' GFS' : ''})</span>
                   </div>
+                  {weeklyBudget.categories && (
+                    <div style={{ marginTop: 8, fontSize: 11, display: 'grid', gridTemplateColumns: '1fr auto auto auto', gap: '3px 10px', color: '#64748b' }}>
+                      {SPEND_CATEGORIES.map(cat => {
+                        const cd = weeklyBudget.categories[cat.key] || {}
+                        const pctUsed = cd.budget > 0 ? cd.spent / cd.budget : 0
+                        return [
+                          <span key={cat.key+'l'} style={{ fontWeight: 500 }}>{cat.label}</span>,
+                          <span key={cat.key+'s'} style={{ textAlign: 'right', fontFamily: 'ui-monospace, monospace' }}>${(cd.spent||0).toFixed(0)}</span>,
+                          <span key={cat.key+'b'} style={{ textAlign: 'right', color: '#94a3b8' }}>/ ${(cd.budget||0).toFixed(0)}</span>,
+                          <span key={cat.key+'r'} style={{ textAlign: 'right', fontWeight: 600, color: pctUsed > 1 ? '#dc2626' : pctUsed > 0.85 ? '#d97706' : '#059669' }}>
+                            ${Math.abs(cd.remaining||0).toFixed(0)} {(cd.remaining||0) < 0 ? 'over' : 'left'}
+                          </span>,
+                        ]
+                      })}
+                    </div>
+                  )}
                   {status === 'caution' && (
                     <div className={styles.budgetLiveWarn} style={{ color: c.text }}>
                       <AlertTriangle size={11}/> Approaching weekly limit
