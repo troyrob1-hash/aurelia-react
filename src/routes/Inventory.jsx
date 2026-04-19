@@ -48,6 +48,12 @@ export default function Inventory() {
   const orgId = user?.tenantId || null
   
   const { selectedLocation } = useLocations()
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
   const { periodKey } = usePeriod()
 
   // ─── Local UI State ────────────────────────────────────────────────────────
@@ -629,14 +635,14 @@ export default function Inventory() {
               <table className={styles.table}>
                 <thead>
                   <tr className={styles.thead}>
-                    <th className={styles.thNum}>#</th>
+                    {!isMobile && <th className={styles.thNum}>#</th>}
                     <th className={styles.th}>Item</th>
-                    <th className={styles.thCenter}>Pack</th>
-                    <th className={styles.thRight}>Unit Cost</th>
-                    {!blindMode && showVariance && <th className={styles.thCenter}>Prior</th>}
-                    <th className={styles.thCenter} style={{ width: 160 }}>Count</th>
-                    {showVariance && !blindMode && <th className={styles.thCenter}>△ Variance</th>}
-                    <th className={styles.thRight}>Value</th>
+                    {!isMobile && <th className={styles.thCenter}>Pack</th>}
+                    {!isMobile && <th className={styles.thRight}>Unit Cost</th>}
+                    {!isMobile && !blindMode && showVariance && <th className={styles.thCenter}>Prior</th>}
+                    <th className={styles.thCenter} style={{ width: isMobile ? 120 : 160 }}>Count</th>
+                    {!isMobile && showVariance && !blindMode && <th className={styles.thCenter}>△ Variance</th>}
+                    {!isMobile && <th className={styles.thRight}>Value</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -717,11 +723,11 @@ export default function Inventory() {
                             </div>
                           </div>
                         </td>
-                        <td className={styles.tdCenter}>
+                        {!isMobile && <td className={styles.tdCenter}>
                           {item.packSize && <span className={styles.badge}>{item.packSize}</span>}
-                        </td>
-                        <td className={styles.tdRight}>${(item.unitCost || 0).toFixed(2)}</td>
-                        {!blindMode && showVariance && (
+                        </td>}
+                        {!isMobile && <td className={styles.tdRight}>${(item.unitCost || 0).toFixed(2)}</td>}
+                        {!isMobile && !blindMode && showVariance && (
                           <td className={styles.tdCenter} style={{ color: '#bbb', fontSize: 12 }}>
                             {(item._priorQty || 0) > 0 ? item._priorQty : '—'}
                           </td>
@@ -743,7 +749,7 @@ export default function Inventory() {
                             <button className={styles.adjBtn} onClick={() => adjust(item.id, 1)}>+</button>
                           </div>
                         </td>
-                        {showVariance && !blindMode && (
+                        {!isMobile && showVariance && !blindMode && (
                           <td className={styles.tdCenter}>
                             {isCounted && (item._priorQty || 0) > 0 ? (
                               <span className={`${styles.varBadge} ${styles['var_' + varDir]}`}>
@@ -753,9 +759,9 @@ export default function Inventory() {
                             ) : <span style={{ color: '#ddd' }}>—</span>}
                           </td>
                         )}
-                        <td className={styles.tdRight} style={{ fontWeight: 700, color: (item._value || 0) > 0 ? '#059669' : '#bbb' }}>
+                        {!isMobile && <td className={styles.tdRight} style={{ fontWeight: 700, color: (item._value || 0) > 0 ? '#059669' : '#bbb' }}>
                           {(item._value || 0) > 0 ? fmt$(item._value) : '—'}
-                        </td>
+                        </td>}
                       </tr>
                     )
                   })}

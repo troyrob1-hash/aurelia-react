@@ -98,9 +98,11 @@ const DEFAULT_SCHEMA = [
       { key: '_retail_cogs_subtotal', label: 'Total Retail COGS',               bold: true, indent: 1,
         computeFn: p => (p.cogs_retail_barista||0) + (p.cogs_retail_cafeteria||0) + (p.cogs_retail_managed||0)
       },
-      // Inventory and Purchases (backward compat)
-      { key: 'cogs_inventory',       label: 'Inventory Usage',                  indent: 1, drillTo: '/inventory' },
-      { key: 'cogs_purchases',       label: 'Purchases (AP)',                   indent: 1, drillTo: '/purchasing' },
+      // Inventory and Purchases are data sources, not P&L line items.
+      // Their values feed into the COGS categories above via GL coding.
+      // cogs_inventory and cogs_purchases still included in Total COGS
+      // computation for backward compatibility until GL categorization
+      // is fully implemented in Purchasing and Inventory tabs.
       // Total COGS
       { key: '_total_cogs',          label: 'Total COGS',                       bold: true, budgetKey: 'budget_cogs',
         computeFn: p => {
@@ -227,7 +229,7 @@ const SOURCES = [
   { label: 'Sales',      key: 'gfs_total',           path: '/sales'      },
   { label: 'Labor',      key: 'cogs_labor_salaries',  path: '/labor'      },
   { label: 'Purchasing', key: 'cogs_purchases',        path: '/purchasing' },
-  { label: 'Inventory',  key: 'cogs_inventory',        path: '/inventory'  },
+  { label: 'Inventory',  key: 'closingValue',          path: '/inventory'  },
 ]
 
 const fmt$ = v => {

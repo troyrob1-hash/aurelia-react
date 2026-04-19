@@ -445,10 +445,78 @@
 
 /* ─── Responsive ──────────────────────────────────────────────────────────── */
 @media (max-width: 768px) {
-  .invContent { padding: 1rem; }
-  .kpiBar { grid-template-columns: repeat(2, 1fr); }
-  .header { flex-direction: column; align-items: flex-start; }
-  .headerActions { width: 100%; justify-content: flex-start; }
-  .cogsFooter { flex-direction: column; gap: 12px; text-align: center; }
+  .invContent { padding: 0.5rem; }
+  .kpiBar { grid-template-columns: repeat(2, 1fr); gap: 6px; }
+  .kpiBar > div { padding: 8px 10px !important; font-size: 0.8rem; }
+  .header { flex-direction: column; align-items: flex-start; gap: 0.5rem; }
+  .headerActions { width: 100%; justify-content: flex-start; flex-wrap: wrap; gap: 6px; }
+  .title { font-size: 1.1rem; }
+  .subtitle { font-size: 0.75rem; }
+  .cogsFooter { flex-direction: column; gap: 8px; text-align: center; }
   .cogsFooterLeft { justify-content: center; }
+
+  /* Hide non-essential columns on mobile — only show Item, Count, Value */
+  .thNum, .rowNum { display: none !important; }
+  .thPack, .tdPack { display: none !important; }
+  .thCost, .tdCost { display: none !important; }
+  .thValue, .tdValue { display: none !important; }
+
+  /* Prior and Variance columns also hidden on mobile */
+  .tdCenter:not(.tdCount) { display: none !important; }
+
+  /* Table cells — compact */
+  .th, .thCenter, .thRight { font-size: 0.7rem; padding: 6px 4px !important; }
+  td { padding: 8px 4px !important; font-size: 0.8rem; }
+  .tdName { max-width: 140px; }
+
+  /* Count input — large touch targets */
+  .countRow { gap: 2px; }
+  .countInput {
+    width: 52px !important;
+    height: 42px !important;
+    font-size: 16px !important; /* prevents iOS zoom on focus */
+    text-align: center;
+    padding: 4px !important;
+    border-radius: 8px !important;
+  }
+  .adjBtn {
+    width: 36px !important;
+    height: 36px !important;
+    min-width: 36px !important;
+    font-size: 18px !important;
+    border-radius: 8px !important;
+  }
+
+  /* Category pills — horizontal scroll */
+  .catBar {
+    display: flex !important;
+    overflow-x: auto;
+    gap: 6px;
+    padding-bottom: 6px;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .catBar::-webkit-scrollbar { display: none; }
+  .catPill { white-space: nowrap; font-size: 0.7rem; padding: 5px 10px; flex-shrink: 0; }
+
+  /* Save button — sticky at bottom above mobile nav */
+  .btnSave, .btnSaveFooter {
+    position: fixed !important;
+    bottom: 72px;
+    left: 10px;
+    right: 10px;
+    z-index: 100;
+    padding: 14px !important;
+    font-size: 1rem !important;
+    font-weight: 700 !important;
+    border-radius: 12px !important;
+    box-shadow: 0 -4px 12px rgba(0,0,0,0.15);
+  }
+
+  /* Mode tabs (Quick/Section/Full) — compact */
+  .modeTabs { gap: 0; }
+  .modeTabs button, .btnMode { font-size: 0.7rem; padding: 6px 8px; }
+
+  /* Add bottom padding so content isn't hidden behind sticky save button */
+  .invContent { padding-bottom: 100px !important; }
 }

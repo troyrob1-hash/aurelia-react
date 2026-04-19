@@ -77,6 +77,7 @@ export default function WeeklySales() {
   const toast                = useToast()
 
   const [entries,      setEntries]      = useState({})
+  const [importedTotals, setImportedTotals] = useState(null)
   const [priorEntries, setPriorEntries] = useState({})
   const [yoyEntries,   setYoyEntries]   = useState({})
   const [forecast,     setForecast]     = useState({})
@@ -109,9 +110,12 @@ export default function WeeklySales() {
     setEventFiles(results)
 
     // Merge popup + catering data
-    const popupData = results.find(r => r.type === 'popup')?.data || null
-    const cateringData = results.find(r => r.type === 'catering')?.data || null
-    const merged = mergeEventData(popupData, cateringData)
+    const popupResult = results.find(r => r.type === 'popup')
+    const cateringResult = results.find(r => r.type === 'catering')
+    const merged = mergeEventData(
+      popupResult?.data || null, cateringResult?.data || null,
+      popupResult?.daily || {}, cateringResult?.daily || {},
+    )
     setEventMerged(merged)
     setShowEventModal(true)
   }
@@ -121,10 +125,84 @@ export default function WeeklySales() {
     setEventImporting(true)
     try {
       await writeSalesPnL(selectedLocation, periodKey, eventMerged)
+
+      // Build daily entries from the parsed event data for EACH week in the period
+      const dailyData = eventMerged._daily || {}
+      const { setDoc, doc: fbDoc, serverTimestamp } = await import('firebase/firestore')
+      const { getPeriodWeeks, formatPeriodKey } = await import('@/store/PeriodContext')
+      const yearNum = parseInt(periodKey.split('-')[0])
+      const periodNum = parseInt(periodKey.split('-P')[1].split('-')[0])
+      const allWeeks = getPeriodWeeks(yearNum, periodNum)
+
+      for (let wi = 0; wi < allWeeks.length; wi++) {
+        const wk = allWeeks[wi]
+        const weekKey = formatPeriodKey(yearNum, periodNum, wi + 1)
+        const entries = {}
+        let weekPopup = 0, weekCatering = 0, weekRetail = 0
+        const dayStart = new Date(wk.start)
+        const dayEnd = new Date(wk.end)
+        for (let d = new Date(dayStart); d <= dayEnd; d.setDate(d.getDate() + 1)) {
+          const dateKey = d.toISOString().slice(0, 10)
+          const dayData = dailyData[dateKey]
+          if (dayData) {
+            entries[dateKey] = {
+              popup: Math.round((dayData.popup || 0) * 100) / 100,
+              catering: Math.round((dayData.catering || 0) * 100) / 100,
+              retail: Math.round((dayData.retail || 0) * 100) / 100,
+            }
+            weekPopup += dayData.popup || 0
+            weekCatering += dayData.catering || 0
+            weekRetail += dayData.retail || 0
+          }
+        }
+        const weekTotal = weekPopup + weekCatering + weekRetail
+        if (weekTotal > 0) {
+          const salesRef = fbDoc(db, 'tenants', orgId, 'locations', locId(selectedLocation), 'sales', weekKey)
+          // Read existing entries first to deep-merge (merge:true replaces nested objects)
+          const { getDoc: getD } = await import('firebase/firestore')
+          const existingSnap = await getD(salesRef)
+          const existing = existingSnap.exists() ? existingSnap.data() : {}
+          const existingEntries = existing.entries || {}
+
+          // Deep-merge: for each day, keep existing value unless new value > 0
+          const mergedEntries = { ...existingEntries }
+          for (const [dateKey, dayVals] of Object.entries(entries)) {
+            const prev = existingEntries[dateKey] || {}
+            mergedEntries[dateKey] = {
+              popup: (dayVals.popup > 0 ? dayVals.popup : parseFloat(prev.popup) || 0),
+              catering: (dayVals.catering > 0 ? dayVals.catering : parseFloat(prev.catering) || 0),
+              retail: (dayVals.retail > 0 ? dayVals.retail : parseFloat(prev.retail) || 0),
+            }
+          }
+
+          // Recompute week totals from merged entries
+          let mergedPopup = 0, mergedCatering = 0, mergedRetail = 0
+          for (const dv of Object.values(mergedEntries)) {
+            mergedPopup += parseFloat(dv.popup) || 0
+            mergedCatering += parseFloat(dv.catering) || 0
+            mergedRetail += parseFloat(dv.retail) || 0
+          }
+          const mergedTotal = mergedPopup + mergedCatering + mergedRetail
+
+          await setDoc(salesRef, {
+            entries: mergedEntries,
+            weekTotal: Math.round(mergedTotal * 100) / 100,
+            popup: Math.round(mergedPopup * 100) / 100,
+            catering: Math.round(mergedCatering * 100) / 100,
+            retail: Math.round(mergedRetail * 100) / 100,
+            source: 'event_import',
+            updatedAt: serverTimestamp(),
+            updatedBy: user?.name || user?.email || 'unknown',
+          })
+        }
+      }
+
       toast.success('Event data imported — Revenue actuals posted to P&L')
       setShowEventModal(false)
       setEventFiles([])
       setEventMerged(null)
+      // Reload the page data
+      if (typeof load === 'function') load()
     } catch (err) {
       toast.error('Import failed: ' + (err.message || ''))
     } finally {
@@ -310,10 +388,22 @@ export default function WeeklySales() {
       const ref  = doc(db, 'tenants', orgId, 'locations', locId(location), 'sales', periodKey)
       const snap = await getDoc(ref)
       if (isStale()) return
-      const data = snap.exists() ? (snap.data().entries || {}) : {}
+      const sData = snap.exists() ? snap.data() : {}
+      const data = sData.entries || {}
       setEntries(data)
-      setLastSaved(snap.exists() ? snap.data().updatedAt : null)
-      setSavedBy(snap.exists() ? snap.data().updatedBy || '' : '')
+      setLastSaved(sData.updatedAt || null)
+      setSavedBy(sData.updatedBy || '')
+      // Check for event import aggregates
+      if (sData.source === 'event_import' && sData.weekTotal) {
+        setImportedTotals({
+          popup: sData.popup || 0,
+          catering: sData.catering || 0,
+          retail: sData.retail || 0,
+          total: sData.weekTotal || 0,
+        })
+      } else {
+        setImportedTotals(null)
+      }
 
       if (priorKey) {
         const pRef  = doc(db, 'tenants', orgId, 'locations', locId(location), 'sales', priorKey)
