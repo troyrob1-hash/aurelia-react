@@ -124,7 +124,8 @@ export default function WeeklySales() {
     if (!eventMerged || !selectedLocation || selectedLocation === 'all') return
     setEventImporting(true)
     try {
-      await writeSalesPnL(selectedLocation, periodKey, eventMerged)
+      // Write P&L data per-week (not one aggregate) so each week's P&L doc has its own actuals
+      // We do this below after computing per-week totals
 
       // Build daily entries from the parsed event data for EACH week in the period
       const dailyData = eventMerged._daily || {}
@@ -194,6 +195,26 @@ export default function WeeklySales() {
             updatedAt: serverTimestamp(),
             updatedBy: user?.name || user?.email || 'unknown',
           })
+
+          // Also write this week's portion to the P&L doc
+          // Build week-level revenue data proportional to the daily totals
+          const weekPnl = { ...eventMerged }
+          delete weekPnl._daily
+          // Scale each revenue field by this week's share of total GFS
+          const totalGFS = eventMerged.gfs_total || 1
+          const weekShare = mergedTotal / totalGFS
+          const weekPnlScaled = {}
+          for (const [k, v] of Object.entries(weekPnl)) {
+            if (typeof v === 'number') {
+              weekPnlScaled[k] = Math.round(v * weekShare * 100) / 100
+            }
+          }
+          // Override GFS with exact week values
+          weekPnlScaled.gfs_popup = Math.round(mergedPopup * 100) / 100
+          weekPnlScaled.gfs_catering = Math.round(mergedCatering * 100) / 100
+          weekPnlScaled.gfs_retail = Math.round(mergedRetail * 100) / 100
+          weekPnlScaled.gfs_total = Math.round(mergedTotal * 100) / 100
+          await writeSalesPnL(selectedLocation, weekKey, weekPnlScaled)
         }
       }
 
