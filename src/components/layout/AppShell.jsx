@@ -129,6 +129,7 @@ export default function AppShell() {
                 {Array.from({length:12},(_,i)=>i+1).map(p=><option key={p} value={p}>P{p}</option>)}
               </select>
               <select value={week} onChange={e=>setWeek(Number(e.target.value))} className={styles.periodSel}>
+                <option value={0}>Monthly</option>
                 {weeks.map((w,i)=><option key={i} value={i+1}>{getWeekLabel(w,i+1)}</option>)}
               </select>
             </div>

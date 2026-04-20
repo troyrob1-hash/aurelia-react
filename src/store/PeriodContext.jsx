@@ -33,6 +33,7 @@ export function getPeriodWeeks(year, period) {
 }
 
 export function formatPeriodKey(year, period, week) {
+  if (week === 0) return `${year}-P${String(period).padStart(2,'0')}-MONTHLY`
   return `${year}-P${String(period).padStart(2,'0')}-W${week}`
 }
 
@@ -78,7 +79,9 @@ export function PeriodProvider({ children }) {
 
   const weeks = useMemo(() => getPeriodWeeks(year, period), [year, period])
 
-  const currentWeek = weeks[week - 1] || weeks[0]
+  const currentWeek = week === 0
+    ? { start: weeks[0]?.start || new Date(), end: (weeks[weeks.length - 1] || weeks[0])?.end || new Date() }
+    : (weeks[week - 1] || weeks[0])
 
   const periodKey = formatPeriodKey(year, period, week)
 

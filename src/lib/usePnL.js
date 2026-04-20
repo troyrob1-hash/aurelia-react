@@ -9,7 +9,7 @@
 // Both hooks return { data, loading, lastUpdated } and auto-cleanup on unmount.
 
 import { useState, useEffect, useRef } from 'react'
-import { subscribePnL, fetchPnLHistory } from './pnl'
+import { subscribePnL, fetchPnLHistory, weeksInPeriod } from './pnl'
 
 // Keys that are numeric and get summed in aggregation.
 // Keep this list in sync with what the P&L schema actually reads.
@@ -35,6 +35,35 @@ export function usePnL(location, period) {
       setLoading(false)
       return
     }
+    // Monthly view: aggregate all week docs for this period
+    if (period.endsWith('-MONTHLY')) {
+      setLoading(true)
+      const base = period.replace('-MONTHLY', '')
+      const parts = base.match(/(\d+)-P(\d+)/)
+      if (!parts) { setData({}); setLoading(false); return }
+      const numWks = weeksInPeriod(parseInt(parts[1]), parseInt(parts[2]))
+      const weekSnapshots = {}
+      const unsubs = []
+      for (let w = 1; w <= numWks; w++) {
+        const wk = base + '-W' + w
+        unsubs.push(subscribePnL(location, wk, (snap) => {
+          weekSnapshots[wk] = snap
+          // Re-aggregate every time any week updates
+          const merged = {}
+          Object.values(weekSnapshots).forEach(ws => {
+            Object.entries(ws).forEach(([k, v]) => {
+              if (typeof v === 'number') merged[k] = (merged[k] || 0) + v
+              else if (!(k in merged)) merged[k] = v
+            })
+          })
+          setData(merged)
+          setLoading(false)
+          setLastUpdated(new Date())
+        }))
+      }
+      return () => unsubs.forEach(fn => fn())
+    }
+
     setLoading(true)
     const unsub = subscribePnL(location, period, (snapshot, updatedAt) => {
       setData(snapshot)
