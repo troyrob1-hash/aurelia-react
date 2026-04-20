@@ -142,9 +142,38 @@ export default function LaborPlanner() {
       } catch { /* fall back to default */ }
     }
     async function loadBudgets() {
+      // Read labor budgets from the P&L doc where the Budgets approval flow
+      // writes them (budget_cogs_labor_* keys). Map back to GL codes so the
+      // per-row Budget column can look up budgets[r.gl].
+      // Post-pilot: extract to a shared glLookup.js and add 68000-range codes
+      // once they're included in the budget upload Excel.
+      const GL_TO_PNL_BUDGET_KEY = {
+        '50410': 'budget_cogs_labor_salaries',
+        '50411': 'budget_cogs_labor_401k',
+        '50412': 'budget_cogs_labor_benefits',
+        '50413': 'budget_cogs_labor_taxes',
+        '50414': 'budget_cogs_labor_bonus',
+      }
       try {
-        const snap = await getDoc(doc(db, 'tenants', orgId, 'budgets', `labor_${periodKey}`))
-        if (snap.exists()) setBudgets(snap.data().glBudgets || {})
+        const locKey = location || 'all'
+        const snap = await getDoc(doc(db, 'tenants', orgId, 'pnl', locKey, 'periods', periodKey))
+        if (!snap.exists()) return
+        const pnl = snap.data() || {}
+        const budgetLaborKeys = Object.keys(pnl).filter(k => k.startsWith('budget_cogs_labor') || k.startsWith('budget_labor'))
+        console.log('[labor-budget-debug]', {
+          path: `tenants/${orgId}/pnl/${locKey}/periods/${periodKey}`,
+          docExists: snap.exists(),
+          budgetLaborKeys,
+          sampleValues: budgetLaborKeys.reduce((a,k)=>{a[k]=pnl[k]; return a}, {}),
+          allBudgetKeys: Object.keys(pnl).filter(k => k.startsWith('budget_')).slice(0, 20),
+        })
+        const glBudgets = {}
+        for (const [gl, pnlKey] of Object.entries(GL_TO_PNL_BUDGET_KEY)) {
+          const v = pnl[pnlKey]
+          if (typeof v === 'number' && v !== 0) glBudgets[gl] = v
+        }
+        console.log('[labor-budget-debug] mapped glBudgets:', glBudgets)
+        setBudgets(glBudgets)
       } catch { /* no budgets yet */ }
     }
     async function loadGFS() {
@@ -328,20 +357,28 @@ export default function LaborPlanner() {
     URL.revokeObjectURL(url)
   }
 
+  const displayRows = rows.length > 0 ? rows : Object.keys(budgets).length > 0 ? [
+    { gl: '50410', label: 'Onsite Labor (Fooda) Salaries and Wages', amount: 0, section: 'Location Costs' },
+    { gl: '50411', label: '401k', amount: 0, section: 'Location Costs' },
+    { gl: '50412', label: 'Benefits', amount: 0, section: 'Location Costs' },
+    { gl: '50413', label: 'Payroll Taxes', amount: 0, section: 'Location Costs' },
+    { gl: '50414', label: 'Bonus', amount: 0, section: 'Location Costs' },
+  ] : []
   const sections = useMemo(() => {
     const s = {}
-    rows.forEach(r => {
+    displayRows.forEach(r => {
       if (!s[r.section]) s[r.section] = []
       s[r.section].push(r)
     })
     return s
-  }, [rows])
+  }, [displayRows, budgets])
 
   const totalOnsite   = rows.filter(r => r.gl?.startsWith('504') && r.gl !== '50420').reduce((s, r) => s + r.amount, 0)
   const total3rd      = rows.find(r => r.gl === '50420')?.amount || 0
   const totalBenTax   = rows.filter(r => r.gl?.startsWith('68')).reduce((s, r) => s + r.amount, 0)
   const grandTotal    = rows.reduce((s, r) => s + r.amount, 0)
-  const budgetTotal   = rows.reduce((s, r) => s + (budgets[r.gl] || 0), 0)
+  // If no actual labor data but we have budgets, create placeholder rows
+  const budgetTotal   = displayRows.reduce((s, r) => s + (budgets[r.gl] || 0), 0)
   const grandVariance = grandTotal - budgetTotal
 
   const importedAtStr = importedAt
@@ -497,7 +534,7 @@ export default function LaborPlanner() {
       </div>
 
       {/* ── GL structure shell (no data) or populated table ── */}
-      {rows.length === 0 ? (
+      {displayRows.length === 0 ? (
         <div className={styles.tableWrap}>
           {Object.entries(glMap).reduce((acc, [gl, cfg]) => {
             if (!acc[cfg.section]) acc[cfg.section] = []

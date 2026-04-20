@@ -82,6 +82,22 @@ const BUDGET_TO_PNL = {
   licenses_permits_and_fines: 'exp_licenses',
   other_expenses: 'exp_other',
   ebitda: '_ebitda',
+  // Labor — budget breaks down differently than P&L GL codes
+  // Map budget's labor categories to P&L's GL-based categories
+  total_salaries_wages: 'cogs_labor_salaries',
+  salaried: 'cogs_labor_salaries',
+  hourly: 'cogs_labor_salaries',
+  bonuses: 'cogs_labor_bonus',
+  benefits_taxes: 'cogs_labor_benefits',
+  holiday_vac_sick: 'cogs_labor_salaries',
+  other_labor_costs: 'cogs_labor_taxes',
+  total_onsite_labor: '_labor_subtotal',
+  // Additional COGS mappings from budget structure
+  onsite_maintenance_and_other: 'cogs_maintenance',
+  payment_processing_fees: 'cogs_payment_processing',
+  total_onsite_equipment_and_consumables: '_ec_subtotal',
+  total_retail_cogs: '_retail_cogs_subtotal',
+  total_cost_of_goods_sold: '_total_cogs',
 }
 function slugify(str) { return str.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'') }
 function locId(n)    { return (n||'').replace(/[^a-zA-Z0-9]/g,'_') }
@@ -216,7 +232,7 @@ function parseExcel(rows, budgetYear) {
 export default function Budgets() {
   const { user }             = useAuthStore()
   const orgId                = user?.tenantId || 'fooda'
-  const { selectedLocation, visibleLocations } = useLocations()
+  const { selectedLocation, setSelectedLocation, visibleLocations } = useLocations()
   const { year: ctxYear }    = usePeriod()
   const toast                = useToast()
   const isDirector           = /^(admin|director)$/i.test(user?.role || '')
@@ -252,36 +268,35 @@ export default function Budgets() {
     if (selectedLocation !== 'all') return
     (async () => {
       try {
-        const results = await Promise.all(visibleLocations.map(async loc => {
-          const name = loc.name
-          try {
-            const bRef = doc(db, 'tenants', orgId, 'budgets', `${locId(name)}-${year}`)
-            const bSnap = await getDoc(bRef)
-            if (bSnap.exists()) {
-              const data = bSnap.data()
-              const lines = data.lines || {}
-              const status = data.status || 'pending'
-              // Compute annual GFS budget
-              const annualGfs = Object.values(lines.total_gross_food_sales || {}).reduce((s, v) => s + (v || 0), 0)
-              // Compute YTD budget (periods 1 through current)
-              const currentMo = new Date().getMonth() + 1
-              let ytdBudget = 0
-              for (let m = 1; m <= currentMo; m++) {
-                ytdBudget += (lines.total_gross_food_sales || {})[m] || 0
-              }
-              return { name, status, annualGfs, ytdBudget, hasBudget: true }
-            }
-            return { name, status: null, annualGfs: 0, ytdBudget: 0, hasBudget: false }
-          } catch {
-            return { name, status: null, annualGfs: 0, ytdBudget: 0, hasBudget: false }
+        // Query all budget docs for this year in one batch
+        const budgetSnap = await getDocs(collection(db, 'tenants', orgId, 'budgets'))
+        const budgetsByLoc = {}
+        budgetSnap.docs.forEach(d => {
+          if (d.id.endsWith(`-${year}`)) {
+            const locName = d.id.replace(`-${year}`, '')
+            budgetsByLoc[locName] = d.data()
           }
-        }))
+        })
+
+        const results = visibleLocations.map(loc => {
+          const name = loc.name
+          const locKey = locId(name)
+          const data = budgetsByLoc[locKey]
+          if (data) {
+            const lines = data.lines || {}
+            const status = data.status || 'pending'
+            const annualGfs = Object.values(lines.total_gross_food_sales || {}).reduce((s, v) => s + (v || 0), 0)
+            return { name, status, annualGfs, hasBudget: true }
+          }
+          return { name, status: null, annualGfs: 0, hasBudget: false }
+        })
+
         setAllBudgetData(results.sort((a, b) => {
           if (a.hasBudget && !b.hasBudget) return -1
           if (!a.hasBudget && b.hasBudget) return 1
           return b.annualGfs - a.annualGfs
         }))
-      } catch {}
+      } catch (err) { console.error('Budget load failed:', err) }
     })()
   }, [selectedLocation, year])
   const isLocked = approvalStatus === 'approved'
@@ -432,6 +447,10 @@ export default function Budgets() {
     if (!activeBudget || !location) return
     try {
       const allLines = schema.flatMap(s => s.lines)
+      const laborLines = allLines.filter(l => l.key.includes('labor') || l.key.includes('bonus'))
+      console.log('[REPOST DEBUG] allLines count:', allLines.length)
+      console.log('[REPOST DEBUG] labor lines:', laborLines.map(l => l.key))
+      console.log('[REPOST DEBUG] activeBudget labor sample:', laborLines.map(l => ({ key: l.key, mo3: activeBudget[l.key]?.[3], mapped: BUDGET_TO_PNL[l.key] })))
       const gfsLine = allLines.find(l => l.gfsBase)
       for (let mo = 1; mo <= 12; mo++) {
         const gfs = activeBudget[gfsLine?.key]?.[mo] || 0
