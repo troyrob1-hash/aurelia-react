@@ -245,6 +245,45 @@ export default function Budgets() {
   const [editingCell,    setEditingCell]  = useState(null) // { key, mo }
 
   const location = selectedLocation === 'all' ? null : selectedLocation
+  const [allBudgetData, setAllBudgetData] = useState([])
+
+  // Load all locations budget status when "All Locations" is selected
+  useEffect(() => {
+    if (selectedLocation !== 'all') return
+    (async () => {
+      try {
+        const results = await Promise.all(visibleLocations.map(async loc => {
+          const name = loc.name
+          try {
+            const bRef = doc(db, 'tenants', orgId, 'budgets', `${locId(name)}-${year}`)
+            const bSnap = await getDoc(bRef)
+            if (bSnap.exists()) {
+              const data = bSnap.data()
+              const lines = data.lines || {}
+              const status = data.status || 'pending'
+              // Compute annual GFS budget
+              const annualGfs = Object.values(lines.total_gross_food_sales || {}).reduce((s, v) => s + (v || 0), 0)
+              // Compute YTD budget (periods 1 through current)
+              const currentMo = new Date().getMonth() + 1
+              let ytdBudget = 0
+              for (let m = 1; m <= currentMo; m++) {
+                ytdBudget += (lines.total_gross_food_sales || {})[m] || 0
+              }
+              return { name, status, annualGfs, ytdBudget, hasBudget: true }
+            }
+            return { name, status: null, annualGfs: 0, ytdBudget: 0, hasBudget: false }
+          } catch {
+            return { name, status: null, annualGfs: 0, ytdBudget: 0, hasBudget: false }
+          }
+        }))
+        setAllBudgetData(results.sort((a, b) => {
+          if (a.hasBudget && !b.hasBudget) return -1
+          if (!a.hasBudget && b.hasBudget) return 1
+          return b.annualGfs - a.annualGfs
+        }))
+      } catch {}
+    })()
+  }, [selectedLocation, year])
   const isLocked = approvalStatus === 'approved'
 
   useEffect(() => { if (location) load() }, [location, year])
@@ -594,10 +633,79 @@ export default function Budgets() {
   const activeBudget = showScenario ? scenarioBudget : budget
 
   if (!location) return (
-    <div className={styles.empty}>
-      <div style={{fontSize:48}}>📊</div>
-      <p className={styles.emptyTitle}>Select a location</p>
-      <p className={styles.emptySub}>Choose a location from the dropdown to view and manage budgets</p>
+    <div style={{ padding: '1.5rem', maxWidth: 1400, margin: '0 auto' }}>
+      <div style={{ marginBottom: 20 }}>
+        <h1 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#0f172a', margin: 0 }}>Budget Manager</h1>
+        <p style={{ fontSize: 13, color: '#64748b', margin: '4px 0 0' }}>All Locations · {year}</p>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 20 }}>
+        <div style={{ background: '#f0fdf4', borderRadius: 10, padding: '14px 18px' }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: '#059669', textTransform: 'uppercase', marginBottom: 4 }}>Approved</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: '#0f172a' }}>{allBudgetData.filter(l => l.status === 'approved').length}</div>
+        </div>
+        <div style={{ background: '#fffbeb', borderRadius: 10, padding: '14px 18px' }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: '#d97706', textTransform: 'uppercase', marginBottom: 4 }}>Pending</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: '#0f172a' }}>{allBudgetData.filter(l => l.status === 'pending').length}</div>
+        </div>
+        <div style={{ background: '#f1f5f9', borderRadius: 10, padding: '14px 18px' }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', marginBottom: 4 }}>No budget</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: '#0f172a' }}>{allBudgetData.filter(l => !l.hasBudget).length}</div>
+        </div>
+      </div>
+
+      {allBudgetData.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: 60, color: '#94a3b8' }}>Loading locations...</div>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
+          {allBudgetData.map(loc => {
+            const statusColor = loc.status === 'approved' ? '#059669'
+              : loc.status === 'pending' ? '#d97706'
+              : '#cbd5e1'
+            const statusLabel = loc.status === 'approved' ? 'Approved'
+              : loc.status === 'pending' ? 'Pending'
+              : 'No budget'
+            const statusBg = loc.status === 'approved' ? '#dcfce7'
+              : loc.status === 'pending' ? '#fef3c7'
+              : '#f1f5f9'
+
+            return (
+              <div
+                key={loc.name}
+                onClick={() => setSelectedLocation(loc.name)}
+                style={{
+                  padding: '16px 18px',
+                  background: '#fff',
+                  border: '1px solid #e5e7eb',
+                  borderRadius: 12,
+                  borderLeft: `3px solid ${statusColor}`,
+                  cursor: 'pointer',
+                  transition: 'all 0.15s',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.06)' }}
+                onMouseLeave={e => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = 'none' }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '70%' }}>
+                    {cleanLocName(loc.name)}
+                  </div>
+                  <span style={{ fontSize: 10, padding: '2px 8px', background: statusBg, color: statusColor, borderRadius: 10, fontWeight: 600 }}>
+                    {statusLabel}
+                  </span>
+                </div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: loc.hasBudget ? '#0f172a' : '#cbd5e1' }}>
+                  {loc.hasBudget ? `$${Math.round(loc.annualGfs).toLocaleString()}` : 'No budget'}
+                </div>
+                {loc.hasBudget && (
+                  <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>
+                    Annual GFS budget
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 

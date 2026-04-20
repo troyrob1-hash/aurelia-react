@@ -723,12 +723,26 @@ export default function WeeklySales() {
         const total      = current?.total || 0
         const priorTotal = prior?.total || 0
 
+        // Load budget for this location
+        let budgetWeekly = 0
+        try {
+          const bRef = doc(db, 'tenants', orgId, 'budgets', `${locId(name)}-${year}`)
+          const bSnap = await getDoc(bRef)
+          if (bSnap.exists()) {
+            const lines = bSnap.data().lines || {}
+            const monthlyGfs = lines.total_gross_food_sales?.[period] || 0
+            const wks = weeksInPeriod(year, period)
+            budgetWeekly = monthlyGfs / wks
+          }
+        } catch {}
+
         return {
           name,
           total,
           priorTotal,
           hasData: total > 0,
           sparkline: weekSnaps.map(w => w.total),
+          budget: budgetWeekly,
         }
       }))
       setAllLocData(results.sort((a, b) => b.total - a.total))
@@ -1289,12 +1303,12 @@ export default function WeeklySales() {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
             {allLocData.map((loc) => {
               const chg = pctChange(loc.total, loc.priorTotal)
+              const budgetVar = loc.budget > 0 ? ((loc.total - loc.budget) / loc.budget) * 100 : null
               const performanceColor = !loc.hasData ? '#e2e8f0'
+                : loc.budget > 0 ? (budgetVar >= 0 ? '#059669' : '#dc2626')
                 : chg == null ? '#64748b'
-                : chg >= 10 ? '#10b981'
-                : chg >= 0 ? '#3b82f6'
-                : chg >= -10 ? '#f59e0b'
-                : '#dc2626'
+                : chg >= 0 ? '#10b981'
+                : '#f59e0b'
 
               return (
                 <div
@@ -1326,12 +1340,19 @@ export default function WeeklySales() {
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
-                    {chg != null && loc.hasData ? (
+                    {loc.budget > 0 && loc.hasData ? (
+                      <span style={{
+                        fontSize: 11, fontWeight: 600,
+                        color: budgetVar >= 0 ? '#059669' : '#dc2626',
+                      }}>
+                        {budgetVar >= 0 ? '▲' : '▼'} {Math.abs(budgetVar).toFixed(1)}% vs budget
+                      </span>
+                    ) : chg != null && loc.hasData ? (
                       <span style={{
                         fontSize: 11, fontWeight: 600,
                         color: chg >= 0 ? '#059669' : '#dc2626',
                       }}>
-                        {chg >= 0 ? '▲' : '▼'} {Math.abs(chg).toFixed(1)}%
+                        {chg >= 0 ? '▲' : '▼'} {Math.abs(chg).toFixed(1)}% vs LW
                       </span>
                     ) : (
                       <span style={{ fontSize: 11, color: '#94a3b8' }}>
