@@ -167,7 +167,8 @@ export function useInventory(orgId, locationId, periodKey, user) {
           const priorSnap = await getDoc(priorSnapRef)
           if (priorSnap.exists()) {
             const priorData = priorSnap.data()
-            setPriorItems(Array.isArray(priorData.items) ? priorData.items : [])
+            const priorArr = Array.isArray(priorData.items) ? priorData.items : []
+            setPriorItems(priorArr)
           } else {
             setPriorItems([])
           }

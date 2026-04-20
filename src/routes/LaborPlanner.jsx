@@ -194,14 +194,16 @@ export default function LaborPlanner() {
         const q = query(
           collection(db, 'tenants', orgId, 'laborSubmissions'),
           where('period', '==', periodKey),
-          where('status', 'in', ['pending', 'approved', 'rejected']),
-          orderBy('createdAt', 'desc'),
-          limit(1)
+          where('location', '==', location || 'all'),
         )
         const snap = await getDocs(q)
+        console.log('[LABOR LOAD]', 'period:', periodKey, 'location:', location, 'found:', snap.size)
         if (!snap.empty) {
-          const d = snap.docs[0].data()
-          setSubmissionId(snap.docs[0].id)
+          // Get the most recent submission
+          const sorted = snap.docs.sort((a, b) => (b.data().createdAt?.seconds || 0) - (a.data().createdAt?.seconds || 0))
+          const d = sorted[0].data()
+          setSubmissionId(sorted[0].id)
+          console.log('[LABOR LOAD] setting rows:', (d.glRows || []).length, 'status:', d.status)
           setRows(d.glRows || [])
           setSource(d.fileName || '')
           setImportedBy(d.importedBy || '')
@@ -210,6 +212,7 @@ export default function LaborPlanner() {
           setRejectedReason(d.rejectNote || '')
         } else {
           // Clear state when switching to a period with no submission
+          console.log('[LABOR LOAD] clearing rows — no submission found')
           setRows([])
           setSource('')
           setImportedAt(null)
@@ -252,15 +255,81 @@ export default function LaborPlanner() {
       const data = XLSX.utils.sheet_to_json(ws, { raw: false })
 
       const parsed = []
-      data.forEach(row => {
-        const glRaw = String(row['GL Code'] || row['GL'] || row['Account'] || row['gl_code'] || '').trim()
-        const gl    = Object.keys(glMap).find(k => glRaw.includes(k))
-        const amount = parseFloat(row['Amount'] || row['amount'] || row['Value'] || row['value'] || 0)
-        const desc   = row['Description'] || row['description'] || row['Desc'] || glMap[gl]?.label || glRaw
-        if (glRaw || amount) {
-          parsed.push({ gl: gl || glRaw, label: desc, amount, section: glMap[gl]?.section || 'Other' })
-        }
-      })
+      // Try standard column-based format first
+      const firstRow = data[0] || {}
+      const hasGLCol = firstRow['GL Code'] || firstRow['GL'] || firstRow['Account'] || firstRow['gl_code']
+      const hasAmtCol = firstRow['Amount'] || firstRow['amount'] || firstRow['Value'] || firstRow['value']
+
+      if (hasGLCol || hasAmtCol) {
+        // Standard format: GL Code | Amount | Description columns
+        data.forEach(row => {
+          const glRaw = String(row['GL Code'] || row['GL'] || row['Account'] || row['gl_code'] || '').trim()
+          const gl    = Object.keys(glMap).find(k => glRaw.includes(k))
+          const amount = parseFloat(String(row['Amount'] || row['amount'] || row['Value'] || row['value'] || 0).replace(/[,$()]/g, ''))
+          const desc   = row['Description'] || row['description'] || row['Desc'] || glMap[gl]?.label || glRaw
+          if (glRaw || amount) {
+            parsed.push({ gl: gl || glRaw, label: desc, amount, section: glMap[gl]?.section || 'Other' })
+          }
+        })
+      } else {
+        // Mosaic format: first column is "50410 - Description", second column is amount
+        // Also handles cases where GL code and description are in the same cell
+        const cols = Object.keys(firstRow)
+        data.forEach(row => {
+          const firstVal = String(row[cols[0]] || '').trim()
+          // Skip header/total rows
+          if (!firstVal || firstVal.toLowerCase().includes('total') || firstVal.toLowerCase().includes('compensation and benefits')) return
+          // Extract GL code from start of string (e.g. "50410 - Onsite Labor...")
+          const glMatch = firstVal.match(/^(\d{5})\s*[-–—]\s*(.+)/)
+          if (!glMatch) {
+            // Try without dash: "50410 Onsite Labor..."
+            const glMatch2 = firstVal.match(/^(\d{5})\s+(.+)/)
+            if (!glMatch2) return
+            const gl = glMatch2[1]
+            const desc = glMatch2[2].trim()
+            // Amount is in the second column or any subsequent column
+            let amount = 0
+            for (let ci = 1; ci < cols.length; ci++) {
+              const v = parseFloat(String(row[cols[ci]] || '0').replace(/[,$()]/g, ''))
+              if (!isNaN(v) && v !== 0) { amount = v; break }
+            }
+            if (glMap[gl] || amount) {
+              parsed.push({ gl, label: glMap[gl]?.label || desc, amount, section: glMap[gl]?.section || 'Other' })
+            }
+            return
+          }
+          const gl = glMatch[1]
+          const desc = glMatch[2].trim()
+          // Amount from second column or any subsequent column
+          let amount = 0
+          for (let ci = 1; ci < cols.length; ci++) {
+            const v = parseFloat(String(row[cols[ci]] || '0').replace(/[,$()]/g, ''))
+            if (!isNaN(v) && v !== 0) { amount = v; break }
+          }
+          if (glMap[gl] || amount) {
+            parsed.push({ gl, label: glMap[gl]?.label || desc, amount, section: glMap[gl]?.section || 'Other' })
+          }
+        })
+      }
+
+      // Also handle the case where data came as raw rows (no headers)
+      // by checking if we parsed anything
+      if (parsed.length === 0) {
+        // Try raw approach: scan all rows for GL code patterns
+        const rawData = XLSX.utils.sheet_to_json(ws, { header: 1 })
+        rawData.forEach(row => {
+          if (!Array.isArray(row) || row.length < 2) return
+          const cell0 = String(row[0] || '').trim()
+          const glMatch = cell0.match(/^(\d{5})\s*[-–—]?\s*(.*)/)
+          if (!glMatch) return
+          const gl = glMatch[1]
+          const desc = (glMatch[2] || '').trim()
+          const amount = parseFloat(String(row[1] || '0').replace(/[,$()]/g, ''))
+          if (glMap[gl] || amount) {
+            parsed.push({ gl, label: glMap[gl]?.label || desc || gl, amount, section: glMap[gl]?.section || 'Other' })
+          }
+        })
+      }
 
       const now  = new Date()
       const name = user?.name || user?.email || 'Unknown'

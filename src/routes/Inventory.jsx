@@ -2,7 +2,8 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { usePeriod } from '@/store/PeriodContext'
-import { readPeriodClose } from '@/lib/pnl'
+import { readPeriodClose, getPriorKey } from '@/lib/pnl'
+import { db } from '@/lib/firebase'
 import { useInventory, fmt$, sanitizeDocId } from '@/hooks/useInventory'
 import { getTopVarianceIssues, calcParStatus } from '@/lib/variance'
 import { Search, Download, RefreshCw, Eye, EyeOff, TrendingUp, TrendingDown, Minus, AlertTriangle } from 'lucide-react'
@@ -149,6 +150,92 @@ export default function Inventory() {
   } = useInventory(orgId, location, periodKey, user)
 
   // ─── Handlers ──────────────────────────────────────────────────────────────
+  async function seedPriorPeriod() {
+    if (!location || !orgId) { toast.error('Select a location first'); return }
+    if (!window.confirm('Seed inventory counts for the prior period? This creates realistic opening inventory data.')) return
+    try {
+      const { setDoc, doc: fbDoc, serverTimestamp } = await import('firebase/firestore')
+      const priorPK = getPriorKey(periodKey)
+      if (!priorPK) { toast.error('No prior period for ' + periodKey); return }
+      const locKey = (location || '').replace(/[^a-zA-Z0-9]/g, '_')
+
+      // Generate realistic quantities for each item based on category
+      const catQtyRanges = {
+        'Beverages': [2, 15], 'Bar/Barista': [1, 8], 'Pantry/Snacks': [3, 20],
+        'Dairy': [2, 10], 'Frozen': [1, 8], 'Proteins': [1, 6],
+        'Produce': [2, 12], 'General': [1, 10],
+      }
+
+      const seededItems = items.map(item => {
+        const range = catQtyRanges[item.category] || [1, 10]
+        const qty = Math.round((range[0] + Math.random() * (range[1] - range[0])) * 2) / 2
+        return { ...item, qty }
+      })
+
+      // Save each item count to the prior period
+      // Write counts in batches of 50 to avoid overwhelming Firestore
+      for (let b = 0; b < seededItems.length; b += 50) {
+        const chunk = seededItems.slice(b, b + 50)
+        await Promise.all(chunk.map(item =>
+          setDoc(
+            fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', item.id),
+            { qty: item.qty, updatedAt: new Date(), updatedBy: 'seed-script' },
+            { merge: true }
+          )
+        ))
+      }
+
+      // Compute closing value
+      const closingValue = seededItems.reduce((sum, item) => sum + (item.qty * (item.unitCost || 0)), 0)
+
+      // Write to PNL period doc
+      await setDoc(
+        fbDoc(db, 'tenants', orgId, 'pnl', locKey, 'periods', priorPK),
+        {
+          closingValue: Math.round(closingValue * 100) / 100,
+          openingValue: 0,
+          cogs_inventory: 0,
+          inventoryCountedAt: new Date(),
+          inventoryCountedBy: 'seed-script',
+        },
+        { merge: true }
+      )
+
+      // Save as prior period snapshot (path that useInventory reads from)
+      const cleanItems = seededItems.map(i => ({ id: String(i.id), name: String(i.name || ''), qty: Number(i.qty || 0), unitCost: Number(i.unitCost || 0), category: String(i.category || '') }))
+      await setDoc(
+        fbDoc(db, 'tenants', orgId, 'locations', locKey, 'inventory', priorPK),
+        {
+          items: cleanItems,
+          closingValue: Math.round(closingValue * 100) / 100,
+          countedAt: new Date(),
+          countedBy: 'seed-script',
+          location: location,
+          periodKey: priorPK,
+        }
+      )
+      // Also write to inventorySessions for Path B
+      await setDoc(
+        fbDoc(db, 'tenants', orgId, 'inventorySessions', locKey + '_' + priorPK),
+        {
+          items: cleanItems,
+          closingValue: Math.round(closingValue * 100) / 100,
+          countedAt: new Date(),
+          countedBy: 'seed-script',
+          location: location,
+          periodKey: priorPK,
+        }
+      )
+
+      toast.success('Prior period seeded: ' + seededItems.length + ' items, closing value $' + Math.round(closingValue).toLocaleString() + ' for ' + priorPK)
+
+      // Reload to pick up new opening value
+      window.location.reload()
+    } catch (err) {
+      toast.error('Seed failed: ' + (err.message || ''))
+    }
+  }
+
   const handleSave = useCallback(async () => {
     if (!orgId) {
       toast.error('No organization found. Please log in again.')
@@ -392,6 +479,13 @@ export default function Inventory() {
                 {saving ? 'Saving...' : 'Save & Close Period'}
               </button>
             )}
+            <button onClick={seedPriorPeriod} style={{
+              padding: '6px 12px', fontSize: 12, fontWeight: 500,
+              background: '#7c3aed', color: '#fff', border: 'none', borderRadius: 6,
+              cursor: 'pointer',
+            }} title="Seed prior period inventory counts">
+              Seed Prior
+            </button>
             <button className={styles.btnIcon} onClick={handleExport} title="Export Excel">
               <Download size={15} />
             </button>

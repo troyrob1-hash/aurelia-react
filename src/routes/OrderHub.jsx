@@ -19,10 +19,11 @@ import styles from './OrderHub.module.css'
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Category set aligned with Inventory's 8-category taxonomy
-const CATS = ['All', 'Beverages', 'Bar/Barista', 'Pantry/Snacks', 'Dairy', 'Frozen', 'Proteins', 'Produce', 'General']
+const CATS = ['All', 'Frequent', 'Beverages', 'Bar/Barista', 'Pantry/Snacks', 'Dairy', 'Frozen', 'Proteins', 'Produce', 'General']
 
 // Category colors — extends Inventory's color palette
 const CAT_COLORS = {
+  'Frequent':      { color:'#d97706', bg:'#fef3c7', light:'#fffbeb' },
   'Beverages':     { color:'#1e40af', bg:'#dbeafe', light:'#eff6ff' },
   'Bar/Barista':   { color:'#7c3aed', bg:'#ede9fe', light:'#f5f3ff' },
   'Pantry/Snacks': { color:'#92400e', bg:'#fef3c7', light:'#fffbeb' },
@@ -115,6 +116,8 @@ export default function OrderHub() {
   
   // Past orders
   const [pastOrders, setPastOrders] = useState([])
+  const [orderGuide, setOrderGuide] = useState(null) // null = no guide (full catalog), [] = empty guide
+  const [showGuideManager, setShowGuideManager] = useState(false)
   const [pastOrdersLoading, setPastOrdersLoading] = useState(false)
   const [showPast, setShowPast] = useState(false)
 
@@ -374,6 +377,14 @@ export default function OrderHub() {
     return items.filter(i => vendorSlug(i.vendor) === vendorFilter)
   }, [items, vendorFilter])
 
+  // Apply order guide restriction — if a guide exists, only show guided items
+  const guidedItems = useMemo(() => {
+    if (!orderGuide) return visibleItems // no guide = full catalog
+    const guideIds = new Set(orderGuide.map(g => g.id || g.sku || g.name))
+    return visibleItems.filter(i => guideIds.has(i.id) || guideIds.has(i.sku) || guideIds.has(i.name))
+  }, [visibleItems, orderGuide])
+
+
   // Cart items from ALL vendors
   const cartItems = useMemo(() => {
     return Object.entries(qty).map(([id, q]) => {
@@ -398,13 +409,29 @@ export default function OrderHub() {
   const vendorCount = Object.keys(cartByVendor).length
 
   // Filtered products
-  const filtered = useMemo(() => visibleItems.filter(i => {
-    if (cat !== 'All' && i.cat !== cat) return false
+  const frequentItems = useMemo(() => {
+    const freq = {}
+    pastOrders.forEach(o => {
+      (o.lineItems || []).forEach(li => {
+        const id = li.id || li.sku || li.name
+        if (!id) return
+        if (!freq[id]) freq[id] = { id, name: li.name, vendor: li.vendor, count: 0, lastQty: li.qty || 1, sku: li.sku, unitCost: li.unitCost || 0, packSize: li.packSize }
+        freq[id].count++
+        freq[id].lastQty = li.qty || freq[id].lastQty
+      })
+    })
+    return Object.values(freq).sort((a, b) => b.count - a.count).slice(0, 20)
+  }, [pastOrders])
+
+  const frequentIds = useMemo(() => new Set(frequentItems.map(f => f.id)), [frequentItems])
+  const filtered = useMemo(() => guidedItems.filter(i => {
+    if (cat === 'Frequent' && !frequentIds.has(i.id)) return false
+    else if (cat !== 'All' && cat !== 'Frequent' && i.cat !== cat) return false
     if (filterBelowPar && i.onHand >= i.par) return false
     if (filterInCart && !qty[i.id]) return false
     if (search && !i.name.toLowerCase().includes(search.toLowerCase()) && !i.sku.toLowerCase().includes(search.toLowerCase())) return false
     return true
-  }), [visibleItems, cat, filterBelowPar, filterInCart, search, qty])
+  }), [guidedItems, cat, filterBelowPar, filterInCart, search, qty, frequentIds])
 
   const grouped = useMemo(() => {
     const g = {}
@@ -415,7 +442,7 @@ export default function OrderHub() {
     return g
   }, [filtered])
 
-  const belowParCnt = visibleItems.filter(i => i.onHand < i.par).length
+  const belowParCnt = guidedItems.filter(i => i.onHand < i.par).length
 
   // ─── Handlers ──────────────────────────────────────────────────────────────
 
@@ -664,10 +691,26 @@ export default function OrderHub() {
     return grouped
   }, [pastOrders])
 
+  // Frequently ordered items — count how often each item appears in past orders
+
   // Load past orders on mount for kanban
   useEffect(() => {
     if (orgId) loadPastOrders()
-  }, [orgId, loadPastOrders])
+    // Load order guide for this location
+    if (orgId && location) {
+      (async () => {
+        try {
+          const guideRef = doc(db, 'tenants', orgId, 'orderGuides', location)
+          const guideSnap = await getDoc(guideRef)
+          if (guideSnap.exists()) {
+            setOrderGuide(guideSnap.data().items || [])
+          } else {
+            setOrderGuide(null) // no guide = full catalog
+          }
+        } catch { setOrderGuide(null) }
+      })()
+    }
+  }, [orgId, loadPastOrders, location])
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
@@ -687,6 +730,12 @@ export default function OrderHub() {
             onClick={() => setView('kanban')}
           >
             <LayoutGrid size={14}/> Board
+          </button>
+          <button 
+            className={`${styles.viewBtn} ${view === 'guide' ? styles.viewActive : ''}`}
+            onClick={() => setView('guide')}
+          >
+            <Package size={14}/> Guide
           </button>
         </div>
 
@@ -744,6 +793,76 @@ export default function OrderHub() {
               </button>
             </div>
           </>
+        )}
+
+        {view === 'guide' && (
+          <div style={{ padding: 20 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <div>
+                <h2 style={{ fontSize: 18, fontWeight: 600, margin: 0, color: '#0f172a' }}>Order Guide</h2>
+                <p style={{ fontSize: 13, color: '#64748b', margin: '4px 0 0' }}>
+                  {orderGuide ? `${orderGuide.length} approved items` : 'No guide set — full catalog available'}
+                  {location ? ` · ${cleanLocName(location)}` : ''}
+                </p>
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                {!orderGuide && (
+                  <button onClick={() => {
+                    // Create guide from current catalog
+                    const guide = visibleItems.map(i => ({ id: i.id, sku: i.sku, name: i.name, vendor: i.vendor, cat: i.cat }))
+                    setOrderGuide(guide)
+                    setDoc(doc(db, 'tenants', orgId, 'orderGuides', location), { items: guide, updatedAt: serverTimestamp(), updatedBy: user?.name || user?.email }, { merge: true })
+                    toast.success(`Order guide created with ${guide.length} items`)
+                  }} style={{ padding: '8px 16px', fontSize: 13, fontWeight: 500, background: '#059669', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer' }}>
+                    Create from catalog
+                  </button>
+                )}
+                {orderGuide && (
+                  <>
+                    <button onClick={() => {
+                      setOrderGuide(null)
+                      setDoc(doc(db, 'tenants', orgId, 'orderGuides', location), { items: null, updatedAt: serverTimestamp() }, { merge: true })
+                      toast.success('Order guide removed — full catalog available')
+                    }} style={{ padding: '8px 16px', fontSize: 13, background: '#fff', color: '#dc2626', border: '1px solid #fecaca', borderRadius: 8, cursor: 'pointer' }}>
+                      Remove guide
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+            {orderGuide && (
+              <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: '#f8fafc' }}>
+                      <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600, fontSize: 11, color: '#475569', textTransform: 'uppercase' }}>Item</th>
+                      <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600, fontSize: 11, color: '#475569', textTransform: 'uppercase' }}>Vendor</th>
+                      <th style={{ textAlign: 'left', padding: '8px 12px', fontWeight: 600, fontSize: 11, color: '#475569', textTransform: 'uppercase' }}>Category</th>
+                      <th style={{ textAlign: 'center', padding: '8px 12px', fontWeight: 600, fontSize: 11, color: '#475569', textTransform: 'uppercase' }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {orderGuide.map((item, idx) => (
+                      <tr key={item.id || idx} style={{ borderTop: '1px solid #f1f5f9' }}>
+                        <td style={{ padding: '8px 12px', fontWeight: 500 }}>{item.name}</td>
+                        <td style={{ padding: '8px 12px', color: '#64748b' }}>{item.vendor || '—'}</td>
+                        <td style={{ padding: '8px 12px', color: '#64748b' }}>{item.cat || '—'}</td>
+                        <td style={{ padding: '8px 12px', textAlign: 'center' }}>
+                          <button onClick={() => {
+                            const updated = orderGuide.filter((_, i) => i !== idx)
+                            setOrderGuide(updated)
+                            setDoc(doc(db, 'tenants', orgId, 'orderGuides', location), { items: updated, updatedAt: serverTimestamp() }, { merge: true })
+                          }} style={{ fontSize: 11, padding: '2px 8px', color: '#dc2626', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 4, cursor: 'pointer' }}>
+                            Remove
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         )}
 
         {view === 'kanban' && (
@@ -896,7 +1015,7 @@ export default function OrderHub() {
             <div className={styles.sideSection}>
               <div className={styles.sideLabel}>Category</div>
               {CATS.map(c => {
-                const count = c === 'All' ? visibleItems.length : visibleItems.filter(i => i.cat === c).length
+                const count = c === 'All' ? guidedItems.length : c === 'Frequent' ? frequentItems.length : guidedItems.filter(i => i.cat === c).length
                 return (
                   <button 
                     key={c}
