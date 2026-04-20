@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef, Fragment } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { useToast } from '@/components/ui/Toast'
+import AllLocationsGrid from '@/components/AllLocationsGrid'
 import { usePeriod } from '@/store/PeriodContext'
 import { readPeriodClose, writePnL, locId } from '@/lib/pnl'
 import { db, storage } from '@/lib/firebase'
@@ -81,7 +82,7 @@ export default function Purchasing() {
   const { user }    = useAuthStore()
   const orgId       = user?.tenantId || 'fooda'
   const toast       = useToast()
-  const { selectedLocation, visibleLocations } = useLocations()
+  const { selectedLocation, setSelectedLocation, visibleLocations } = useLocations()
   const { periodKey } = usePeriod()
   const [apClosed, setApClosed] = useState(false)
   const [spendTracker, setSpendTracker] = useState(null)
@@ -851,6 +852,14 @@ export default function Purchasing() {
     const ps = new Set(invoices.map(i => i.periodKey).filter(Boolean))
     return Array.from(ps).sort().reverse().slice(0, 8)
   }, [invoices])
+
+  if (!selectedLocation || selectedLocation === 'all') return (
+    <AllLocationsGrid
+      title="Purchasing"
+      subtitle="Select a location to view invoices and spending"
+      onSelectLocation={name => setSelectedLocation(name)}
+    />
+  )
 
   return (
     <div

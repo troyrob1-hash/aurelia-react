@@ -8,6 +8,7 @@ import { useInventory, fmt$, sanitizeDocId } from '@/hooks/useInventory'
 import { getTopVarianceIssues, calcParStatus } from '@/lib/variance'
 import { Search, Download, RefreshCw, Eye, EyeOff, TrendingUp, TrendingDown, Minus, AlertTriangle } from 'lucide-react'
 import { useToast } from '@/components/ui/Toast'
+import AllLocationsGrid from '@/components/AllLocationsGrid'
 import styles from './Inventory.module.css'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
@@ -48,7 +49,7 @@ export default function Inventory() {
   // FIXED: Consistent orgId pattern
   const orgId = user?.tenantId || null
   
-  const { selectedLocation } = useLocations()
+  const { selectedLocation, setSelectedLocation } = useLocations()
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768)
@@ -77,7 +78,7 @@ export default function Inventory() {
     if (!selectedLocation || selectedLocation === 'all' || !periodKey) return
     (async () => {
       try {
-        const close = await readPeriodClose(selectedLocation, periodKey)
+        const close = await readPeriodClose(selectedLocation, setSelectedLocation, periodKey)
         setPeriodClosed(close.periodStatus === 'closed')
       } catch {}
     })()
@@ -355,11 +356,12 @@ export default function Inventory() {
   // ─── Empty State ───────────────────────────────────────────────────────────
   if (!location) {
     return (
-      <div className={styles.empty}>
-        <div className={styles.emptyIcon}>📦</div>
-        <p className={styles.emptyTitle}>Select a location to begin counting</p>
-        <p className={styles.emptySub}>Choose a location from the dropdown above</p>
-      </div>
+      <AllLocationsGrid
+        title="Inventory"
+        subtitle="Select a location to begin counting"
+        onSelectLocation={name => setSelectedLocation(name)}
+        statusLabel="Not counted"
+      />
     )
   }
 

@@ -4,7 +4,7 @@ import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { useToast } from '@/components/ui/Toast'
 import { usePeriod } from '@/store/PeriodContext'
 import { db } from '@/lib/firebase'
-import { doc, getDoc, setDoc, addDoc, updateDoc, collection, serverTimestamp } from 'firebase/firestore'
+import { doc, getDoc, getDocs, setDoc, addDoc, updateDoc, collection, serverTimestamp } from 'firebase/firestore'
 import { Upload, Download, RefreshCw, ChevronDown, ChevronRight, Lock, Unlock, TrendingUp, TrendingDown } from 'lucide-react'
 import { readPnL, writePnL, weeksInPeriod } from '@/lib/pnl'
 import styles from './Budgets.module.css'
@@ -232,7 +232,7 @@ function parseExcel(rows, budgetYear) {
 export default function Budgets() {
   const { user }             = useAuthStore()
   const orgId                = user?.tenantId || 'fooda'
-  const { selectedLocation, setSelectedLocation, visibleLocations } = useLocations()
+  const { selectedLocation, setSelectedLocation, visibleLocations, groupedLocations } = useLocations()
   const { year: ctxYear }    = usePeriod()
   const toast                = useToast()
   const isDirector           = /^(admin|director)$/i.test(user?.role || '')
@@ -265,11 +265,13 @@ export default function Budgets() {
 
   // Load all locations budget status when "All Locations" is selected
   useEffect(() => {
-    if (selectedLocation !== 'all') return
+    if (selectedLocation !== 'all' || !orgId) return
     (async () => {
       try {
         // Query all budget docs for this year in one batch
+        console.log('[BUDGET ALL] loading budgets for org:', orgId, 'year:', year)
         const budgetSnap = await getDocs(collection(db, 'tenants', orgId, 'budgets'))
+        console.log('[BUDGET ALL] found:', budgetSnap.size, 'docs')
         const budgetsByLoc = {}
         budgetSnap.docs.forEach(d => {
           if (d.id.endsWith(`-${year}`)) {
@@ -291,11 +293,13 @@ export default function Budgets() {
           return { name, status: null, annualGfs: 0, hasBudget: false }
         })
 
-        setAllBudgetData(results.sort((a, b) => {
+        const sorted = results.sort((a, b) => {
           if (a.hasBudget && !b.hasBudget) return -1
           if (!a.hasBudget && b.hasBudget) return 1
           return b.annualGfs - a.annualGfs
-        }))
+        })
+        console.log('[BUDGET ALL] setting data:', sorted.length, 'locations')
+        setAllBudgetData(sorted)
       } catch (err) { console.error('Budget load failed:', err) }
     })()
   }, [selectedLocation, year])
@@ -676,8 +680,24 @@ export default function Budgets() {
       {allBudgetData.length === 0 ? (
         <div style={{ textAlign: 'center', padding: 60, color: '#94a3b8' }}>Loading locations...</div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
-          {allBudgetData.map(loc => {
+        <div>
+          {Object.entries(groupedLocations).map(([regionName, regionLocs]) => {
+            const regionBudgets = regionLocs.map(rl => {
+              const budget = allBudgetData.find(b => b.name === rl.name)
+              return budget || { name: rl.name, status: null, annualGfs: 0, hasBudget: false }
+            })
+            const regionTotal = regionBudgets.reduce((s, b) => s + b.annualGfs, 0)
+            const approvedCount = regionBudgets.filter(b => b.status === 'approved').length
+            return (
+              <div key={regionName} style={{ marginBottom: 24 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10, paddingBottom: 6, borderBottom: '1px solid #e2e8f0' }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>{regionName}</div>
+                  <div style={{ fontSize: 12, color: '#64748b' }}>
+                    {approvedCount}/{regionBudgets.length} approved · ${Math.round(regionTotal).toLocaleString()} GFS
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
+          {regionBudgets.map(loc => {
             const statusColor = loc.status === 'approved' ? '#059669'
               : loc.status === 'pending' ? '#d97706'
               : '#cbd5e1'
@@ -705,21 +725,23 @@ export default function Budgets() {
                 onMouseLeave={e => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = 'none' }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '70%' }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '75%' }}>
                     {cleanLocName(loc.name)}
                   </div>
-                  <span style={{ fontSize: 10, padding: '2px 8px', background: statusBg, color: statusColor, borderRadius: 10, fontWeight: 600 }}>
-                    {statusLabel}
+                  <span style={{ fontSize: 9, padding: '2px 6px', background: statusBg, color: statusColor, borderRadius: 10, fontWeight: 600 }}>{statusLabel}</span>
+                </div>
+                <div style={{ fontSize: 22, fontWeight: 700, color: loc.hasBudget ? '#0f172a' : '#cbd5e1' }}>
+                  {loc.hasBudget ? `$${Math.round(loc.annualGfs).toLocaleString()}` : '—'}
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10 }}>
+                  <span style={{ fontSize: 11, color: '#94a3b8' }}>
+                    {loc.hasBudget ? 'Annual GFS budget' : 'No budget'}
                   </span>
                 </div>
-                <div style={{ fontSize: 20, fontWeight: 700, color: loc.hasBudget ? '#0f172a' : '#cbd5e1' }}>
-                  {loc.hasBudget ? `$${Math.round(loc.annualGfs).toLocaleString()}` : 'No budget'}
+              </div>
+            )
+          })}
                 </div>
-                {loc.hasBudget && (
-                  <div style={{ fontSize: 11, color: '#64748b', marginTop: 4 }}>
-                    Annual GFS budget
-                  </div>
-                )}
               </div>
             )
           })}

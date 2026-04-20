@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { useToast } from '@/components/ui/Toast'
+import AllLocationsGrid from '@/components/AllLocationsGrid'
 import { usePeriod } from '@/store/PeriodContext'
 import { db } from '@/lib/firebase'
 import {
@@ -57,7 +58,7 @@ const AMORT_OPTIONS = [
 const EMPTY_JE = {
   glCode: '', description: '', amount: '', amortization: 'once',
   amortMonths: 1, startPeriod: '', location: '',
-  saveAsTemplate: false, templateName: '',
+  saveAsTemplate: false, templateName: '', autoReverse: false,
 }
 
 function locId(n) { return (n || '').replace(/[^a-zA-Z0-9]/g, '_') }
@@ -77,7 +78,7 @@ const EMPTY = {
 export default function Transfers() {
   const { user }             = useAuthStore()
   const orgId                = user?.tenantId || 'fooda'
-  const { selectedLocation, groupedLocations, visibleLocations } = useLocations()
+  const { selectedLocation, setSelectedLocation, groupedLocations, visibleLocations } = useLocations()
   const { periodKey }        = usePeriod()
   const toast                = useToast()
   const isDirector           = /^(admin|director)$/i.test(user?.role || '')
@@ -233,6 +234,42 @@ export default function Transfers() {
       // Write to P&L period docs
       for (const { period, amount: amt } of periods) {
         await writePnL(loc, period, { [jeForm.glCode]: amt })
+      }
+
+      // Auto-reverse: write a negative entry to the next week
+      if (jeForm.autoReverse && jeForm.amortization === 'once') {
+        const [yrStr, rest] = periodKey.split('-P')
+        const [pStr, wStr] = rest.split('-W')
+        const yr = parseInt(yrStr), p = parseInt(pStr), w = parseInt(wStr)
+        // Compute next week key
+        const { weeksInPeriod } = await import('@/lib/pnl')
+        const maxW = weeksInPeriod(yr, p)
+        let nextKey
+        if (w < maxW) {
+          nextKey = yrStr + '-P' + pStr + '-W' + (w + 1)
+        } else {
+          // Roll to next period
+          const np = p < 12 ? p + 1 : 1
+          const ny = p < 12 ? yr : yr + 1
+          nextKey = ny + '-P' + String(np).padStart(2, '0') + '-W1'
+        }
+        await writePnL(loc, nextKey, { [jeForm.glCode]: -amount })
+        // Save reversal doc
+        await addDoc(collection(db, 'tenants', orgId, 'journalEntries'), {
+          glCode: jeForm.glCode,
+          glLabel: (JE_GL_CODES.find(g => g.code === jeForm.glCode)?.label || jeForm.glCode) + ' (auto-reversal)',
+          description: 'Auto-reversal: ' + jeForm.description,
+          totalAmount: -amount,
+          amortization: 'once',
+          amortMonths: 1,
+          location: loc,
+          periods: [nextKey],
+          createdBy: actor,
+          createdAt: serverTimestamp(),
+          status: 'posted',
+          isReversal: true,
+          reversesEntry: periodKey,
+        })
       }
 
       // Save as template if requested
@@ -466,6 +503,14 @@ export default function Transfers() {
     filtered.forEach(e => { if (cols[e.status]) cols[e.status].push(e) })
     return cols
   }, [filtered])
+
+  if (!selectedLocation || selectedLocation === 'all') return (
+    <AllLocationsGrid
+      title="Operating Ledger"
+      subtitle="Select a location to view journal entries and transfers"
+      onSelectLocation={name => setSelectedLocation(name)}
+    />
+  )
 
   return (
     <div className={styles.page}>
@@ -942,11 +987,19 @@ export default function Transfers() {
                     </div>
                   )}
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 16 }}>
-                  <input type="checkbox" id="saveTemplate" checked={jeForm.saveAsTemplate}
-                    onChange={e => setJeForm(f => ({...f, saveAsTemplate: e.target.checked}))}
-                    style={{ width: 16, height: 16 }} />
-                  <label htmlFor="saveTemplate" style={{ fontSize: 12, color: '#64748b' }}>Save as recurring template</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginTop: 16 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <input type="checkbox" id="autoReverse" checked={jeForm.autoReverse}
+                      onChange={e => setJeForm(f => ({...f, autoReverse: e.target.checked}))}
+                      style={{ width: 16, height: 16 }} />
+                    <label htmlFor="autoReverse" style={{ fontSize: 12, color: '#64748b' }}>Auto-reverse next week</label>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <input type="checkbox" id="saveTemplate" checked={jeForm.saveAsTemplate}
+                      onChange={e => setJeForm(f => ({...f, saveAsTemplate: e.target.checked}))}
+                      style={{ width: 16, height: 16 }} />
+                    <label htmlFor="saveTemplate" style={{ fontSize: 12, color: '#64748b' }}>Save as recurring template</label>
+                  </div>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
                   <button onClick={() => setShowJeForm(false)} style={{

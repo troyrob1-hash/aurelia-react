@@ -12,6 +12,7 @@ import { collection, addDoc, getDocs, query, orderBy, limit, serverTimestamp, do
 import { writePurchasingPnL, weekPeriod } from '@/lib/pnl'
 import { useAuthStore } from '@/store/authStore'
 import { submitToVendor } from '@/services/vendors'
+import AllLocationsGrid from '@/components/AllLocationsGrid'
 import styles from './OrderHub.module.css'
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -78,7 +79,7 @@ const SPEND_CATEGORIES = [
 const TOTAL_SPEND_PCT = SPEND_CATEGORIES.reduce((s, c) => s + c.pctGFS, 0) // 4.9%
 
 export default function OrderHub() {
-  const { selectedLocation } = useLocations()
+  const { selectedLocation, setSelectedLocation } = useLocations()
   const toast = useToast()
   const { user } = useAuthStore()
   
@@ -713,6 +714,14 @@ export default function OrderHub() {
   }, [orgId, loadPastOrders, location])
 
   // ─── Render ────────────────────────────────────────────────────────────────
+
+  if (!selectedLocation || selectedLocation === 'all') return (
+    <AllLocationsGrid
+      title="Order Hub"
+      subtitle="Select a location to place orders"
+      onSelectLocation={name => setSelectedLocation(name)}
+    />
+  )
 
   return (
     <div className={styles.page}>

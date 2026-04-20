@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from 'react'
 import { useToast } from '@/components/ui/Toast'
+import AllLocationsGrid from '@/components/AllLocationsGrid'
 import { Upload, Download, CheckCircle, Clock, AlertCircle, RefreshCw, Plus } from 'lucide-react'
 import { useLocations } from '@/store/LocationContext'
 import { useAuthStore } from '@/store/authStore'
@@ -64,7 +65,7 @@ export default function LaborPlanner() {
   const toast = useToast()
   const { user } = useAuthStore()
   const orgId = user?.tenantId || 'fooda'
-  const { selectedLocation } = useLocations()
+  const { selectedLocation, setSelectedLocation } = useLocations()
   const location = selectedLocation === 'all' ? null : selectedLocation
 
   // ── Fix 1: use periodKey from PeriodContext ──────────────────
@@ -456,6 +457,14 @@ export default function LaborPlanner() {
     : null
 
   const isDirector = /^(admin|director)$/i.test(user?.role || '')
+
+  if (!selectedLocation || selectedLocation === 'all') return (
+    <AllLocationsGrid
+      title="Labor"
+      subtitle="Select a location to view labor data"
+      onSelectLocation={name => setSelectedLocation(name)}
+    />
+  )
 
   return (
     <div className={styles.page}>

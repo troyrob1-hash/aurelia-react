@@ -72,7 +72,7 @@ function getYoYKey(key) {
 export default function WeeklySales() {
   const { user }             = useAuthStore()
   const orgId                = user?.tenantId || 'fooda'
-  const { selectedLocation, setSelectedLocation, visibleLocations, currentLocation } = useLocations()
+  const { selectedLocation, setSelectedLocation, visibleLocations, currentLocation, groupedLocations } = useLocations()
   const { year, period, week: weekNum, currentWeek, periodKey, prevWeek, nextWeek } = usePeriod()
   const toast                = useToast()
 
@@ -1300,8 +1300,18 @@ export default function WeeklySales() {
         ) : allLocData.length === 0 ? (
           <div style={{ textAlign: 'center', padding: 60, color: '#94a3b8' }}>No locations to display</div>
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
-            {allLocData.map((loc) => {
+          <div>
+            {Object.entries(groupedLocations).map(([regionName, regionLocs]) => {
+              const regionData = regionLocs.map(rl => allLocData.find(d => d.name === rl.name)).filter(Boolean)
+              if (regionData.length === 0) return null
+              return (
+                <div key={regionName} style={{ marginBottom: 24 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10, paddingBottom: 6, borderBottom: '1px solid #e2e8f0' }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>{regionName}</div>
+                    <div style={{ fontSize: 12, color: '#64748b' }}>{regionData.filter(d => d.hasData).length}/{regionData.length} reporting</div>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
+            {regionData.map((loc) => {
               const chg = pctChange(loc.total, loc.priorTotal)
               const budgetVar = loc.budget > 0 ? ((loc.total - loc.budget) / loc.budget) * 100 : null
               const performanceColor = !loc.hasData ? '#e2e8f0'
@@ -1360,6 +1370,10 @@ export default function WeeklySales() {
                       </span>
                     )}
                     <Sparkline data={loc.sparkline} color={performanceColor !== '#e2e8f0' ? performanceColor : '#94a3b8'} />
+                  </div>
+                </div>
+              )
+            })}
                   </div>
                 </div>
               )
