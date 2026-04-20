@@ -23,9 +23,9 @@ const DEFAULT_SCHEMA = [
   {
     id: 'gfs', label: 'Gross Food Sales', color: '#059669',
     lines: [
-      { key: 'gfs_popup',    label: 'Popup',                 indent: 1 },
-      { key: 'gfs_catering', label: 'Catering',              indent: 1 },
-      { key: 'gfs_retail',   label: 'Retail',                indent: 1 },
+      { key: 'gfs_popup',    label: 'Popup',                 indent: 1, budgetKey: 'budget_gfs_popup' },
+      { key: 'gfs_catering', label: 'Catering',              indent: 1, budgetKey: 'budget_gfs_catering' },
+      { key: 'gfs_retail',   label: 'Retail',                indent: 1, budgetKey: 'budget_gfs_retail' },
       { key: 'gfs_total',    label: 'Total Gross Food Sales', bold: true, budgetKey: 'budget_gfs' },
     ]
   },
@@ -66,35 +66,35 @@ const DEFAULT_SCHEMA = [
     id: 'cogs', label: 'COGS', color: '#dc2626',
     lines: [
       // Location Costs — Onsite Labor
-      { key: 'cogs_labor_salaries',  label: 'Onsite Labor (Fooda) Salaries and Wages', indent: 2, drillTo: '/labor' },
-      { key: 'cogs_labor_401k',      label: 'Onsite Labor 401k',               indent: 2, drillTo: '/labor' },
-      { key: 'cogs_labor_benefits',  label: 'Onsite Labor Benefits',            indent: 2, drillTo: '/labor' },
-      { key: 'cogs_labor_taxes',     label: 'Onsite Labor Taxes',               indent: 2, drillTo: '/labor' },
-      { key: 'cogs_labor_bonus',     label: 'Onsite Bonus',                     indent: 2, drillTo: '/labor' },
+      { key: 'cogs_labor_salaries',  label: 'Onsite Labor (Fooda) Salaries and Wages', indent: 2, drillTo: '/labor', budgetKey: 'budget_cogs_labor_salaries' },
+      { key: 'cogs_labor_401k',      label: 'Onsite Labor 401k',               indent: 2, drillTo: '/labor', budgetKey: 'budget_cogs_labor_401k' },
+      { key: 'cogs_labor_benefits',  label: 'Onsite Labor Benefits',            indent: 2, drillTo: '/labor', budgetKey: 'budget_cogs_labor_benefits' },
+      { key: 'cogs_labor_taxes',     label: 'Onsite Labor Taxes',               indent: 2, drillTo: '/labor', budgetKey: 'budget_cogs_labor_taxes' },
+      { key: 'cogs_labor_bonus',     label: 'Onsite Bonus',                     indent: 2, drillTo: '/labor', budgetKey: 'budget_cogs_labor_bonus' },
       { key: '_labor_subtotal',      label: 'Total Onsite Labor',               bold: true, indent: 1, budgetKey: 'budget_labor',
         computeFn: p => (p.cogs_labor_salaries||0) + (p.cogs_labor_401k||0) + (p.cogs_labor_benefits||0)
                       + (p.cogs_labor_taxes||0) + (p.cogs_labor_bonus||0)
                       + (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)  // backward compat with old single-line writes
       },
       // Location Costs — Equipment & Consumables
-      { key: 'cogs_cleaning',        label: 'Cleaning Supplies & Chemicals',    indent: 2 },
-      { key: 'cogs_equipment',       label: 'Onsite Equipment',                 indent: 2 },
-      { key: 'cogs_ec_barista',      label: 'Equipment and Consumables - Barista', indent: 2 },
-      { key: 'cogs_paper',           label: 'Paper Products & Consumables',     indent: 2 },
-      { key: 'cogs_supplies',        label: 'Onsite Supplies',                  indent: 2 },
-      { key: 'cogs_uniforms',        label: 'Onsite Uniforms',                  indent: 2 },
+      { key: 'cogs_cleaning',        label: 'Cleaning Supplies & Chemicals',    indent: 2, budgetKey: 'budget_cogs_cleaning' },
+      { key: 'cogs_equipment',       label: 'Onsite Equipment',                 indent: 2, budgetKey: 'budget_cogs_equipment' },
+      { key: 'cogs_ec_barista',      label: 'Equipment and Consumables - Barista', indent: 2, budgetKey: 'budget_cogs_ec_barista' },
+      { key: 'cogs_paper',           label: 'Paper Products & Consumables',     indent: 2, budgetKey: 'budget_cogs_paper' },
+      { key: 'cogs_supplies',        label: 'Onsite Supplies',                  indent: 2, budgetKey: 'budget_cogs_supplies' },
+      { key: 'cogs_uniforms',        label: 'Onsite Uniforms',                  indent: 2, budgetKey: 'budget_cogs_uniforms' },
       { key: '_ec_subtotal',         label: 'Total Onsite Equipment and Consumables', bold: true, indent: 1,
         computeFn: p => (p.cogs_cleaning||0) + (p.cogs_equipment||0) + (p.cogs_ec_barista||0)
                       + (p.cogs_paper||0) + (p.cogs_supplies||0) + (p.cogs_uniforms||0)
       },
       // Location Costs — Maintenance & Other
-      { key: 'cogs_maintenance',     label: 'Onsite Other',                     indent: 1 },
+      { key: 'cogs_maintenance',     label: 'Onsite Other',                     indent: 1, budgetKey: 'budget_cogs_maintenance' },
       // Payment Processing
-      { key: 'cogs_payment_processing', label: 'Bank Charges, Merchant Fees',   indent: 1 },
+      { key: 'cogs_payment_processing', label: 'Bank Charges, Merchant Fees',   indent: 1, budgetKey: 'budget_cogs_payment_processing' },
       // Retail COGS
-      { key: 'cogs_retail_barista',  label: 'Retail COGS - Barista',            indent: 2 },
-      { key: 'cogs_retail_cafeteria', label: 'Retail COGS - Cafeteria',         indent: 2 },
-      { key: 'cogs_retail_managed',  label: 'Retail COGS - Managed Service Cost', indent: 2 },
+      { key: 'cogs_retail_barista',  label: 'Retail COGS - Barista',            indent: 2, budgetKey: 'budget_cogs_retail_barista' },
+      { key: 'cogs_retail_cafeteria', label: 'Retail COGS - Cafeteria',         indent: 2, budgetKey: 'budget_cogs_retail_cafeteria' },
+      { key: 'cogs_retail_managed',  label: 'Retail COGS - Managed Service Cost', indent: 2, budgetKey: 'budget_cogs_retail_managed' },
       { key: '_retail_cogs_subtotal', label: 'Total Retail COGS',               bold: true, indent: 1,
         computeFn: p => (p.cogs_retail_barista||0) + (p.cogs_retail_cafeteria||0) + (p.cogs_retail_managed||0)
       },
@@ -146,20 +146,20 @@ const DEFAULT_SCHEMA = [
   {
     id: 'expenses', label: 'Expenses (General and Other)', color: '#d97706',
     lines: [
-      { key: 'exp_office_supplies',  label: 'Office Supplies & Equipment',      indent: 1 },
-      { key: 'exp_mktg_cashier',     label: 'Cashier Discounts',                indent: 2 },
-      { key: 'exp_mktg_coupons',     label: 'Coupons',                          indent: 2 },
-      { key: 'exp_mktg_marketing',   label: 'Marketing',                        indent: 2 },
-      { key: 'exp_mktg_other',       label: 'Other Marketing and Advertising',  indent: 2 },
+      { key: 'exp_office_supplies',  label: 'Office Supplies & Equipment',      indent: 1, budgetKey: 'budget_exp_office_supplies' },
+      { key: 'exp_mktg_cashier',     label: 'Cashier Discounts',                indent: 2, budgetKey: 'budget_exp_mktg_cashier' },
+      { key: 'exp_mktg_coupons',     label: 'Coupons',                          indent: 2, budgetKey: 'budget_exp_mktg_coupons' },
+      { key: 'exp_mktg_marketing',   label: 'Marketing',                        indent: 2, budgetKey: 'budget_exp_mktg_marketing' },
+      { key: 'exp_mktg_other',       label: 'Other Marketing and Advertising',  indent: 2, budgetKey: 'budget_exp_mktg_other' },
       { key: '_mktg_subtotal',       label: 'Total Marketing & Advertising',    bold: true, indent: 1,
         computeFn: p => (p.exp_mktg_cashier||0) + (p.exp_mktg_coupons||0) + (p.exp_mktg_marketing||0) + (p.exp_mktg_other||0)
       },
-      { key: 'exp_technology',       label: 'Technology Services',              indent: 1 },
-      { key: 'exp_travel',           label: 'Travel and Entertainment',         indent: 1 },
-      { key: 'exp_professional',     label: 'Professional Fees',                indent: 1 },
-      { key: 'exp_facilities',       label: 'Facilities',                       indent: 1 },
-      { key: 'exp_licenses',         label: 'Licenses, Permits and Fines',      indent: 1 },
-      { key: 'exp_other',            label: 'Other Expenses',                   indent: 1 },
+      { key: 'exp_technology',       label: 'Technology Services',              indent: 1, budgetKey: 'budget_exp_technology' },
+      { key: 'exp_travel',           label: 'Travel and Entertainment',         indent: 1, budgetKey: 'budget_exp_travel' },
+      { key: 'exp_professional',     label: 'Professional Fees',                indent: 1, budgetKey: 'budget_exp_professional' },
+      { key: 'exp_facilities',       label: 'Facilities',                       indent: 1, budgetKey: 'budget_exp_facilities' },
+      { key: 'exp_licenses',         label: 'Licenses, Permits and Fines',      indent: 1, budgetKey: 'budget_exp_licenses' },
+      { key: 'exp_other',            label: 'Other Expenses',                   indent: 1, budgetKey: 'budget_exp_other' },
       { key: 'exp_comp_benefits',    label: 'Compensation & Benefits',          indent: 1 },
       { key: '_total_exp',           label: 'Total Expenses',                   bold: true, budgetKey: 'budget_expenses',
         computeFn: p => (p.exp_office_supplies||0) + (p.exp_mktg_cashier||0) + (p.exp_mktg_coupons||0)
@@ -498,7 +498,7 @@ export default function Dashboard() {
       section.lines.forEach(line => {
         if (line.pct) return
         const actual   = resolveVal(line, pnl)
-        const budget   = line.budgetKey ? (pnl[line.budgetKey] ?? null) : null
+        const budget   = line.budgetKey ? (pnl[line.budgetKey] ?? null) : (pnl['budget_' + line.key] ?? null)
         const prior    = resolveVal(line, priorPnl)
         const variance = actual != null && budget != null ? actual - budget : null
         rows.push([line.label, actual?.toFixed(2)||'', budget?.toFixed(2)||'', variance?.toFixed(2)||'', prior?.toFixed(2)||''])
@@ -1292,7 +1292,7 @@ export default function Dashboard() {
 
                     const actual    = resolveVal(line, pnl)
                     const prior     = resolveVal(line, priorPnl)
-                    const budget    = line.budgetKey ? (pnl[line.budgetKey] ?? null) : null
+                    const budget    = line.budgetKey ? (pnl[line.budgetKey] ?? null) : (pnl['budget_' + line.key] ?? null)
                     const variance  = actual != null && budget != null ? actual - budget : null
                     const vsPrior   = actual != null && prior != null && prior !== 0 ? actual - prior : null
                     const projected = projectedClose(actual)

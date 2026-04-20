@@ -6,7 +6,7 @@ import { usePeriod } from '@/store/PeriodContext'
 import { db } from '@/lib/firebase'
 import { doc, getDoc, setDoc, addDoc, updateDoc, collection, serverTimestamp } from 'firebase/firestore'
 import { Upload, Download, RefreshCw, ChevronDown, ChevronRight, Lock, Unlock, TrendingUp, TrendingDown } from 'lucide-react'
-import { readPnL, writePnL } from '@/lib/pnl'
+import { readPnL, writePnL, weeksInPeriod } from '@/lib/pnl'
 import styles from './Budgets.module.css'
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
@@ -46,6 +46,43 @@ function isGFSBase(label) {
   return l.includes('total gross food sales') || l === 'total gfs'
 }
 
+
+// Maps slugified budget line keys → P&L Dashboard keys
+const BUDGET_TO_PNL = {
+  popup: 'gfs_popup',
+  catering: 'gfs_catering',
+  retail: 'gfs_retail',
+  total_gross_food_sales: 'gfs_total',
+  onsite_labor_fooda_salaries_and_wages: 'cogs_labor_salaries',
+  onsite_labor_401k: 'cogs_labor_401k',
+  onsite_labor_benefits: 'cogs_labor_benefits',
+  onsite_labor_taxes: 'cogs_labor_taxes',
+  onsite_bonus: 'cogs_labor_bonus',
+  cleaning_supplies_chemicals: 'cogs_cleaning',
+  onsite_equipment: 'cogs_equipment',
+  equipment_and_consumables_barista: 'cogs_ec_barista',
+  paper_products: 'cogs_paper',
+  paper_products_consumables: 'cogs_paper',
+  onsite_supplies: 'cogs_supplies',
+  onsite_uniforms: 'cogs_uniforms',
+  onsite_other: 'cogs_maintenance',
+  bank_charges_merchant_fees: 'cogs_payment_processing',
+  retail_cogs_barista: 'cogs_retail_barista',
+  retail_cogs_cafeteria: 'cogs_retail_cafeteria',
+  retail_cogs_managed_service_cost: 'cogs_retail_managed',
+  office_supplies_equipment: 'exp_office_supplies',
+  cashier_discounts: 'exp_mktg_cashier',
+  coupons: 'exp_mktg_coupons',
+  marketing: 'exp_mktg_marketing',
+  other_marketing_and_advertising: 'exp_mktg_other',
+  technology_services: 'exp_technology',
+  travel_and_entertainment: 'exp_travel',
+  professional_fees: 'exp_professional',
+  facilities: 'exp_facilities',
+  licenses_permits_and_fines: 'exp_licenses',
+  other_expenses: 'exp_other',
+  ebitda: '_ebitda',
+}
 function slugify(str) { return str.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'') }
 function locId(n)    { return (n||'').replace(/[^a-zA-Z0-9]/g,'_') }
 
@@ -318,11 +355,24 @@ export default function Budgets() {
           budget_expenses: expenses,
           budget_ebitda:   ebitda,
         }
-        // Write to all 4 weeks of the period so Dashboard shows variance
-        // regardless of which week the user is viewing
+        // Map every budget line to its P&L key
+        for (const line of allLines) {
+          const val = budget[line.key]?.[mo] || 0
+          if (val !== 0) {
+            const pnlKey = BUDGET_TO_PNL[line.key] || line.key
+            budgetData['budget_' + pnlKey] = val
+          }
+        }
+        // Divide monthly budget by actual weeks in the month
+        // and write to each week so Dashboard shows correct weekly variance
         const basePeriod = `${year}-P${String(mo).padStart(2,'0')}`
-        await Promise.all([1,2,3,4].map(w =>
-          writePnL(location, `${basePeriod}-W${w}`, budgetData)
+        const numWeeks = weeksInPeriod(year, mo)
+        const weeklyBudget = {}
+        for (const [k, v] of Object.entries(budgetData)) {
+          weeklyBudget[k] = Math.round((v / numWeeks) * 100) / 100
+        }
+        await Promise.all(Array.from({ length: numWeeks }, (_, i) => i + 1).map(w =>
+          writePnL(location, `${basePeriod}-W${w}`, weeklyBudget)
         ))
       }))
 
@@ -337,6 +387,47 @@ export default function Budgets() {
     })
     setApproval('rejected')
     toast.success('Budget rejected')
+  }
+
+  async function repostBudget() {
+    if (!activeBudget || !location) return
+    try {
+      const allLines = schema.flatMap(s => s.lines)
+      const gfsLine = allLines.find(l => l.gfsBase)
+      for (let mo = 1; mo <= 12; mo++) {
+        const gfs = activeBudget[gfsLine?.key]?.[mo] || 0
+        const labor = allLines.filter(l => l.label && l.label.toLowerCase().includes('labor'))
+          .reduce((s, l) => s + (activeBudget[l.key]?.[mo] || 0), 0)
+        const revenue = gfs * 0.82
+        const cogs = allLines.filter(l => l.label && (l.label.toLowerCase().includes('cogs') || l.label.toLowerCase().includes('equipment') || l.label.toLowerCase().includes('supplies')))
+          .reduce((s, l) => s + (activeBudget[l.key]?.[mo] || 0), 0)
+        const ebitda = revenue - labor - cogs
+        const budgetData = {
+          budget_gfs: gfs, budget_revenue: revenue,
+          budget_cogs: cogs, budget_labor: labor, budget_ebitda: ebitda,
+        }
+        // Map every budget line to its P&L key
+        for (const line of allLines) {
+          const val = activeBudget[line.key]?.[mo] || 0
+          if (val !== 0) {
+            const pnlKey = BUDGET_TO_PNL[line.key] || line.key
+            budgetData['budget_' + pnlKey] = val
+          }
+        }
+        const basePeriod = `${year}-P${String(mo).padStart(2,'0')}`
+        const numWeeks = weeksInPeriod(year, mo)
+        const weeklyBudget = {}
+        for (const [k, v] of Object.entries(budgetData)) {
+          weeklyBudget[k] = Math.round((v / numWeeks) * 100) / 100
+        }
+        for (let w = 1; w <= numWeeks; w++) {
+          await writePnL(location, `${basePeriod}-W${w}`, weeklyBudget)
+        }
+      }
+      toast.success('Budget re-posted to P&L with weekly breakdown')
+    } catch (err) {
+      toast.error('Re-post failed: ' + (err.message || ''))
+    }
   }
 
   async function requestUnlock() {
@@ -543,7 +634,14 @@ export default function Budgets() {
             {isLocked ? <Lock size={13}/> : null}
             <span>
               {approvalStatus === 'pending'  && `Budget submitted — pending director approval before posting to P&L`}
-              {approvalStatus === 'approved' && `Budget approved & locked · All 12 months posted to P&L Dashboard`}
+              {approvalStatus === 'approved' && (<>
+                Budget approved & locked · All 12 months posted to P&L Dashboard
+                <button onClick={repostBudget} style={{
+                  marginLeft: 12, padding: '4px 12px', fontSize: 12, fontWeight: 500,
+                  background: '#059669', color: '#fff', border: 'none', borderRadius: 6,
+                  cursor: 'pointer',
+                }}>Re-post to P&L</button>
+              </>)}
               {approvalStatus === 'approved_unlock' && `Budget unlocked for adjustment — re-upload and resubmit`}
               {approvalStatus === 'rejected' && `Budget rejected — re-upload and resubmit`}
             </span>

@@ -7,7 +7,7 @@ import { Download, Upload, CheckCircle, Clock, AlertCircle, TrendingUp, Trending
 import { useToast } from '@/components/ui/Toast'
 import { usePeriod } from '@/store/PeriodContext'
 import { readPeriodClose } from '@/lib/pnl'
-import { writeSalesPnL } from '@/lib/pnl'
+import { writeSalesPnL, weeksInPeriod } from '@/lib/pnl'
 import { parseEventExport, mergeEventData } from '@/lib/parseEventExport'
 import Breadcrumb from '@/components/ui/Breadcrumb'
 import { useDragDropUpload } from '@/hooks/useDragDropUpload'
@@ -441,13 +441,21 @@ export default function WeeklySales() {
       const bRef  = doc(db, 'tenants', orgId, 'budgets', `${locId(location)}-${year}`)
       const bSnap = await getDoc(bRef)
       if (bSnap.exists()) {
-        const months = bSnap.data().months || {}
-        const monthly = months[period] || {}
+        const lines = bSnap.data().lines || {}
+        const wksInMonth = weeksInPeriod(year, period)
+        // Budget keys are slugified: "Total Gross Food Sales" → total_gross_food_sales
+        // Each key has monthly values: { 1: 850373, 2: 843382, 3: 960763, ... }
+        const monthlyGfs = lines.total_gross_food_sales?.[period] || 0
+        const monthlyPopup = lines.popup?.[period] || 0
+        const monthlyCatering = lines.catering?.[period] || 0
+        const monthlyRetail = lines.retail?.[period] || 0
         setBudgetData({
-          gfs:      (monthly.gfs      || 0) / 4.33,
-          popup:    (monthly.popup    || 0) / 4.33,
-          catering: (monthly.catering || 0) / 4.33,
-          retail:   (monthly.retail   || 0) / 4.33,
+          gfs:      monthlyGfs / wksInMonth,
+          popup:    monthlyPopup / wksInMonth,
+          catering: monthlyCatering / wksInMonth,
+          retail:   monthlyRetail / wksInMonth,
+          monthlyGfs,
+          weeksInMonth: wksInMonth,
         })
       }
 
@@ -2160,9 +2168,8 @@ export default function WeeklySales() {
                 <th className={styles.thDay}>Day</th>
                 {CATS.map(c => <th key={c.key} className={styles.thCat} style={{ color: c.color }}>{c.label}</th>)}
                 <th className={styles.thTotal}>Total</th>
-                <th className={styles.thVar}>vs LW</th>
-                <th className={styles.thVar}>vs LY</th>
-                <th className={styles.thVar}>Forecast</th>
+                <th className={styles.thVar} style={{ color: '#854F0B' }}>Budget</th>
+                <th className={styles.thVar} style={{ color: '#854F0B' }}>vs Bdg</th>
               </tr>
             </thead>
             <tbody>
@@ -2280,13 +2287,14 @@ export default function WeeklySales() {
                       </span>
                     </td>
                     <td className={styles.tdVar}>
-                      {chgLW !== null && dt > 0 ? <span className={chgLW >= 0 ? styles.varUp : styles.varDown}>{fmtPct(chgLW)}</span> : <span className={styles.varNeutral}>{prior > 0 && !isFuture ? fmt$(prior) : '—'}</span>}
+                      {budgetTotal > 0 ? <span style={{ color: '#854F0B' }}>{fmt$(budgetTotal / (week?.days.length || 5))}</span> : <span className={styles.varNeutral}>—</span>}
                     </td>
                     <td className={styles.tdVar}>
-                      {chgYoY !== null && dt > 0 ? <span className={chgYoY >= 0 ? styles.varUp : styles.varDown}>{fmtPct(chgYoY)}</span> : <span className={styles.varNeutral}>{yoy > 0 ? fmt$(yoy) : '—'}</span>}
-                    </td>
-                    <td className={styles.tdVar}>
-                      <span className={styles.varNeutral} style={{ color: '#bbb' }}>{fc > 0 ? fmt$(fc) : '—'}</span>
+                      {budgetTotal > 0 && dt > 0 ? (() => {
+                        const dailyBdg = budgetTotal / (week?.days.length || 5)
+                        const diff = dt - dailyBdg
+                        return <span style={{ fontWeight: 500, color: diff >= 0 ? '#059669' : '#dc2626' }}>{diff >= 0 ? '+' : ''}{fmt$(diff)}</span>
+                      })() : <span className={styles.varNeutral}>—</span>}
                     </td>
                   </tr>
                 )
@@ -2298,13 +2306,13 @@ export default function WeeklySales() {
                 {CATS.map(c => <td key={c.key} className={styles.tfCat} style={{ color: c.color }}>{fmt$(catTotals[c.key])}</td>)}
                 <td className={styles.tfTotal}>{fmt$(weekTotal)}</td>
                 <td className={styles.tfVar}>
-                  {weekVsLW != null && priorWeekTotal > 0 ? <span className={weekVsLW >= 0 ? styles.varUp : styles.varDown}>{fmtPct(weekVsLW)}</span> : '—'}
+                  {budgetTotal > 0 ? <span style={{ color: '#854F0B', fontWeight: 600 }}>{fmt$(budgetTotal)}</span> : '—'}
                 </td>
                 <td className={styles.tfVar}>
-                  {weekVsYoY != null && yoyWeekTotal > 0 ? <span className={weekVsYoY >= 0 ? styles.varUp : styles.varDown}>{fmtPct(weekVsYoY)}</span> : '—'}
-                </td>
-                <td className={styles.tfVar}>
-                  <span style={{ color: '#bbb', fontSize: 12 }}>{forecastTotal > 0 ? fmt$(forecastTotal) : '—'}</span>
+                  {budgetTotal > 0 ? (() => {
+                    const diff = weekTotal - budgetTotal
+                    return <span style={{ fontWeight: 600, color: diff >= 0 ? '#059669' : '#dc2626' }}>{diff >= 0 ? '+' : ''}{fmt$(diff)}</span>
+                  })() : '—'}
                 </td>
               </tr>
             </tfoot>
