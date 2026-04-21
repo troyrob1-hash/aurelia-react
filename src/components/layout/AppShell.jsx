@@ -9,6 +9,7 @@ import {
   Trash2, FileText, PieChart, ArrowLeftRight,
   Users, Settings, LogOut, ChevronDown, Bell, MapPin, Menu, X
 } from 'lucide-react'
+import AureliaChat from '@/components/AureliaChat'
 import styles from './AppShell.module.css'
 
 const NAV = [
@@ -234,6 +235,7 @@ export default function AppShell() {
           </NavLink>
         ))}
       </nav>
+          <AureliaChat />
     </div>
   )
 }
