@@ -6,6 +6,7 @@ import { db } from '@/lib/firebase'
 import { collection, getDocs, doc, getDoc, addDoc, serverTimestamp } from 'firebase/firestore'
 import { useToast } from '@/components/ui/Toast'
 import { Download, Upload, AlertTriangle, TrendingDown, TrendingUp, Search } from 'lucide-react'
+import { writePnL } from '@/lib/pnl'
 import AllLocationsGrid from '@/components/AllLocationsGrid'
 import styles from './WasteLog.module.css'
 
@@ -130,6 +131,13 @@ export default function WasteLog() {
 
   // Summary stats
   const totalShrinkageValue = shrinkageData.reduce((s, i) => s + Math.max(0, i.shrinkageValue), 0)
+
+  // Write shrinkage to P&L automatically when data changes
+  useEffect(() => {
+    if (!location || !periodKey || totalShrinkageValue === 0) return
+    const rounded = Math.round(totalShrinkageValue * 100) / 100
+    writePnL(location, periodKey, { cogs_shrinkage: rounded }).catch(() => {})
+  }, [totalShrinkageValue, location, periodKey])
   const totalShrinkageUnits = shrinkageData.reduce((s, i) => s + Math.max(0, i.shrinkage), 0)
   const itemsWithShrinkage = shrinkageData.filter(i => i.shrinkage > 0.5).length
   const topShrinkageItems = [...shrinkageData].sort((a, b) => b.shrinkageValue - a.shrinkageValue).slice(0, 5)

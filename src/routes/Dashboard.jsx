@@ -89,6 +89,7 @@ const DEFAULT_SCHEMA = [
       },
       // Location Costs — Maintenance & Other
       { key: 'cogs_maintenance',     label: 'Onsite Other',                     indent: 1, budgetKey: 'budget_cogs_maintenance' },
+      { key: 'cogs_shrinkage',      label: 'Shrinkage Loss',                   indent: 1 },
       // Payment Processing
       { key: 'cogs_payment_processing', label: 'Bank Charges, Merchant Fees',   indent: 1, budgetKey: 'budget_cogs_payment_processing' },
       // Retail COGS
