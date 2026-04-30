@@ -196,9 +196,9 @@ export default function Purchasing() {
   // Drag-and-drop file upload (shared hook handles enter/leave counting,
   // escape-to-dismiss, and drag-end cleanup)
   const { isDragging, dragHandlers, dismiss: dismissDropZone } = useDragDropUpload({
-    acceptedExtensions: ['.xlsx', '.xls', '.csv'],
+    acceptedExtensions: ['.xlsx', '.xls', '.csv', '.pdf'],
     onFile: async (file) => { await processInvoiceFile(file, false) },
-    onInvalidFile: () => toast.error('Please drop a .xlsx, .xls, or .csv file'),
+    onInvalidFile: () => toast.error('Please drop a .xlsx, .xls, .csv, or .pdf file'),
   })
 
   useEffect(() => { loadAll() }, [selectedLocation, periodKey])
@@ -375,6 +375,97 @@ export default function Purchasing() {
   async function processInvoiceFile(file, useBackfill = false) {
     if (!file) return
     try {
+      // PDF invoice parsing via AI
+      if (file.name.toLowerCase().endsWith('.pdf')) {
+        toast.info('Parsing PDF invoice with AI...')
+        const reader = new FileReader()
+        const base64 = await new Promise((resolve, reject) => {
+          reader.onload = () => resolve(reader.result.split(',')[1])
+          reader.onerror = reject
+          reader.readAsDataURL(file)
+        })
+
+        const resp = await fetch('/api/claude', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: 'claude-sonnet-4-20250514',
+            max_tokens: 2000,
+            messages: [{
+              role: 'user',
+              content: [
+                {
+                  type: 'document',
+                  source: { type: 'base64', media_type: 'application/pdf', data: base64 },
+                },
+                {
+                  type: 'text',
+                  text: 'Extract invoice data from this PDF. Return ONLY valid JSON with no other text, no backticks, no markdown. Format: {"vendor":"vendor name","invoiceNumber":"inv number or empty string","invoiceDate":"YYYY-MM-DD or empty string","dueDate":"YYYY-MM-DD or empty string","lineItems":[{"description":"item description","quantity":1,"unitPrice":10.00,"total":10.00}],"subtotal":0,"tax":0,"total":0}'
+                }
+              ]
+            }],
+          })
+        })
+
+        const aiData = await resp.json()
+        const aiText = (aiData.content || []).map(b => b.text || '').join('')
+        const cleaned = aiText.replace(/```json|```/g, '').trim()
+        let parsed
+        try {
+          parsed = JSON.parse(cleaned)
+        } catch {
+          toast.error('Could not parse invoice — try a clearer PDF')
+          e.target.value = ''
+          return
+        }
+
+        // Upload PDF as attachment
+        const safeFilename = Date.now() + '_' + file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
+        const path = 'tenants/' + orgId + '/invoices/pending/' + safeFilename
+        const { ref: storageRefFn, uploadBytes: ub, getDownloadURL: gdl } = await import('firebase/storage')
+        const fileRef = storageRefFn(storage, path)
+        await ub(fileRef, file, { contentType: 'application/pdf' })
+        const pdfUrl = await gdl(fileRef)
+
+        // Create invoice from parsed data
+        const invDoc = await addDoc(collection(db, 'tenants', orgId, 'invoices'), {
+          vendor: parsed.vendor || 'Unknown Vendor',
+          invoiceNumber: parsed.invoiceNumber || '',
+          invoiceDate: parsed.invoiceDate || new Date().toISOString().slice(0, 10),
+          dueDate: parsed.dueDate || '',
+          lineItems: (parsed.lineItems || []).map(li => ({
+            description: li.description || '',
+            quantity: li.quantity || 1,
+            unitPrice: li.unitPrice || 0,
+            total: li.total || 0,
+          })),
+          subtotal: parsed.subtotal || 0,
+          tax: parsed.tax || 0,
+          total: parsed.total || 0,
+          status: 'Pending',
+          location: location || selectedLocation,
+          period: periodKey,
+          source: 'pdf-ai-parse',
+          fileName: file.name,
+          attachments: [{
+            name: file.name,
+            path,
+            url: pdfUrl,
+            size: file.size,
+            contentType: 'application/pdf',
+            uploadedBy: user?.name || user?.email || 'unknown',
+            uploadedAt: new Date().toISOString(),
+          }],
+          createdBy: user?.name || user?.email || 'unknown',
+          createdAt: serverTimestamp(),
+        })
+
+        toast.success('Invoice parsed: ' + (parsed.vendor || 'Unknown') + ' — $' + (parsed.total || 0).toLocaleString())
+        loadInvoices()
+        e.target.value = ''
+        return
+      }
+
       const XLSX = await import('xlsx')
       const ab   = await file.arrayBuffer()
       const wb   = XLSX.read(new Uint8Array(ab), { type: 'array' })
@@ -869,7 +960,7 @@ export default function Purchasing() {
       {isDragging && (
         <DropZoneOverlay
           title="Drop invoice file here"
-          subtitle="Accepts .xlsx, .xls, or .csv"
+          subtitle="Accepts .xlsx, .xls, .csv, or .pdf invoices"
           onClose={dismissDropZone}
         />
       )}
@@ -921,7 +1012,7 @@ export default function Purchasing() {
           <button className={styles.btnIcon} onClick={exportCSV} title="Export CSV"><Download size={15} /></button>
           <label className={styles.btnSecondary}>
             <Upload size={13} /> Import
-            <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }} onChange={handleImport} />
+            <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv,.pdf" style={{ display: 'none' }} onChange={handleImport} />
           </label>
 
           <button className={styles.btnPrimary} onClick={() => { setForm({ ...EMPTY_FORM, location: location || '', periodKey }); setEditId(null); setShowForm(v => !v) }}
