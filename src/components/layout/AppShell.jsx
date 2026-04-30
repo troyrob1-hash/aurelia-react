@@ -17,7 +17,7 @@ const NAV = [
   { to: '/orders',     icon: ShoppingCart,    label: 'Order Hub',    category: 'Procurement' },
   { to: '/sales',      icon: TrendingUp,      label: 'Weekly Sales', category: 'Revenue' },
   { to: '/inventory',  icon: Package,         label: 'Inventory',    category: 'Stock' },
-  { to: '/waste',      icon: Trash2,          label: 'Waste Log',    category: 'Shrinkage' },
+  { to: '/waste',      icon: Trash2,          label: 'Shrinkage',    category: 'Shrinkage' },
   { to: '/purchasing', icon: FileText,        label: 'Purchasing',   category: 'AP' },
   { to: '/budgets',    icon: PieChart,        label: 'Budgets',      category: 'Planning' },
   { to: '/transfers',  icon: ArrowLeftRight,  label: 'Operating Ledger', category: 'Finance' },
