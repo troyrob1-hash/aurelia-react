@@ -47,6 +47,7 @@ export default defineConfig(({ mode }) => {
   process.env.VITE_ANTHROPIC_KEY = env.VITE_ANTHROPIC_KEY || ''
   return {
     plugins: [react(), claudeProxy()],
+    server: { hmr: { overlay: false } },
     resolve: {
       alias: {
         '@': resolve(__dirname, 'src'),

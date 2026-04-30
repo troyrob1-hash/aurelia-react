@@ -385,6 +385,7 @@ export default function Purchasing() {
           reader.readAsDataURL(file)
         })
 
+        console.log('[PDF PARSE] Sending PDF to AI, base64 length:', base64.length)
         const resp = await fetch('/api/claude', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -408,31 +409,33 @@ export default function Purchasing() {
         })
 
         const aiData = await resp.json()
+        console.log('[PDF PARSE] AI response:', JSON.stringify(aiData).slice(0, 500))
         const aiText = (aiData.content || []).map(b => b.text || '').join('')
+        console.log('[PDF PARSE] Extracted text:', aiText.slice(0, 300))
         const cleaned = aiText.replace(/```json|```/g, '').trim()
         let parsed
         try {
           parsed = JSON.parse(cleaned)
-        } catch {
+          console.log('[PDF PARSE] Parsed:', parsed)
+        } catch (parseErr) {
+          console.error('[PDF PARSE] JSON parse failed:', parseErr.message, 'raw:', cleaned.slice(0, 200))
           toast.error('Could not parse invoice — try a clearer PDF')
           e.target.value = ''
           return
         }
 
-        // Upload PDF as attachment
-        const safeFilename = Date.now() + '_' + file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
-        const path = 'tenants/' + orgId + '/invoices/pending/' + safeFilename
-        const { ref: storageRefFn, uploadBytes: ub, getDownloadURL: gdl } = await import('firebase/storage')
-        const fileRef = storageRefFn(storage, path)
-        await ub(fileRef, file, { contentType: 'application/pdf' })
-        const pdfUrl = await gdl(fileRef)
-
         // Create invoice from parsed data
+        // Map to the same field names the invoice list expects
+        const vendorMatch = vendors.find(v => v.label?.toLowerCase().includes((parsed.vendor || '').toLowerCase()))
         const invDoc = await addDoc(collection(db, 'tenants', orgId, 'invoices'), {
           vendor: parsed.vendor || 'Unknown Vendor',
-          invoiceNumber: parsed.invoiceNumber || '',
+          vendorId: vendorMatch?.id || 'other',
+          invoiceNum: parsed.invoiceNumber || '',
           invoiceDate: parsed.invoiceDate || new Date().toISOString().slice(0, 10),
           dueDate: parsed.dueDate || '',
+          amount: parsed.total || 0,
+          amountPaid: 0,
+          glCode: 'cogs_supplies',
           lineItems: (parsed.lineItems || []).map(li => ({
             description: li.description || '',
             quantity: li.quantity || 1,
@@ -441,27 +444,34 @@ export default function Purchasing() {
           })),
           subtotal: parsed.subtotal || 0,
           tax: parsed.tax || 0,
-          total: parsed.total || 0,
           status: 'Pending',
           location: location || selectedLocation,
-          period: periodKey,
+          periodKey: periodKey,
           source: 'pdf-ai-parse',
           fileName: file.name,
-          attachments: [{
-            name: file.name,
-            path,
-            url: pdfUrl,
-            size: file.size,
-            contentType: 'application/pdf',
-            uploadedBy: user?.name || user?.email || 'unknown',
-            uploadedAt: new Date().toISOString(),
-          }],
           createdBy: user?.name || user?.email || 'unknown',
           createdAt: serverTimestamp(),
         })
 
+        // Add to local state immediately so it shows in the list
+        const newInv = {
+          id: invDoc.id,
+          vendor: parsed.vendor || 'Unknown Vendor',
+          vendorId: vendorMatch?.id || 'other',
+          invoiceNum: parsed.invoiceNumber || '',
+          invoiceDate: parsed.invoiceDate || new Date().toISOString().slice(0, 10),
+          dueDate: parsed.dueDate || '',
+          amount: parsed.total || 0,
+          amountPaid: 0,
+          glCode: 'cogs_supplies',
+          status: 'Pending',
+          location: location || selectedLocation,
+          periodKey: periodKey,
+          source: 'pdf-ai-parse',
+          lineItems: parsed.lineItems || [],
+        }
+        setInvoices(prev => [newInv, ...prev])
         toast.success('Invoice parsed: ' + (parsed.vendor || 'Unknown') + ' — $' + (parsed.total || 0).toLocaleString())
-        loadInvoices()
         e.target.value = ''
         return
       }
