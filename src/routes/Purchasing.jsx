@@ -303,7 +303,13 @@ export default function Purchasing() {
         entry.syncStatus = null  // ready for external sync (e.g. NetSuite)
         const ref = await addDoc(collection(db, 'tenants', orgId, 'invoices'), entry)
         setInvoices(prev => [{ id: ref.id, ...entry }, ...prev])
-        toast.success('Invoice added — pending approval')
+        // Post to P&L immediately
+        if (entry.glCode && entry.amount) {
+          await writePnL(entry.location || location || selectedLocation, entry.periodKey || periodKey, {
+            [entry.glCode]: entry.amount,
+          })
+        }
+        toast.success('Invoice added — posted to P&L')
       }
       setForm(EMPTY_FORM); setShowForm(false); setEditId(null)
     } catch { toast.error('Failed to save invoice.') }
@@ -401,7 +407,7 @@ export default function Purchasing() {
                 },
                 {
                   type: 'text',
-                  text: 'Extract invoice data from this PDF. Return ONLY valid JSON with no other text, no backticks, no markdown. Format: {"vendor":"vendor name","invoiceNumber":"inv number or empty string","invoiceDate":"YYYY-MM-DD or empty string","dueDate":"YYYY-MM-DD or empty string","lineItems":[{"description":"item description","quantity":1,"unitPrice":10.00,"total":10.00}],"subtotal":0,"tax":0,"total":0}'
+                  text: 'Extract invoice data from this PDF. Also classify the expense into one GL code based on what is being purchased. GL codes: cogs_equipment (equipment, hardware, scanners, machines), cogs_supplies (general supplies), cogs_cleaning (cleaning products, chemicals), cogs_paper (paper products, consumables, packaging), cogs_maintenance (repairs, maintenance), exp_technology (software, IT services), exp_office_supplies (office supplies, stationery), exp_professional (professional services, consulting), exp_facilities (facilities, rent, utilities), exp_travel (travel, meals, entertainment), exp_mktg_marketing (marketing, advertising), exp_other (anything else). Return ONLY valid JSON with no other text, no backticks, no markdown. Format: {"vendor":"vendor name","invoiceNumber":"inv number or empty string","invoiceDate":"YYYY-MM-DD or empty string","dueDate":"YYYY-MM-DD or empty string","glCode":"best matching GL code or empty string","glConfidence":"high or low","lineItems":[{"description":"item description","quantity":1,"unitPrice":10.00,"total":10.00}],"subtotal":0,"tax":0,"total":0}'
                 }
               ]
             }],
@@ -420,13 +426,16 @@ export default function Purchasing() {
         } catch (parseErr) {
           console.error('[PDF PARSE] JSON parse failed:', parseErr.message, 'raw:', cleaned.slice(0, 200))
           toast.error('Could not parse invoice — try a clearer PDF')
-          e.target.value = ''
+          try { e.target.value = '' } catch {}
           return
         }
 
         // Create invoice from parsed data
         // Map to the same field names the invoice list expects
         const vendorMatch = vendors.find(v => v.label?.toLowerCase().includes((parsed.vendor || '').toLowerCase()))
+        const aiGlCode = parsed.glCode || ''
+        const glConfidence = parsed.glConfidence || 'low'
+        const needsGlReview = !aiGlCode || glConfidence === 'low'
         const invDoc = await addDoc(collection(db, 'tenants', orgId, 'invoices'), {
           vendor: parsed.vendor || 'Unknown Vendor',
           vendorId: vendorMatch?.id || 'other',
@@ -435,7 +444,9 @@ export default function Purchasing() {
           dueDate: parsed.dueDate || '',
           amount: parsed.total || 0,
           amountPaid: 0,
-          glCode: 'cogs_supplies',
+          glCode: aiGlCode,
+          glConfidence,
+          needsGlReview,
           lineItems: (parsed.lineItems || []).map(li => ({
             description: li.description || '',
             quantity: li.quantity || 1,
@@ -463,16 +474,25 @@ export default function Purchasing() {
           dueDate: parsed.dueDate || '',
           amount: parsed.total || 0,
           amountPaid: 0,
-          glCode: 'cogs_supplies',
-          status: 'Pending',
+          glCode: aiGlCode,
+          glConfidence,
+          needsGlReview,
+          status: needsGlReview ? 'Needs GL Review' : 'Pending',
           location: location || selectedLocation,
           periodKey: periodKey,
           source: 'pdf-ai-parse',
           lineItems: parsed.lineItems || [],
         }
         setInvoices(prev => [newInv, ...prev])
-        toast.success('Invoice parsed: ' + (parsed.vendor || 'Unknown') + ' — $' + (parsed.total || 0).toLocaleString())
-        e.target.value = ''
+        // Post to P&L immediately
+        if (aiGlCode && parsed.total) {
+          await writePnL(location || selectedLocation, periodKey, {
+            [aiGlCode]: parsed.total,
+          })
+        }
+        const glLabel = aiGlCode ? aiGlCode.replace('cogs_', '').replace('exp_', '').replace(/_/g, ' ') : 'unclassified'
+        toast.success('Invoice parsed: ' + (parsed.vendor || 'Unknown') + ' — $' + (parsed.total || 0).toLocaleString() + (needsGlReview ? ' (needs GL review)' : ' → ' + glLabel) + (aiGlCode ? ' — posted to P&L' : ''))
+        try { e.target.value = '' } catch {}
         return
       }
 
@@ -514,7 +534,15 @@ export default function Purchasing() {
         setInvoices(prev => [{ id: ref.id, ...entry }, ...prev])
         imported++
       }
-      toast.success(`Imported ${imported} invoices`)
+      // Post all imported invoices to P&L
+      const glTotals = {}
+      invoices.filter(i => i.glCode && i.amount).forEach(i => {
+        glTotals[i.glCode] = (glTotals[i.glCode] || 0) + i.amount
+      })
+      if (Object.keys(glTotals).length > 0) {
+        await writePnL(location || selectedLocation, periodKey, glTotals)
+      }
+      toast.success("Imported " + imported + " invoices — posted to P&L")
     } catch { toast.error('Import failed — check file format') }
   }
 
@@ -1920,7 +1948,7 @@ export default function Purchasing() {
                       onChange={e => {
                         const file = e.target.files?.[0]
                         if (file) uploadAttachment(inv.id, file)
-                        e.target.value = ''
+                        try { e.target.value = '' } catch {}
                       }}
                       style={{ display: 'none' }}
                     />
