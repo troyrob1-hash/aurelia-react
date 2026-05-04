@@ -7,13 +7,11 @@ import { db } from './firebase'
 import { doc, setDoc, getDoc, onSnapshot, serverTimestamp, collection, query, where, getDocs, documentId } from 'firebase/firestore'
 
 
-// Get orgId from Firebase auth custom claims
+import { auth } from './firebase'
+
 function _getOrgId() {
-  try {
-    const { auth } = require('./firebase')
-    const user = auth.currentUser
-    return user?.tenantId || user?.reloadUserInfo?.customAttributes?.['custom:tenantId'] || 'fooda'
-  } catch { return 'fooda' }
+  const user = auth.currentUser
+  return user?.tenantId || 'fooda'
 }
 
 export function locId(name) {
@@ -91,13 +89,13 @@ export function getTrailingPeriodKeys(currentKey, count = 12) {
 
 // Generic writer — merges into existing period doc
 export async function writePnL(location, period, data) {
-  const ref = doc(db, 'tenants', orgId || _getOrgId(), 'pnl', locId(location), 'periods', period)
+  const ref = doc(db, 'tenants', _getOrgId(), 'pnl', locId(location), 'periods', period)
   await setDoc(ref, { ...data, location, period, updatedAt: serverTimestamp() }, { merge: true })
 }
 
 // Reader — get full P&L for a location/period
 export async function readPnL(location, period) {
-  const ref = doc(db, 'tenants', orgId || _getOrgId(), 'pnl', locId(location), 'periods', period)
+  const ref = doc(db, 'tenants', _getOrgId(), 'pnl', locId(location), 'periods', period)
   const snap = await getDoc(ref)
   return snap.exists() ? snap.data() : {}
 }
@@ -111,7 +109,7 @@ export async function readPnL(location, period) {
 //   })
 //   return () => unsub()
 export function subscribePnL(location, period, onChange, onError) {
-  const ref = doc(db, 'tenants', orgId || _getOrgId(), 'pnl', locId(location), 'periods', period)
+  const ref = doc(db, 'tenants', _getOrgId(), 'pnl', locId(location), 'periods', period)
   return onSnapshot(
     ref,
     snap => {
@@ -151,7 +149,7 @@ export async function fetchPnLHistory(location, periodKeys) {
   for (let i = 0; i < periodKeys.length; i += BATCH_SIZE) {
     batches.push(periodKeys.slice(i, i + BATCH_SIZE))
   }
-  const col = collection(db, 'tenants', orgId || _getOrgId(), 'pnl', locId(location), 'periods')
+  const col = collection(db, 'tenants', _getOrgId(), 'pnl', locId(location), 'periods')
   const results = {}
   await Promise.all(
     batches.map(async batch => {

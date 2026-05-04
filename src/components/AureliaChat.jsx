@@ -1,3 +1,4 @@
+import { useAuthStore } from '@/store/authStore'
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { usePeriod } from '@/store/PeriodContext'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
@@ -139,6 +140,7 @@ export default function AureliaChat() {
   const priorKey = getPriorKey(periodKey)
   const { data: priorPnl } = usePnL(location, priorKey)
 
+  const user = useAuthStore(s => s.user)
   const orgId = user?.tenantId
 
   useEffect(() => {
