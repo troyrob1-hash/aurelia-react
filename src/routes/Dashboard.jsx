@@ -347,7 +347,7 @@ export default function Dashboard() {
   const navigate = useNavigate()
   const { user } = useAuthStore()
   const isDirector = /^(admin|director)$/i.test(user?.role || '')
-  const orgId    = user?.tenantId || 'fooda'
+  const orgId    = user?.tenantId
   const { selectedLocation, visibleLocations } = useLocations()
   const { periodKey } = usePeriod()
 

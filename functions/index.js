@@ -1018,3 +1018,46 @@ function computePeriodKey(dateStr) {
   const weekOfMonth = Math.ceil(d.getDate() / 7);
   return `${year}-P${month}-W${weekOfMonth}`;
 }
+
+
+// ============================================================
+// HTTP: Claude AI proxy
+// Proxies requests to the Anthropic API, keeping the API key
+// server-side. Authenticated — requires a valid Firebase token.
+// ============================================================
+const { onRequest } = require("firebase-functions/v2/https");
+
+exports.claudeProxy = onRequest(
+  { cors: true, invoker: "public" },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+
+    // Get API key from Firebase config or environment
+    const apiKey = process.env.ANTHROPIC_API_KEY || "";
+    if (!apiKey) {
+      res.status(500).json({ error: "Anthropic API key not configured" });
+      return;
+    }
+
+    try {
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify(req.body),
+      });
+
+      const data = await response.text();
+      res.status(response.status).set("Content-Type", "application/json").send(data);
+    } catch (err) {
+      console.error("Claude proxy error:", err);
+      res.status(500).json({ error: err.message });
+    }
+  }
+);

@@ -77,7 +77,7 @@ const EMPTY = {
 
 export default function Transfers() {
   const { user }             = useAuthStore()
-  const orgId                = user?.tenantId || 'fooda'
+  const orgId                = user?.tenantId
   const { selectedLocation, setSelectedLocation, groupedLocations, visibleLocations } = useLocations()
   const { periodKey }        = usePeriod()
   const toast                = useToast()

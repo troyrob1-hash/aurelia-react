@@ -16,7 +16,7 @@ const fmtN = v => Number(v || 0).toLocaleString('en-US', { maximumFractionDigits
 
 export default function WasteLog() {
   const user = useAuthStore(s => s.user)
-  const orgId = user?.tenantId || 'fooda'
+  const orgId = user?.tenantId
   const { selectedLocation, setSelectedLocation, visibleLocations } = useLocations()
   const { periodKey, year, period, week } = usePeriod()
   const toast = useToast()

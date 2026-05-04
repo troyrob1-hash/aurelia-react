@@ -8,7 +8,7 @@ import { readPnL, readPeriodClose, locId } from '@/lib/pnl'
 // Returns { sources: [...], allReady, periodStatus, closedBy, closedAt }
 export function usePeriodStatus(location, periodKey) {
   const { user } = useAuthStore()
-  const orgId = user?.tenantId || 'fooda'
+  const orgId = user?.tenantId
   const [status, setStatus] = useState({
     sources: [],
     allReady: false,

@@ -33,7 +33,7 @@ function formatValue(val) {
 
 export default function DataBrowserTab() {
   const user = useAuthStore(s => s.user)
-  const orgId = user?.tenantId || 'fooda'
+  const orgId = user?.tenantId
 
   const [selectedCollection, setSelectedCollection] = useState(null)
   const [documents, setDocuments] = useState([])

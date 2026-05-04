@@ -90,7 +90,7 @@ export default function Inventory() {
     (async () => {
       try {
         const { getDoc, doc: fbDoc } = await import('firebase/firestore')
-        const oid = user?.tenantId || 'fooda'
+        const oid = user?.tenantId
         const ref = fbDoc(db, 'tenants', oid, 'inventoryClose', `${(selectedLocation||'').replace(/[^a-zA-Z0-9]/g,'_')}-${periodKey}`)
         const snap = await getDoc(ref)
         if (snap.exists()) setTabClosed(true)
@@ -103,7 +103,7 @@ export default function Inventory() {
     if (!window.confirm(`Close Inventory for ${periodKey}?`)) return
     try {
       const { setDoc, doc: fbDoc, serverTimestamp } = await import('firebase/firestore')
-      const oid = user?.tenantId || 'fooda'
+      const oid = user?.tenantId
       await setDoc(fbDoc(db, 'tenants', oid, 'inventoryClose', `${(selectedLocation||'').replace(/[^a-zA-Z0-9]/g,'_')}-${periodKey}`), {
         location: selectedLocation, period: periodKey,
         closedBy: user?.name || user?.email, closedAt: serverTimestamp(),
@@ -481,13 +481,7 @@ export default function Inventory() {
                 {saving ? 'Saving...' : 'Save & Close Period'}
               </button>
             )}
-            <button onClick={seedPriorPeriod} style={{
-              padding: '6px 12px', fontSize: 12, fontWeight: 500,
-              background: '#7c3aed', color: '#fff', border: 'none', borderRadius: 6,
-              cursor: 'pointer',
-            }} title="Seed prior period inventory counts">
-              Seed Prior
-            </button>
+            
             <button className={styles.btnIcon} onClick={handleExport} title="Export Excel">
               <Download size={15} />
             </button>

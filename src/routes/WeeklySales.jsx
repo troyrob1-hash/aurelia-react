@@ -71,7 +71,7 @@ function getYoYKey(key) {
 
 export default function WeeklySales() {
   const { user }             = useAuthStore()
-  const orgId                = user?.tenantId || 'fooda'
+  const orgId                = user?.tenantId
   const { selectedLocation, setSelectedLocation, visibleLocations, currentLocation, groupedLocations } = useLocations()
   const { year, period, week: weekNum, currentWeek, periodKey, prevWeek, nextWeek } = usePeriod()
   const toast                = useToast()
@@ -246,7 +246,7 @@ export default function WeeklySales() {
     (async () => {
       try {
         const { getDoc, doc: fbDoc } = await import('firebase/firestore')
-        const oid = user?.tenantId || 'fooda'
+        const oid = user?.tenantId
         const ref = fbDoc(db, 'tenants', oid, 'salesClose', `${(selectedLocation||'').replace(/[^a-zA-Z0-9]/g,'_')}-${periodKey}`)
         const snap = await getDoc(ref)
         if (snap.exists()) setTabClosed(true)
@@ -259,7 +259,7 @@ export default function WeeklySales() {
     if (!window.confirm(`Close Sales for ${periodKey}?`)) return
     try {
       const { setDoc, doc: fbDoc, serverTimestamp } = await import('firebase/firestore')
-      const oid = user?.tenantId || 'fooda'
+      const oid = user?.tenantId
       await setDoc(fbDoc(db, 'tenants', oid, 'salesClose', `${(selectedLocation||'').replace(/[^a-zA-Z0-9]/g,'_')}-${periodKey}`), {
         location: selectedLocation, period: periodKey,
         closedBy: user?.name || user?.email, closedAt: serverTimestamp(),

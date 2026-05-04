@@ -139,7 +139,7 @@ export default function AureliaChat() {
   const priorKey = getPriorKey(periodKey)
   const { data: priorPnl } = usePnL(location, priorKey)
 
-  const orgId = 'fooda'
+  const orgId = user?.tenantId
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight

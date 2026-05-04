@@ -53,7 +53,7 @@ export async function signOutFirebase() {
 
 // ── Tenant-scoped helpers ─────────────────────────────────────
 
-export function tenantRef(tenantId = 'fooda') {
+export function tenantRef(tenantId) {
   return `tenants/${tenantId}`
 }
 

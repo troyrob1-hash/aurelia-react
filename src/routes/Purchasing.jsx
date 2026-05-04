@@ -80,7 +80,7 @@ const EMPTY_FORM = {
 
 export default function Purchasing() {
   const { user }    = useAuthStore()
-  const orgId       = user?.tenantId || 'fooda'
+  const orgId       = user?.tenantId
   const toast       = useToast()
   const { selectedLocation, setSelectedLocation, visibleLocations } = useLocations()
   const { periodKey } = usePeriod()
@@ -122,7 +122,7 @@ export default function Purchasing() {
         setPeriodClosed(close.periodStatus === 'closed')
         // Check AP-specific close
         const { getDoc, doc: fbDoc } = await import('firebase/firestore')
-        const orgId = user?.tenantId || 'fooda'
+        const orgId = user?.tenantId
         const apRef = fbDoc(db, 'tenants', orgId, 'apClose', `${locId(selectedLocation)}-${periodKey}`)
         const apSnap = await getDoc(apRef)
         if (apSnap.exists()) setApClosed(true)
@@ -139,7 +139,7 @@ export default function Purchasing() {
     const confirmMsg = `Close Accounts Payable for ${periodKey}?\n\nThis signals that all invoices for this period have been entered.`
     if (!window.confirm(confirmMsg)) return
     try {
-      const orgId = user?.tenantId || 'fooda'
+      const orgId = user?.tenantId
       const { setDoc, doc: fbDoc, serverTimestamp } = await import('firebase/firestore')
       await setDoc(fbDoc(db, 'tenants', orgId, 'apClose', `${locId(selectedLocation)}-${periodKey}`), {
         location: selectedLocation, period: periodKey,
@@ -392,7 +392,11 @@ export default function Purchasing() {
         })
 
         console.log('[PDF PARSE] Sending PDF to AI, base64 length:', base64.length)
-        const resp = await fetch('/api/claude', {
+        const isProd = window.location.hostname !== 'localhost'
+        const apiUrl = isProd
+          ? 'https://us-central1-the-grove-70180.cloudfunctions.net/claudeProxy'
+          : '/api/claude'
+        const resp = await fetch(apiUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

@@ -231,7 +231,7 @@ function parseExcel(rows, budgetYear) {
 
 export default function Budgets() {
   const { user }             = useAuthStore()
-  const orgId                = user?.tenantId || 'fooda'
+  const orgId                = user?.tenantId
   const { selectedLocation, setSelectedLocation, visibleLocations, groupedLocations } = useLocations()
   const { year: ctxYear }    = usePeriod()
   const toast                = useToast()

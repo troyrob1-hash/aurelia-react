@@ -64,7 +64,7 @@ function varianceArrow(v) {
 export default function LaborPlanner() {
   const toast = useToast()
   const { user } = useAuthStore()
-  const orgId = user?.tenantId || 'fooda'
+  const orgId = user?.tenantId
   const { selectedLocation, setSelectedLocation } = useLocations()
   const location = selectedLocation === 'all' ? null : selectedLocation
 
@@ -95,7 +95,7 @@ export default function LaborPlanner() {
     (async () => {
       try {
         const { getDoc, doc: fbDoc } = await import('firebase/firestore')
-        const oid = user?.tenantId || 'fooda'
+        const oid = user?.tenantId
         const ref = fbDoc(db, 'tenants', oid, 'laborClose', `${(selectedLocation||'').replace(/[^a-zA-Z0-9]/g,'_')}-${periodKey}`)
         const snap = await getDoc(ref)
         if (snap.exists()) setTabClosed(true)
@@ -108,7 +108,7 @@ export default function LaborPlanner() {
     if (!window.confirm(`Close Labor for ${periodKey}?`)) return
     try {
       const { setDoc, doc: fbDoc, serverTimestamp } = await import('firebase/firestore')
-      const oid = user?.tenantId || 'fooda'
+      const oid = user?.tenantId
       await setDoc(fbDoc(db, 'tenants', oid, 'laborClose', `${(selectedLocation||'').replace(/[^a-zA-Z0-9]/g,'_')}-${periodKey}`), {
         location: selectedLocation, period: periodKey,
         closedBy: user?.name || user?.email, closedAt: serverTimestamp(),
