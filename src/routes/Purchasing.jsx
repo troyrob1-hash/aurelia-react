@@ -394,7 +394,7 @@ export default function Purchasing() {
         console.log('[PDF PARSE] Sending PDF to AI, base64 length:', base64.length)
         const isProd = window.location.hostname !== 'localhost'
         const apiUrl = isProd
-          ? 'https://us-central1-the-grove-70180.cloudfunctions.net/claudeProxy'
+          ? 'https://claudeproxy-k4q3evmqsa-uc.a.run.app'
           : '/api/claude'
         const resp = await fetch(apiUrl, {
           method: 'POST',
