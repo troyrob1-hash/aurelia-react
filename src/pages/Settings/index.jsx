@@ -5,6 +5,7 @@ import LocationsTab from "./tabs/LocationsTab";
 import APIKeysTab   from "./tabs/APIKeysTab";
 import AuditLogTab  from "./tabs/AuditLogTab";
 import SSOTab       from "./tabs/SSOTab";
+import DataBrowserTab from "./tabs/DataBrowserTab";
 import Breadcrumb   from "@/components/ui/Breadcrumb";
 import { useAuth }  from "@/hooks/useAuth";
 import { canAdministerSystem } from "@/lib/permissions";
@@ -16,6 +17,7 @@ const TABS = [
   { id: "apikeys",   label: "Integrations",    adminOnly: true  },
   { id: "audit",     label: "Activity",        adminOnly: true  },
   { id: "sso",       label: "Single sign-on",  adminOnly: true  },
+  { id: "data",     label: "Data browser",    adminOnly: true  },
 ];
 
 export default function Settings() {
@@ -50,6 +52,7 @@ export default function Settings() {
         {activeTab === "apikeys"   && <APIKeysTab />}
         {activeTab === "audit"     && <AuditLogTab />}
         {activeTab === "sso"       && <SSOTab />}
+        {activeTab === "data"     && <DataBrowserTab />}
       </div>
     </div>
   );
