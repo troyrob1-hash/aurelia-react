@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { db } from '@/lib/firebase'
 import { collection, getDocs, doc, getDoc } from 'firebase/firestore'
 import { useAuthStore } from '@/store/authStore'
+import { useLocations } from '@/store/LocationContext'
 
 const COLLECTIONS = [
   { id: 'pnl', label: 'P&L Periods', path: (org, loc) => `tenants/${org}/pnl/${loc}/periods` },
@@ -39,7 +40,9 @@ export default function DataBrowserTab() {
   const [selectedDoc, setSelectedDoc] = useState(null)
   const [docData, setDocData] = useState(null)
   const [loading, setLoading] = useState(false)
-  const [locationFilter, setLocationFilter] = useState('Test_Sandbox')
+  const { visibleLocations } = useLocations()
+  const locOptions = visibleLocations.map(l => (l.name || '').replace(/[^a-zA-Z0-9]/g, '_'))
+  const [locationFilter, setLocationFilter] = useState(locOptions[0] || 'Test_Sandbox')
 
   async function loadCollection(col) {
     setSelectedCollection(col)
@@ -74,10 +77,19 @@ export default function DataBrowserTab() {
           <p style={{ fontSize: 13, color: '#64748b', margin: '4px 0 0' }}>Browse Firestore collections and documents</p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 12, color: '#64748b' }}>Location:</span>
-          <input value={locationFilter} onChange={e => setLocationFilter(e.target.value)}
-            style={{ padding: '6px 10px', fontSize: 12, border: '1px solid #e2e8f0', borderRadius: 6, width: 140 }}
-          />
+          <span style={{ fontSize: 12, color: '#64748b' }}>Location (for P&L):</span>
+          <select value={locationFilter} onChange={e => { setLocationFilter(e.target.value); if (selectedCollection) loadCollection({ ...selectedCollection }) }}
+            style={{ padding: '6px 10px', fontSize: 12, border: '1px solid #e2e8f0', borderRadius: 6 }}>
+            {locOptions.map(loc => (
+              <option key={loc} value={loc}>{loc.replace(/_/g, ' ')}</option>
+            ))}
+          </select>
+          {selectedCollection && (
+            <button onClick={() => loadCollection(selectedCollection)} style={{
+              padding: '6px 12px', fontSize: 11, fontWeight: 600,
+              background: '#0f172a', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer',
+            }}>Reload</button>
+          )}
         </div>
       </div>
 

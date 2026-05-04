@@ -6,7 +6,7 @@ import APIKeysTab   from "./tabs/APIKeysTab";
 import AuditLogTab  from "./tabs/AuditLogTab";
 import SSOTab       from "./tabs/SSOTab";
 import DataBrowserTab from "./tabs/DataBrowserTab";
-import Breadcrumb   from "@/components/ui/Breadcrumb";
+import IntegrationMapTab from "./tabs/IntegrationMapTab";import Breadcrumb   from "@/components/ui/Breadcrumb";
 import { useAuth }  from "@/hooks/useAuth";
 import { canAdministerSystem } from "@/lib/permissions";
 
@@ -23,6 +23,7 @@ const TABS = [
 export default function Settings() {
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState("users");
+  const [subTab, setSubTab] = useState("map");
   const isAdmin = canAdministerSystem(user);
   const visibleTabs = TABS.filter(t => !t.adminOnly || isAdmin);
   const activeLabel = TABS.find(t => t.id === activeTab)?.label ?? "";
@@ -49,7 +50,28 @@ export default function Settings() {
         {activeTab === "users"     && <UsersTab />}
         {activeTab === "regions"   && <RegionsTab />}
         {activeTab === "locations" && <LocationsTab />}
-        {activeTab === "apikeys"   && <APIKeysTab />}
+        {activeTab === "apikeys"   && (
+          <div>
+            <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid #e2e8f0', marginBottom: 20 }}>
+              <button onClick={() => setSubTab('map')} style={{
+                padding: '10px 20px', fontSize: 13, fontWeight: 500, border: 'none', cursor: 'pointer',
+                background: 'transparent',
+                color: subTab === 'map' ? '#0369a1' : '#64748b',
+                borderBottom: subTab === 'map' ? '2px solid #0369a1' : '2px solid transparent',
+                marginBottom: -1,
+              }}>Integration map</button>
+              <button onClick={() => setSubTab('keys')} style={{
+                padding: '10px 20px', fontSize: 13, fontWeight: 500, border: 'none', cursor: 'pointer',
+                background: 'transparent',
+                color: subTab === 'keys' ? '#0369a1' : '#64748b',
+                borderBottom: subTab === 'keys' ? '2px solid #0369a1' : '2px solid transparent',
+                marginBottom: -1,
+              }}>API keys</button>
+            </div>
+            {subTab === 'map' && <IntegrationMapTab />}
+            {subTab === 'keys' && <APIKeysTab />}
+          </div>
+        )}
         {activeTab === "audit"     && <AuditLogTab />}
         {activeTab === "sso"       && <SSOTab />}
         {activeTab === "data"     && <DataBrowserTab />}

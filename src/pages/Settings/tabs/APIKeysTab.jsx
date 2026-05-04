@@ -22,7 +22,6 @@ const SERVICE_COLORS = {
   restaurant365: "badge-purple", sysco: "badge-gray", other: "badge-gray",
 };
 
-import IntegrationMapTab from "./IntegrationMapTab";
 
 export default function APIKeysTab() {
   const { orgId, user } = useAuth();
@@ -100,10 +99,6 @@ export default function APIKeysTab() {
 
   return (
     <div className="tab-content">
-      <IntegrationMapTab />
-      <div style={{ borderTop: '1px solid #e2e8f0', marginTop: 24, paddingTop: 24 }}>
-        <h2 style={{ fontSize: 18, fontWeight: 600, margin: '0 0 16px' }}>API keys</h2>
-      </div>
       <div className="tab-toolbar">
         <div className="filter-group">
           {["active", "revoked"].map(f => (
