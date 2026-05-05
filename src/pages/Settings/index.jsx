@@ -6,7 +6,8 @@ import APIKeysTab   from "./tabs/APIKeysTab";
 import AuditLogTab  from "./tabs/AuditLogTab";
 import SSOTab       from "./tabs/SSOTab";
 import DataBrowserTab from "./tabs/DataBrowserTab";
-import IntegrationMapTab from "./tabs/IntegrationMapTab";import Breadcrumb   from "@/components/ui/Breadcrumb";
+import IntegrationMapTab from "./tabs/IntegrationMapTab";
+import SyncStatusPanel from "@/components/SyncStatusPanel";import Breadcrumb   from "@/components/ui/Breadcrumb";
 import { useAuth }  from "@/hooks/useAuth";
 import { canAdministerSystem } from "@/lib/permissions";
 
@@ -60,6 +61,13 @@ export default function Settings() {
                 borderBottom: subTab === 'map' ? '2px solid #0369a1' : '2px solid transparent',
                 marginBottom: -1,
               }}>Integration map</button>
+              <button onClick={() => setSubTab('sync')} style={{
+                padding: '10px 20px', fontSize: 13, fontWeight: 500, border: 'none', cursor: 'pointer',
+                background: 'transparent',
+                color: subTab === 'sync' ? '#0369a1' : '#64748b',
+                borderBottom: subTab === 'sync' ? '2px solid #0369a1' : '2px solid transparent',
+                marginBottom: -1,
+              }}>Sync status</button>
               <button onClick={() => setSubTab('keys')} style={{
                 padding: '10px 20px', fontSize: 13, fontWeight: 500, border: 'none', cursor: 'pointer',
                 background: 'transparent',
@@ -69,6 +77,7 @@ export default function Settings() {
               }}>API keys</button>
             </div>
             {subTab === 'map' && <IntegrationMapTab />}
+            {subTab === 'sync' && <SyncStatusPanel />}
             {subTab === 'keys' && <APIKeysTab />}
           </div>
         )}

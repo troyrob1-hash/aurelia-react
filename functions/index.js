@@ -1061,3 +1061,104 @@ exports.claudeProxy = onRequest(
     }
   }
 );
+
+
+// ============================================================
+// HTTP: Webhook receiver for external integrations
+// Receives data pushes from Sysco, Toast, Spartan, etc.
+// Routes to appropriate handler based on integration ID
+// ============================================================
+exports.integrationWebhook = onRequest(
+  { cors: true, invoker: "public" },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+
+    const integrationId = req.query.integration || req.headers["x-integration-id"];
+    const orgId = req.query.org || req.headers["x-org-id"];
+
+    if (!integrationId || !orgId) {
+      res.status(400).json({ error: "Missing integration or org ID" });
+      return;
+    }
+
+    // Verify webhook signature if provided
+    const signature = req.headers["x-webhook-signature"];
+
+    try {
+      // Log the incoming webhook
+      await db.collection("tenants").doc(orgId)
+        .collection("syncLog").add({
+          integrationId,
+          type: "webhook_received",
+          payload: JSON.stringify(req.body).slice(0, 5000),
+          headers: {
+            contentType: req.headers["content-type"],
+            signature: signature ? "present" : "absent",
+          },
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+
+      // Route to handler
+      switch (integrationId) {
+        case "sysco":
+          await handleSyscoWebhook(orgId, req.body);
+          break;
+        case "spartan":
+        case "toast":
+          await handlePOSWebhook(orgId, integrationId, req.body);
+          break;
+        case "netsuite":
+          await handleNetSuiteWebhook(orgId, req.body);
+          break;
+        default:
+          console.warn("Unknown integration:", integrationId);
+      }
+
+      // Update last sync time
+      await db.collection("tenants").doc(orgId)
+        .collection("integrations").doc(integrationId)
+        .set({
+          lastSync: admin.firestore.FieldValue.serverTimestamp(),
+          lastWebhook: admin.firestore.FieldValue.serverTimestamp(),
+          syncStatus: "success",
+        }, { merge: true });
+
+      res.status(200).json({ success: true });
+    } catch (err) {
+      console.error("Webhook error:", err);
+
+      await db.collection("tenants").doc(orgId)
+        .collection("integrations").doc(integrationId)
+        .set({
+          syncStatus: "error",
+          error: err.message,
+        }, { merge: true });
+
+      res.status(500).json({ error: err.message });
+    }
+  }
+);
+
+// Webhook handlers — implement when vendor APIs are available
+async function handleSyscoWebhook(orgId, payload) {
+  // Process catalog updates, price changes, order confirmations
+  const items = payload.items || [];
+  console.log("Sysco webhook: " + items.length + " items");
+  // TODO: write to tenants/{orgId}/inventoryCatalog
+}
+
+async function handlePOSWebhook(orgId, integrationId, payload) {
+  // Process daily sales, SKU-level transactions
+  const transactions = payload.transactions || [];
+  console.log(integrationId + " webhook: " + transactions.length + " transactions");
+  // TODO: write to tenants/{orgId}/posData and salesSubmissions
+}
+
+async function handleNetSuiteWebhook(orgId, payload) {
+  // Process sync confirmations, GL updates
+  console.log("NetSuite webhook received");
+  // TODO: update sync status for exported JEs/invoices
+}
