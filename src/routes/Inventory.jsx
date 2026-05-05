@@ -269,6 +269,167 @@ export default function Inventory() {
     return minStock > 0 && qty > 0 && qty <= minStock * 1.2
   })
 
+
+  // Export inventory count
+  async function exportInventory(format) {
+    if (!items || items.length === 0) { toast.error('No inventory data to export'); return }
+    
+    const locName = cleanLocName(location).replace(/[^a-zA-Z0-9]/g, '_')
+    const fileName = 'inventory-' + locName + '-' + periodKey
+
+    // Build row data
+    const rows = items.map(item => {
+      const opening = item.openingQty || 0
+      const closing = item.qty || 0
+      const purchased = item.purchased || 0
+      const usage = opening + purchased - closing
+      const unitCost = item.unitCost || 0
+      const totalValue = closing * unitCost
+      const usageValue = usage * unitCost
+      const parLevel = item.parLevel || item.minStock || ''
+      const needsReorder = parLevel && closing <= parLevel ? 'Yes' : ''
+
+      return {
+        'Item': item.name || '',
+        'Category': item.category || item.vendor || '',
+        'SKU': item.sku || '',
+        'Unit': item.unit || 'ea',
+        'Opening': opening,
+        'Purchased': purchased,
+        'Closing': closing,
+        'Usage': usage,
+        'Unit Cost': unitCost.toFixed(2),
+        'Closing Value': totalValue.toFixed(2),
+        'Usage Value': usageValue.toFixed(2),
+        'Par Level': parLevel,
+        'Reorder': needsReorder,
+      }
+    })
+
+    // Summary
+    const totalClosingValue = rows.reduce((s, r) => s + parseFloat(r['Closing Value']), 0)
+    const totalUsageValue = rows.reduce((s, r) => s + parseFloat(r['Usage Value']), 0)
+    const totalItems = rows.length
+    const itemsCounted = rows.filter(r => r['Closing'] > 0).length
+    const needsReorder = rows.filter(r => r['Reorder'] === 'Yes').length
+
+    if (format === 'csv') {
+      const headers = Object.keys(rows[0])
+      const csvRows = [
+        ['Inventory Count Report'],
+        ['Location: ' + cleanLocName(location)],
+        ['Period: ' + periodKey],
+        ['Exported: ' + new Date().toLocaleString()],
+        [''],
+        ['Summary'],
+        ['Total Items,' + totalItems],
+        ['Items Counted,' + itemsCounted],
+        ['Total Closing Value,$' + totalClosingValue.toFixed(2)],
+        ['Total Usage Value,$' + totalUsageValue.toFixed(2)],
+        ['Items Needing Reorder,' + needsReorder],
+        [''],
+        headers,
+        ...rows.map(r => headers.map(h => {
+          const v = String(r[h])
+          return v.includes(',') ? '"' + v + '"' : v
+        })),
+        [''],
+        ['','','','','','','Total:','','',(totalClosingValue).toFixed(2),(totalUsageValue).toFixed(2)],
+      ]
+      const csv = csvRows.map(r => Array.isArray(r) ? r.join(',') : r).join('\n')
+      const blob = new Blob([csv], { type: 'text/csv' })
+      const url = URL.createObjectURL(blob)
+      Object.assign(document.createElement('a'), { href: url, download: fileName + '.csv' }).click()
+      URL.revokeObjectURL(url)
+      toast.success('Inventory exported as CSV')
+    }
+
+    if (format === 'xlsx') {
+      try {
+        const XLSX = await import('xlsx')
+        const wb = XLSX.utils.book_new()
+
+        // Summary sheet
+        const summaryData = [
+          ['Inventory Count Report'],
+          [''],
+          ['Location', cleanLocName(location)],
+          ['Period', periodKey],
+          ['Exported', new Date().toLocaleString()],
+          [''],
+          ['Summary'],
+          ['Total Items', totalItems],
+          ['Items Counted', itemsCounted],
+          ['Total Closing Value', totalClosingValue],
+          ['Total Usage Value', totalUsageValue],
+          ['Items Needing Reorder', needsReorder],
+        ]
+        const summarySheet = XLSX.utils.aoa_to_sheet(summaryData)
+        XLSX.utils.book_append_sheet(wb, summarySheet, 'Summary')
+
+        // Detail sheet
+        const detailSheet = XLSX.utils.json_to_sheet(rows)
+        // Set column widths
+        detailSheet['!cols'] = [
+          { wch: 30 }, { wch: 15 }, { wch: 12 }, { wch: 8 },
+          { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 },
+          { wch: 10 }, { wch: 14 }, { wch: 14 }, { wch: 10 }, { wch: 8 },
+        ]
+        XLSX.utils.book_append_sheet(wb, detailSheet, 'Inventory Count')
+
+        // Category summary sheet
+        const categories = {}
+        rows.forEach(r => {
+          const cat = r['Category'] || 'Uncategorized'
+          if (!categories[cat]) categories[cat] = { items: 0, closingValue: 0, usageValue: 0 }
+          categories[cat].items++
+          categories[cat].closingValue += parseFloat(r['Closing Value'])
+          categories[cat].usageValue += parseFloat(r['Usage Value'])
+        })
+        const catRows = Object.entries(categories).map(([cat, data]) => ({
+          'Category': cat,
+          'Items': data.items,
+          'Closing Value': data.closingValue.toFixed(2),
+          'Usage Value': data.usageValue.toFixed(2),
+        }))
+        const catSheet = XLSX.utils.json_to_sheet(catRows)
+        catSheet['!cols'] = [{ wch: 20 }, { wch: 10 }, { wch: 14 }, { wch: 14 }]
+        XLSX.utils.book_append_sheet(wb, catSheet, 'By Category')
+
+        XLSX.writeFile(wb, fileName + '.xlsx')
+        toast.success('Inventory exported as Excel')
+      } catch (err) {
+        toast.error('Excel export failed: ' + err.message)
+      }
+    }
+  }
+
+  // Close inventory count for the period
+  async function closeInventoryCount() {
+    if (!items || items.length === 0) { toast.error('No items counted'); return }
+    const uncounted = items.filter(i => !i.qty && i.qty !== 0).length
+    if (uncounted > 0 && !window.confirm(uncounted + ' items have no count. Close anyway?')) return
+    
+    const closingValue = items.reduce((s, i) => s + ((i.qty || 0) * (i.unitCost || 0)), 0)
+    
+    try {
+      const { writePnL, lockPeriod } = await import('@/lib/pnl')
+      await writePnL(location, periodKey, {
+        closingValue: closingValue,
+        source_inventory: 'closed',
+      })
+      await lockPeriod(location, periodKey, user)
+      
+      // Log the audit event
+      const { audit } = await import('@/lib/audit')
+      await audit.inventoryCounted(orgId, user, location, periodKey, items.length)
+      
+      toast.success('Inventory closed — $' + Math.round(closingValue).toLocaleString() + ' closing value posted to P&L')
+    } catch (err) {
+      toast.error('Close failed: ' + err.message)
+    }
+  }
+
   if (!location) {
       toast.error('Please select a location first')
       return
@@ -490,8 +651,11 @@ export default function Inventory() {
               </button>
             )}
             
-            <button className={styles.btnIcon} onClick={handleExport} title="Export Excel">
+            <button className={styles.btnIcon} onClick={() => exportInventory('csv')} title="Export CSV">
               <Download size={15} />
+            </button>
+            <button className={styles.btnIcon} onClick={() => exportInventory('xlsx')} title="Export Excel" style={{ fontSize: 10, fontWeight: 600, padding: '4px 8px' }}>
+              .xlsx
             </button>
             <button className={styles.btnIcon} onClick={handleRefresh} title="Refresh">
               <RefreshCw size={15} className={loading ? styles.spin : ''} />

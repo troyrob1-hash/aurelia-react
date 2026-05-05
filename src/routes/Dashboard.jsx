@@ -492,7 +492,7 @@ export default function Dashboard() {
     return data[line.key] ?? null
   }
 
-  function exportCSV() {
+  async function exportCSV(format = 'csv') {
     const rows = [['Line Item', 'Actual', 'Budget', 'Variance', 'Prior Period']]
     schema.forEach(section => {
       rows.push([section.label.toUpperCase(), '', '', '', ''])
@@ -505,10 +505,21 @@ export default function Dashboard() {
         rows.push([line.label, actual?.toFixed(2)||'', budget?.toFixed(2)||'', variance?.toFixed(2)||'', prior?.toFixed(2)||''])
       })
     })
-    const csv  = rows.map(r => r.map(v => `"${v}"`).join(',')).join('\n')
+    if (format === 'xlsx') {
+      try {
+        const XLSX = await import('xlsx')
+        const wb = XLSX.utils.book_new()
+        const ws = XLSX.utils.aoa_to_sheet(rows)
+        ws['!cols'] = [{ wch: 30 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }]
+        XLSX.utils.book_append_sheet(wb, ws, 'P&L')
+        XLSX.writeFile(wb, 'pnl-' + (location || 'all') + '-' + periodKey + '.xlsx')
+      } catch (err) { console.error('Excel export failed:', err) }
+      return
+    }
+    const csv  = rows.map(r => r.map(v => '"' + v + '"').join(',')).join('\n')
     const blob = new Blob([csv], { type: 'text/csv' })
     const url  = URL.createObjectURL(blob)
-    Object.assign(document.createElement('a'), { href: url, download: `pnl-${periodKey}.csv` }).click()
+    Object.assign(document.createElement('a'), { href: url, download: 'pnl-' + periodKey + '.csv' }).click()
     URL.revokeObjectURL(url)
   }
 
@@ -747,7 +758,7 @@ export default function Dashboard() {
           </div>
 
           <button
-            onClick={exportCSV}
+            onClick={() => exportCSV('csv')}
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 6,
               padding: '7px 13px', fontSize: 12, fontWeight: 500,
@@ -756,7 +767,19 @@ export default function Dashboard() {
               cursor: 'pointer',
             }}
           >
-            <Download size={13} /> Export
+            <Download size={13} /> CSV
+          </button>
+          <button
+            onClick={() => exportCSV('xlsx')}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              padding: '7px 13px', fontSize: 12, fontWeight: 500,
+              background: '#0f172a', color: '#fff',
+              border: 'none', borderRadius: 8,
+              cursor: 'pointer',
+            }}
+          >
+            <Download size={13} /> Excel
           </button>
           <button
             onClick={refresh}
