@@ -261,7 +261,15 @@ export default function Inventory() {
   }, [])
 
   const handleExport = useCallback(async () => {
-    if (!location) {
+  
+  // Low stock detection
+  const lowStockItems = items.filter(item => {
+    const qty = item.qty || 0
+    const minStock = item.minStock || item.parLevel || 0
+    return minStock > 0 && qty > 0 && qty <= minStock * 1.2
+  })
+
+  if (!location) {
       toast.error('Please select a location first')
       return
     }

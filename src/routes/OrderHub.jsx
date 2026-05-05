@@ -114,6 +114,9 @@ export default function OrderHub() {
   const [note, setNote] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [submitted, setSubmitted] = useState(false)
+  const [receivingMode, setReceivingMode] = useState(false)
+  const [receivingOrder, setReceivingOrder] = useState(null)
+  const [receivingItems, setReceivingItems] = useState({})
   
   // Past orders
   const [pastOrders, setPastOrders] = useState([])
@@ -714,6 +717,47 @@ export default function OrderHub() {
   }, [orgId, loadPastOrders, location])
 
   // ─── Render ────────────────────────────────────────────────────────────────
+
+  // Receiving workflow
+  async function startReceiving(order) {
+    setReceivingOrder(order)
+    setReceivingMode(true)
+    const items = {}
+    ;(order.lineItems || []).forEach(li => {
+      items[li.id || li.name] = { ordered: li.qty || 0, received: li.qty || 0, discrepancy: '' }
+    })
+    setReceivingItems(items)
+  }
+
+  async function confirmReceiving() {
+    if (!receivingOrder) return
+    const discrepancies = Object.entries(receivingItems)
+      .filter(([_, v]) => v.received !== v.ordered)
+      .map(([id, v]) => ({
+        itemId: id,
+        ordered: v.ordered,
+        received: v.received,
+        difference: v.received - v.ordered,
+        note: v.discrepancy,
+      }))
+    
+    try {
+      const { updateDoc, doc: docFn, serverTimestamp: st } = await import('firebase/firestore')
+      await updateDoc(docFn(db, 'tenants', orgId, 'orders', receivingOrder.id), {
+        status: 'received',
+        receivedAt: st(),
+        receivedBy: user?.name || user?.email,
+        receivedItems: receivingItems,
+        discrepancies: discrepancies.length > 0 ? discrepancies : null,
+        hasDiscrepancies: discrepancies.length > 0,
+      })
+      toast.success('Order received' + (discrepancies.length > 0 ? ' — ' + discrepancies.length + ' discrepancies logged' : ''))
+      setReceivingMode(false)
+      setReceivingOrder(null)
+    } catch (err) {
+      toast.error('Failed to save receiving: ' + err.message)
+    }
+  }
 
   if (!selectedLocation || selectedLocation === 'all') return (
     <AllLocationsGrid

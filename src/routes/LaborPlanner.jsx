@@ -48,6 +48,15 @@ function fmt(n) {
 }
 function pct(n, base) {
   if (!base || base === 0) return '—'
+
+  // Labor % of GFS alert
+  const laborAlertThreshold = 35
+  const totalLabor = rows.reduce((s, r) => s + (r.amount || 0), 0)
+  const gfsTotal = pnl?.gfs_total || 0
+  const laborPct = gfsTotal > 0 ? (totalLabor / gfsTotal) * 100 : 0
+  const laborOverBudget = pnl?.budget_labor && totalLabor > pnl.budget_labor
+  const laborBudgetVar = pnl?.budget_labor ? ((totalLabor / pnl.budget_labor - 1) * 100).toFixed(1) : null
+
   return ((n / base) * 100).toFixed(1) + '%'
 }
 function varianceCls(v) {
@@ -468,6 +477,19 @@ export default function LaborPlanner() {
 
   return (
     <div className={styles.page}>
+      {laborPct > laborAlertThreshold && gfsTotal > 0 && (
+        <div style={{
+          padding: '12px 18px', marginBottom: 16, borderRadius: 10,
+          background: '#fef2f2', border: '1px solid #fecaca',
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        }}>
+          <div style={{ fontSize: 13, color: '#dc2626' }}>
+            <span style={{ fontWeight: 600 }}>Labor alert:</span> {laborPct.toFixed(1)}% of GFS
+            {laborOverBudget && <span> · {laborBudgetVar}% over budget</span>}
+            <span style={{ color: '#7f1d1d' }}> — target is under {laborAlertThreshold}%</span>
+          </div>
+        </div>
+      )}
 
       {/* ── Header ── */}
       <div className={styles.header}>
