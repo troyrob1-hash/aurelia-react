@@ -1,181 +1,115 @@
-// src/pages/Settings/tabs/AuditLogTab.jsx
-import { useState, useEffect, useCallback } from "react";
-import {
-  collection, query, orderBy,
-  limit, startAfter, getDocs, where
-} from "firebase/firestore";
-import { db }      from "@/lib/firebase";
-import { useAuth } from "@/hooks/useAuth";
-import { formatDistanceToNow, format } from "date-fns";
-import Spinner     from "@/components/ui/Spinner";
-import EmptyState  from "@/components/ui/EmptyState";
+import { useState, useEffect } from 'react'
+import { useAuthStore } from '@/store/authStore'
+import { db } from '@/lib/firebase'
+import { collection, getDocs, query, orderBy, limit, where } from 'firebase/firestore'
 
-const PAGE_SIZE = 25;
+function timeAgo(date) {
+  if (!date) return ''
+  const d = date.toDate ? date.toDate() : new Date(date)
+  const seconds = Math.floor((Date.now() - d.getTime()) / 1000)
+  if (seconds < 60) return 'Just now'
+  if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago'
+  if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago'
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+}
 
-const ACTION_META = {
-  "user.invited":             { label: "User invited",          color: "badge-blue"   },
-  "user.activated":           { label: "User activated",        color: "badge-green"  },
-  "user.deactivated":         { label: "User deactivated",      color: "badge-red"    },
-  "user.role_changed":        { label: "Role changed",          color: "badge-amber"  },
-  "user.updated":             { label: "User updated",          color: "badge-gray"   },
-  "user.created":             { label: "User created",          color: "badge-blue"   },
-  "user.login":               { label: "Login",                 color: "badge-gray"   },
-  "user.login_failed":        { label: "Login failed",          color: "badge-red"    },
-  "user.permissions_changed": { label: "Permissions changed",   color: "badge-amber"  },
-  "location.created":         { label: "Location created",      color: "badge-blue"   },
-  "location.updated":         { label: "Location updated",      color: "badge-gray"   },
-  "location.deactivated":     { label: "Location deactivated",  color: "badge-red"    },
-  "apiKey.created":           { label: "API key added",         color: "badge-blue"   },
-  "apiKey.revoked":           { label: "API key revoked",       color: "badge-red"    },
-  "apiKey.accessed":          { label: "API key revealed",      color: "badge-amber"  },
-  "settings.updated":         { label: "Settings updated",      color: "badge-gray"   },
-};
-
-const RESOURCE_FILTERS = ["all", "user", "location", "apiKey"];
+const ACTION_COLORS = {
+  'pnl.updated': '#2563eb', 'period.closed': '#059669', 'period.reopened': '#d97706',
+  'invoice.created': '#7c3aed', 'invoice.approved': '#2563eb', 'invoice.paid': '#059669',
+  'je.created': '#7c3aed', 'order.submitted': '#2563eb', 'order.received': '#059669',
+  'inventory.counted': '#059669', 'labor.imported': '#2563eb', 'sales.imported': '#2563eb',
+  'budget.uploaded': '#059669', 'user.login': '#64748b', 'data.exported': '#64748b',
+  'settings.changed': '#d97706', 'integration.connected': '#059669', 'integration.synced': '#2563eb',
+}
 
 export default function AuditLogTab() {
-  const { orgId } = useAuth();
+  const user = useAuthStore(s => s.user)
+  const orgId = user?.tenantId
+  const [logs, setLogs] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [filter, setFilter] = useState('all')
 
-  const [events,      setEvents]      = useState([]);
-  const [loading,     setLoading]     = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [lastDoc,     setLastDoc]     = useState(null);
-  const [hasMore,     setHasMore]     = useState(true);
-  const [filter,      setFilter]      = useState("all");
-  const [expanded,    setExpanded]    = useState(null);
-  const [error,       setError]       = useState(null);
+  useEffect(() => {
+    if (!orgId) return
+    setLoading(true)
+    const q = query(
+      collection(db, 'tenants', orgId, 'auditTrail'),
+      orderBy('createdAt', 'desc'),
+      limit(100)
+    )
+    getDocs(q).then(snap => {
+      setLogs(snap.docs.map(d => ({ id: d.id, ...d.data() })))
+    }).catch(err => {
+      console.warn('Audit log load failed:', err.message)
+      setLogs([])
+    }).finally(() => setLoading(false))
+  }, [orgId])
 
-  const fetchEvents = useCallback(async (cursor = null) => {
-    cursor ? setLoadingMore(true) : setLoading(true);
-    setError(null);
-    try {
-      let q = query(
-        collection(db, "orgs", orgId, "auditLog"),
-        orderBy("createdAt", "desc"),
-        limit(PAGE_SIZE)
-      );
-      if (filter !== "all") q = query(q, where("resourceType", "==", filter));
-      if (cursor) q = query(q, startAfter(cursor));
-
-      const snap = await getDocs(q);
-      const docs = snap.docs.map(d => d.data());
-      setEvents(prev => cursor ? [...prev, ...docs] : docs);
-      setLastDoc(snap.docs[snap.docs.length - 1] ?? null);
-      setHasMore(snap.docs.length === PAGE_SIZE);
-    } catch (e) {
-      setError("Failed to load audit log.");
-      console.error(e);
-    } finally {
-      setLoading(false);
-      setLoadingMore(false);
-    }
-  }, [orgId, filter]);
-
-  useEffect(() => { setExpanded(null); fetchEvents(); }, [fetchEvents]);
-
-  const formatTime = (ts) => {
-    if (!ts) return "—";
-    const date = ts.toDate?.() ?? new Date(ts);
-    return `${format(date, "MMM d, yyyy h:mm a")} (${formatDistanceToNow(date, { addSuffix: true })})`;
-  };
+  const categories = ['all', 'pnl', 'invoice', 'order', 'inventory', 'labor', 'sales', 'user', 'settings']
+  const filtered = filter === 'all' ? logs : logs.filter(l => l.action?.startsWith(filter))
 
   return (
-    <div className="tab-content">
-      <div className="tab-toolbar">
-        <div className="filter-group">
-          {RESOURCE_FILTERS.map(f => (
-            <button key={f} className={`filter-btn ${filter === f ? "active" : ""}`} onClick={() => setFilter(f)}>
-              {f === "all" ? "All activity" : f.charAt(0).toUpperCase() + f.slice(1) + "s"}
-            </button>
-          ))}
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <div>
+          <h2 style={{ fontSize: 18, fontWeight: 600, margin: 0 }}>Activity log</h2>
+          <p style={{ fontSize: 13, color: '#64748b', margin: '4px 0 0' }}>All actions across the platform</p>
         </div>
-        <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>
-          Read-only — immutable record
-        </span>
       </div>
 
-      {error && <div className="error-banner">{error}</div>}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
+        {categories.map(cat => (
+          <button key={cat} onClick={() => setFilter(cat)} style={{
+            padding: '4px 12px', fontSize: 12, fontWeight: filter === cat ? 600 : 400,
+            background: filter === cat ? '#0f172a' : '#f1f5f9',
+            color: filter === cat ? '#fff' : '#475569',
+            border: 'none', borderRadius: 6, cursor: 'pointer',
+            textTransform: 'capitalize',
+          }}>{cat}</button>
+        ))}
+      </div>
 
-      {loading ? <Spinner /> : events.length === 0 ? (
-        <EmptyState title="No activity yet" description="Actions taken by admins and users will appear here." />
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: 40, color: '#94a3b8' }}>Loading activity...</div>
+      ) : filtered.length === 0 ? (
+        <div style={{ textAlign: 'center', padding: 40, color: '#94a3b8' }}>No activity recorded yet</div>
       ) : (
-        <>
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th style={{ width: "22%" }}>When</th>
-                <th style={{ width: "18%" }}>Who</th>
-                <th style={{ width: "22%" }}>Action</th>
-                <th style={{ width: "18%" }}>Resource</th>
-                <th style={{ width: "12%" }}>IP</th>
-                <th style={{ width: "8%"  }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {events.map(ev => {
-                const meta   = ACTION_META[ev.action] ?? { label: ev.action, color: "badge-gray" };
-                const isOpen = expanded === ev.eventId;
-                return [
-                  <tr key={ev.eventId} onClick={() => setExpanded(e => e === ev.eventId ? null : ev.eventId)} style={{ cursor: "pointer" }}>
-                    <td style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
-                      {ev.createdAt ? formatDistanceToNow(ev.createdAt.toDate(), { addSuffix: true }) : "—"}
-                    </td>
-                    <td>
-                      <div style={{ fontWeight: 500, fontSize: 13 }}>{ev.actor?.displayName ?? "System"}</div>
-                      <div style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>{ev.actor?.email ?? ""}</div>
-                    </td>
-                    <td><span className={`badge ${meta.color}`}>{meta.label}</span></td>
-                    <td style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
-                      {ev.resourceType} / <span style={{ fontFamily: "var(--font-mono)", fontSize: 11 }}>{ev.resourceId?.slice(0, 8)}…</span>
-                    </td>
-                    <td style={{ fontSize: 11, color: "var(--color-text-tertiary)", fontFamily: "var(--font-mono)" }}>{ev.actor?.ip ?? "—"}</td>
-                    <td style={{ textAlign: "right", fontSize: 12, color: "var(--color-text-tertiary)" }}>{isOpen ? "▲" : "▼"}</td>
-                  </tr>,
-                  isOpen && (
-                    <tr key={`${ev.eventId}-detail`}>
-                      <td colSpan={6} style={{ padding: 0 }}>
-                        <div style={{ background: "var(--color-background-secondary)", padding: "1rem 1.25rem", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", fontSize: 12 }}>
-                          <div>
-                            <div style={{ fontWeight: 500, marginBottom: 6, color: "var(--color-text-tertiary)", textTransform: "uppercase", fontSize: 11, letterSpacing: ".05em" }}>Event details</div>
-                            {[
-                              ["Event ID",      <span style={{ fontFamily: "var(--font-mono)" }}>{ev.eventId}</span>],
-                              ["Timestamp",     formatTime(ev.createdAt)],
-                              ["Action",        ev.action],
-                              ["Resource type", ev.resourceType],
-                              ["Resource ID",   <span style={{ fontFamily: "var(--font-mono)" }}>{ev.resourceId}</span>],
-                              ["IP",            ev.actor?.ip ?? "—"],
-                              ["User agent",    ev.actor?.userAgent ?? "—"],
-                            ].map(([label, val]) => (
-                              <div key={label} style={{ display: "flex", justifyContent: "space-between", gap: "1rem", padding: "4px 0", borderBottom: "0.5px solid var(--color-border-tertiary)", color: "var(--color-text-secondary)" }}>
-                                <span style={{ color: "var(--color-text-tertiary)", flexShrink: 0 }}>{label}</span>
-                                <span style={{ textAlign: "right", wordBreak: "break-all" }}>{val}</span>
-                              </div>
-                            ))}
-                          </div>
-                          {ev.after && (
-                            <div>
-                              <div style={{ fontWeight: 500, marginBottom: 6, color: "var(--color-text-tertiary)", textTransform: "uppercase", fontSize: 11, letterSpacing: ".05em" }}>Changes</div>
-                              <pre style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: 6, padding: "8px 10px", fontSize: 11, fontFamily: "var(--font-mono)", overflowX: "auto", whiteSpace: "pre-wrap", wordBreak: "break-all", color: "var(--color-text-primary)", margin: 0 }}>
-                                {JSON.stringify(ev.after, null, 2)}
-                              </pre>
-                            </div>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                ];
-              })}
-            </tbody>
-          </table>
-
-          {hasMore && (
-            <button className="load-more-btn" onClick={() => fetchEvents(lastDoc)} disabled={loadingMore}>
-              {loadingMore ? "Loading..." : "Load more"}
-            </button>
-          )}
-        </>
+        <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
+          {filtered.map((log, i) => {
+            const color = ACTION_COLORS[log.action] || '#64748b'
+            return (
+              <div key={log.id} style={{
+                padding: '10px 16px', fontSize: 12,
+                borderBottom: i < filtered.length - 1 ? '1px solid #f1f5f9' : 'none',
+                display: 'flex', alignItems: 'flex-start', gap: 10,
+              }}>
+                <div style={{
+                  width: 6, height: 6, borderRadius: '50%', background: color,
+                  marginTop: 5, flexShrink: 0,
+                }}/>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                    <span style={{ fontWeight: 500, color: '#0f172a' }}>
+                      {log.action?.replace(/\./g, ' · ')}
+                    </span>
+                    <span style={{ fontSize: 11, color: '#94a3b8', whiteSpace: 'nowrap', marginLeft: 8 }}>
+                      {timeAgo(log.createdAt)}
+                    </span>
+                  </div>
+                  <div style={{ color: '#64748b', marginTop: 2 }}>
+                    {log.user && <span>{log.user}</span>}
+                    {log.location && <span> · {log.location}</span>}
+                    {log.periodKey && <span> · {log.periodKey}</span>}
+                    {log.vendor && <span> · {log.vendor}</span>}
+                    {log.amount && <span> · ${Number(log.amount).toLocaleString()}</span>}
+                    {log.source && <span> · {log.source}</span>}
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
       )}
     </div>
-  );
+  )
 }

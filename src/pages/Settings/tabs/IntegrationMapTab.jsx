@@ -1,4 +1,6 @@
 import { useState, useRef, useCallback } from 'react'
+import { useAuthStore } from '@/store/authStore'
+import { INTEGRATIONS, getAdapter } from '@/lib/integrations'
 
 const APIS = [
   { id:'sysco', n:'Sysco', c:'#185FA5', bg:'#E6F1FB', ic:'#B5D4F4', tc:'#0C447C', s:'planned', m:'Pricing API — real-time catalog sync',
@@ -85,7 +87,44 @@ function curve(x1,y1,x2,y2) {
 export default function IntegrationMapTab() {
   const [active, setActive] = useState(null)
   const [detail, setDetail] = useState(null)
-  const svgRef = useRef(null)
+  const [showConnect, setShowConnect] = useState(false)
+  const [connectStep, setConnectStep] = useState("select")
+  const [connectId, setConnectId] = useState(null)
+  const [connectKey, setConnectKey] = useState("")
+  const [connectStatus, setConnectStatus] = useState(null)
+  const [connectError, setConnectError] = useState("")
+
+  const user = useAuthStore(s => s.user)
+  const orgId = user?.tenantId
+  const availableIntegrations = Object.values(INTEGRATIONS).filter(i => i.authType !== 'file_import')
+
+  async function handleTestConnection() {
+    if (!connectId || !connectKey.trim()) return
+    setConnectStatus('testing')
+    setConnectError('')
+    try {
+      const adapter = getAdapter(orgId, connectId)
+      const result = await adapter.connect({ apiKey: connectKey.trim() })
+      if (result.success) {
+        setConnectStatus('success')
+      } else {
+        setConnectStatus('error')
+        setConnectError(result.error || 'Connection failed')
+      }
+    } catch (err) {
+      setConnectStatus('error')
+      setConnectError(err.message)
+    }
+  }
+
+  function resetConnect() {
+    setShowConnect(false)
+    setConnectStep('select')
+    setConnectId(null)
+    setConnectKey('')
+    setConnectStatus(null)
+    setConnectError('')
+  }  const svgRef = useRef(null)
   const wrapRef = useRef(null)
 
   const allInfo = {}
@@ -135,8 +174,17 @@ export default function IntegrationMapTab() {
   return (
     <div>
       <div style={{ marginBottom: 16 }}>
-        <h2 style={{ fontSize: 18, fontWeight: 600, margin: 0 }}>Integration map</h2>
-        <p style={{ fontSize: 13, color: '#64748b', margin: '4px 0 0' }}>Hover to highlight. Click any node for details.</p>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div>
+            <h2 style={{ fontSize: 18, fontWeight: 600, margin: 0 }}>Integration map</h2>
+            <p style={{ fontSize: 13, color: '#64748b', margin: '4px 0 0' }}>Hover to highlight. Click any node for details.</p>
+          </div>
+          <button onClick={() => setShowConnect(true)} style={{
+            padding: '8px 16px', fontSize: 12, fontWeight: 600,
+            background: '#0f172a', color: '#fff', border: 'none', borderRadius: 8,
+            cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
+          }}>+ Add integration</button>
+        </div>
       </div>
 
       <div ref={wrapRef} style={{ position: 'relative', border: '1px solid #e2e8f0', borderRadius: 14, overflow: 'hidden' }}>
@@ -326,12 +374,143 @@ export default function IntegrationMapTab() {
         )}
       </div>
 
-      <div style={{ display: 'flex', gap: 20, fontSize: 11, color: '#94a3b8', marginTop: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 }}>
+        <div style={{ display: 'flex', gap: 20, fontSize: 11, color: '#94a3b8' }}>
         <span><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#059669', marginRight: 4, verticalAlign: 'middle' }}/> Live</span>
         <span><span style={{ display: 'inline-block', width: 16, height: 2, background: '#85B7EB', borderRadius: 1, marginRight: 4, verticalAlign: 'middle' }}/> API flow</span>
         <span><span style={{ display: 'inline-block', width: 16, height: 0, borderTop: '2px dashed #B4B2A9', marginRight: 4, verticalAlign: 'middle' }}/> Internal</span>
         <span><span style={{ display: 'inline-block', width: 16, height: 1, background: '#F15D3B', opacity: 0.3, marginRight: 4, verticalAlign: 'middle' }}/> Hub</span>
+        </div>
+
       </div>
+
+      {showConnect && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.4)', zIndex: 1000,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }} onClick={e => e.target === e.currentTarget && resetConnect()}>
+          <div style={{
+            background: '#fff', borderRadius: 14, width: 440, maxHeight: '80vh',
+            overflow: 'auto', padding: '24px 28px',
+          }}>
+            {connectStep === 'select' && (
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+                  <h3 style={{ fontSize: 18, fontWeight: 600, margin: 0 }}>Add integration</h3>
+                  <button onClick={resetConnect} style={{ background: 'none', border: 'none', fontSize: 18, color: '#94a3b8', cursor: 'pointer' }}>\u2715</button>
+                </div>
+                <p style={{ fontSize: 13, color: '#64748b', marginBottom: 16 }}>Select a service to connect to Aurelia</p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {availableIntegrations.map(integ => (
+                    <button key={integ.id} onClick={() => { setConnectId(integ.id); setConnectStep('configure') }}
+                      style={{
+                        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                        padding: '14px 16px', background: '#f8fafc', border: '1px solid #e2e8f0',
+                        borderRadius: 10, cursor: 'pointer', textAlign: 'left',
+                      }}>
+                      <div>
+                        <div style={{ fontSize: 14, fontWeight: 500, color: '#0f172a' }}>{integ.name}</div>
+                        <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
+                          {integ.capabilities.join(', ')} · {integ.authType === 'oauth' ? 'OAuth' : 'API key'}
+                        </div>
+                      </div>
+                      <div style={{ fontSize: 11, color: '#94a3b8' }}>
+                        {integ.tabs.length} tab{integ.tabs.length !== 1 ? 's' : ''}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {connectStep === 'configure' && (
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <button onClick={() => setConnectStep('select')} style={{
+                      background: 'none', border: 'none', fontSize: 16, color: '#64748b', cursor: 'pointer', padding: 0,
+                    }}>\u2190</button>
+                    <h3 style={{ fontSize: 18, fontWeight: 600, margin: 0 }}>
+                      Connect {INTEGRATIONS[connectId]?.name}
+                    </h3>
+                  </div>
+                  <button onClick={resetConnect} style={{ background: 'none', border: 'none', fontSize: 18, color: '#94a3b8', cursor: 'pointer' }}>\u2715</button>
+                </div>
+
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>
+                    Connects to: {INTEGRATIONS[connectId]?.tabs.map(t => t.charAt(0).toUpperCase() + t.slice(1)).join(', ')}
+                  </div>
+                  <div style={{ fontSize: 12, color: '#64748b' }}>
+                    Capabilities: {INTEGRATIONS[connectId]?.capabilities.join(', ')}
+                  </div>
+                  {INTEGRATIONS[connectId]?.docsUrl && (
+                    <a href={INTEGRATIONS[connectId].docsUrl} target="_blank" rel="noreferrer"
+                      style={{ fontSize: 12, color: '#2563eb', marginTop: 4, display: 'inline-block' }}>
+                      View API docs \u2197
+                    </a>
+                  )}
+                </div>
+
+                <div style={{ marginBottom: 16 }}>
+                  <label style={{ fontSize: 13, fontWeight: 500, color: '#0f172a', display: 'block', marginBottom: 6 }}>
+                    {INTEGRATIONS[connectId]?.authType === 'oauth' ? 'Client ID / Consumer Key' : 'API key'}
+                  </label>
+                  <input
+                    type="password"
+                    value={connectKey}
+                    onChange={e => setConnectKey(e.target.value)}
+                    placeholder={INTEGRATIONS[connectId]?.authType === 'oauth' ? 'Enter client ID...' : 'Enter API key...'}
+                    style={{
+                      width: '100%', padding: '10px 14px', fontSize: 13,
+                      border: '1px solid #e2e8f0', borderRadius: 8, outline: 'none',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                </div>
+
+                {connectStatus === 'success' && (
+                  <div style={{
+                    padding: '10px 14px', background: '#f0fdf4', border: '1px solid #bbf7d0',
+                    borderRadius: 8, fontSize: 13, color: '#059669', marginBottom: 16,
+                  }}>
+                    \u2713 Connected successfully
+                  </div>
+                )}
+
+                {connectStatus === 'error' && (
+                  <div style={{
+                    padding: '10px 14px', background: '#fef2f2', border: '1px solid #fecaca',
+                    borderRadius: 8, fontSize: 13, color: '#dc2626', marginBottom: 16,
+                  }}>
+                    Connection failed: {connectError}
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button onClick={handleTestConnection}
+                    disabled={!connectKey.trim() || connectStatus === 'testing'}
+                    style={{
+                      flex: 1, padding: '10px', fontSize: 13, fontWeight: 600,
+                      background: connectStatus === 'testing' ? '#e2e8f0' : '#0f172a',
+                      color: connectStatus === 'testing' ? '#94a3b8' : '#fff',
+                      border: 'none', borderRadius: 8, cursor: 'pointer',
+                    }}>
+                    {connectStatus === 'testing' ? 'Testing...' : connectStatus === 'success' ? 'Connected' : 'Test & connect'}
+                  </button>
+                  {connectStatus === 'success' && (
+                    <button onClick={resetConnect} style={{
+                      padding: '10px 20px', fontSize: 13, fontWeight: 600,
+                      background: '#059669', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer',
+                    }}>Done</button>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

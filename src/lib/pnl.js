@@ -88,7 +88,15 @@ export function getTrailingPeriodKeys(currentKey, count = 12) {
 }
 
 // Generic writer — merges into existing period doc
-export async function writePnL(location, period, data) {
+export async function writePnL(location, period, data, options = {}) {
+  // Check if period is locked (unless force override)
+  if (!options.force) {
+    const lockRef = doc(db, 'tenants', _getOrgId(), 'periodLocks', period)
+    const lockSnap = await getDoc(lockRef)
+    if (lockSnap.exists() && lockSnap.data().locked) {
+      throw new Error('Period ' + period + ' is locked. Unlock it in Settings to make changes.')
+    }
+  }
   const ref = doc(db, 'tenants', _getOrgId(), 'pnl', locId(location), 'periods', period)
   await setDoc(ref, { ...data, location, period, updatedAt: serverTimestamp() }, { merge: true })
 }
@@ -280,4 +288,34 @@ export async function readPeriodClose(location, period) {
     reopenedAt: data.reopenedAt || null,
     reopenReason: data.reopenReason || null,
   }
+}
+
+
+// Period locking
+export async function lockPeriod(location, period, user) {
+  const orgId = _getOrgId()
+  const ref = doc(db, 'tenants', orgId, 'periodLocks', period)
+  await setDoc(ref, {
+    locked: true,
+    lockedBy: user?.email || 'unknown',
+    lockedAt: serverTimestamp(),
+    location,
+  })
+}
+
+export async function unlockPeriod(period, user) {
+  const orgId = _getOrgId()
+  const ref = doc(db, 'tenants', orgId, 'periodLocks', period)
+  await setDoc(ref, {
+    locked: false,
+    unlockedBy: user?.email || 'unknown',
+    unlockedAt: serverTimestamp(),
+  }, { merge: true })
+}
+
+export async function isPeriodLocked(period) {
+  const orgId = _getOrgId()
+  const ref = doc(db, 'tenants', orgId, 'periodLocks', period)
+  const snap = await getDoc(ref)
+  return snap.exists() && snap.data().locked === true
 }
