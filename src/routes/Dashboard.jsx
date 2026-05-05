@@ -493,7 +493,12 @@ export default function Dashboard() {
   }
 
   async function exportCSV(format = 'csv') {
-    const rows = [['Line Item', 'Actual', 'Budget', 'Variance', 'Prior Period']]
+    const locLabel = location ? cleanLocName(location) : 'All Locations'
+    const rows = [
+      ['P&L Report — ' + locLabel + ' — ' + periodKey],
+      [''],
+      ['Line Item', 'Actual', 'Budget', 'Variance', 'Prior Period'],
+    ]
     schema.forEach(section => {
       rows.push([section.label.toUpperCase(), '', '', '', ''])
       section.lines.forEach(line => {
@@ -512,14 +517,14 @@ export default function Dashboard() {
         const ws = XLSX.utils.aoa_to_sheet(rows)
         ws['!cols'] = [{ wch: 30 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }]
         XLSX.utils.book_append_sheet(wb, ws, 'P&L')
-        XLSX.writeFile(wb, 'pnl-' + (location || 'all') + '-' + periodKey + '.xlsx')
+        XLSX.writeFile(wb, 'pnl-' + (location ? cleanLocName(location).replace(/[^a-zA-Z0-9]/g, '_') : 'all') + '-' + periodKey + '.xlsx')
       } catch (err) { console.error('Excel export failed:', err) }
       return
     }
     const csv  = rows.map(r => r.map(v => '"' + v + '"').join(',')).join('\n')
     const blob = new Blob([csv], { type: 'text/csv' })
     const url  = URL.createObjectURL(blob)
-    Object.assign(document.createElement('a'), { href: url, download: 'pnl-' + periodKey + '.csv' }).click()
+    Object.assign(document.createElement('a'), { href: url, download: 'pnl-' + (location ? cleanLocName(location).replace(/[^a-zA-Z0-9]/g, '_') : 'all') + '-' + periodKey + '.csv' }).click()
     URL.revokeObjectURL(url)
   }
 
