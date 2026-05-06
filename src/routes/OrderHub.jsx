@@ -131,7 +131,6 @@ export default function OrderHub() {
   // Vendor import modal
   const [showImportModal, setShowImportModal] = useState(false)
   const [whyPanelItem, setWhyPanelItem] = useState(null)
-  const [receivingOrder, setReceivingOrder] = useState(null)
 
   // Cross-device cart sync — the cart state (qty, note, deliveryDate) is
   // persisted to tenants/{orgId}/orderDrafts/{userId}__{locationId} and
