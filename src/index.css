@@ -91,3 +91,52 @@ a {
   /* Weekly Sales mobile */
   .kpiBar { grid-template-columns: repeat(2,1fr) !important; }
 }
+
+
+/* ============================================
+   GLOBAL MOBILE STYLES
+   ============================================ */
+@media (max-width: 768px) {
+  /* Sidebar collapses */
+  .sidebar, aside {
+    position: fixed !important;
+    left: -260px !important;
+    top: 0 !important;
+    bottom: 0 !important;
+    z-index: 90 !important;
+    transition: left 0.25s ease !important;
+    width: 240px !important;
+  }
+
+  .sidebar.open, aside.open {
+    left: 0 !important;
+  }
+
+  /* Main content full width */
+  main, .main-content {
+    margin-left: 0 !important;
+    width: 100% !important;
+  }
+
+  /* Tab filters scroll horizontally */
+  .tab-toolbar {
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch;
+    flex-wrap: nowrap !important;
+  }
+
+  .tab-toolbar .filter-group {
+    flex-wrap: nowrap !important;
+  }
+
+  .tab-toolbar button, .filter-btn {
+    white-space: nowrap !important;
+    flex-shrink: 0 !important;
+    min-height: 40px !important;
+  }
+
+  /* All-locations grid: 1 column on phone */
+  .locations-grid {
+    grid-template-columns: 1fr !important;
+  }
+}

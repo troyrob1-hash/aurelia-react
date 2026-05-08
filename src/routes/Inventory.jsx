@@ -924,10 +924,10 @@ export default function Inventory() {
                           setWhyItem(item)
                         }}
                         style={{ cursor: 'pointer' }}>
-                        <td className={styles.tdNum}>{idx + 1}</td>
+                        {!isMobile && <td className={styles.tdNum}>{idx + 1}</td>}
                         <td className={styles.tdName}>
-                          <div className={styles.nameRow}>
-                            <button
+                          <div className={styles.nameRow} style={isMobile ? {gap:0} : {}}>
+                            {!isMobile && <button
                               onClick={() => toggleKey(item.id)}
                               title={item.isKey ? 'Unmark as key item' : 'Mark as key item (shows in Quick count mode)'}
                               style={{
@@ -945,8 +945,8 @@ export default function Inventory() {
                               onMouseLeave={e => { e.currentTarget.style.transform = 'scale(1)' }}
                             >
                               {item.isKey ? '★' : '☆'}
-                            </button>
-                            <button
+                            </button>}
+                            {!isMobile && <button
                               onClick={() => {
                                 if (window.confirm(`Remove "${item.name}" from this location's count sheet? You can restore it from Manage Items.`)) {
                                   removeItem(item.id)
@@ -968,14 +968,15 @@ export default function Inventory() {
                               onMouseLeave={e => { e.currentTarget.style.color = '#cbd5e1' }}
                             >
                               ×
-                            </button>
-                            <div 
+                            </button>}
+                            {!isMobile && <div 
                               className={`${styles.heatDot} ${isCounted ? styles['heat_' + (item._varClass || 'neutral')] : styles.heat_empty}`} 
                               title={isCounted 
                                 ? `${item._varClass === 'good' ? 'Within 10%' : item._varClass === 'warn' ? '10-25% variance' : '>25% variance'}` 
                                 : 'Not counted'
                               } 
-                            />
+                            />}
+
                             <div>
                               <div className={styles.name}>
                                 {item.name}
