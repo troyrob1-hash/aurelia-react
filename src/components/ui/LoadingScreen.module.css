@@ -5,7 +5,7 @@
   justify-content: center;
   height: 100vh;
   gap: 24px;
-  background: #f4f4f2;
+  background: #fafbfc;
 }
 
 .logo {
@@ -14,25 +14,26 @@
   gap: 10px;
 }
 
-.logoBox {
-  background: #F15D3B;
-  color: white;
-  font-size: 13px;
-  font-weight: 800;
-  padding: 7px 11px;
-  border-radius: 8px;
+.logoMark {
+  width: 44px;
+  height: 44px;
+  background: #0f172a;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .logoName {
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 800;
   color: #F15D3B;
   letter-spacing: -.4px;
 }
 
 .spinner {
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   border: 2.5px solid #e5e7eb;
   border-top-color: #F15D3B;
   border-radius: 50%;
