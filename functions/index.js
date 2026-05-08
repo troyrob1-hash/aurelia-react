@@ -1144,21 +1144,169 @@ exports.integrationWebhook = onRequest(
 
 // Webhook handlers — implement when vendor APIs are available
 async function handleSyscoWebhook(orgId, payload) {
-  // Process catalog updates, price changes, order confirmations
-  const items = payload.items || [];
-  console.log("Sysco webhook: " + items.length + " items");
-  // TODO: write to tenants/{orgId}/inventoryCatalog
+  const type = payload.type || payload.eventType || 'unknown';
+  console.log("Sysco webhook type:", type);
+
+  if (type === 'invoice' || type === 'invoice.created') {
+    // Vendor sent an invoice — write to AP
+    const invoice = payload.invoice || payload;
+    const lineItems = (invoice.lineItems || invoice.items || []).map(li => ({
+      sku: li.supc || li.sku || li.itemNumber || '',
+      name: li.description || li.name || '',
+      qty: Number(li.quantity || li.qty || 0),
+      unitCost: Number(li.unitPrice || li.price || 0),
+      total: Number(li.extendedPrice || li.total || 0),
+      unit: li.unitOfMeasure || li.unit || 'ea',
+    }));
+
+    const total = invoice.totalAmount || invoice.total || lineItems.reduce((s, li) => s + li.total, 0);
+
+    const invoiceData = {
+      vendor: invoice.vendorName || 'Sysco',
+      vendorId: 'sysco',
+      invoiceNum: invoice.invoiceNumber || invoice.id || '',
+      invoiceDate: invoice.invoiceDate || new Date().toISOString().slice(0, 10),
+      amount: total,
+      lineItems,
+      source: 'webhook',
+      distributor: 'Sysco',
+      poNumber: invoice.poNumber || invoice.purchaseOrderNumber || null,
+      location: invoice.shipToLocation || invoice.location || '',
+      periodKey: invoice.periodKey || null,
+      glCode: 'cogs_food',
+      status: 'Pending',
+      matchStatus: 'unmatched',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    // Try to match to an existing PO
+    if (invoiceData.poNumber) {
+      const poSnap = await db.collection('tenants').doc(orgId)
+        .collection('purchaseOrders')
+        .where('poNumber', '==', invoiceData.poNumber)
+        .limit(1).get();
+
+      if (!poSnap.empty) {
+        const po = poSnap.docs[0].data();
+        invoiceData.poId = poSnap.docs[0].id;
+        invoiceData.location = invoiceData.location || po.location;
+        invoiceData.periodKey = invoiceData.periodKey || po.periodKey;
+        invoiceData.glCode = po.glCode || 'cogs_food';
+
+        // Simple match check
+        const poDiff = Math.abs(total - (po.orderTotal || 0));
+        const pctDiff = po.orderTotal > 0 ? poDiff / po.orderTotal : 1;
+        invoiceData.matchStatus = pctDiff < 0.01 ? 'exact' : pctDiff < 0.05 ? 'partial' : 'mismatch';
+
+        if (invoiceData.matchStatus === 'exact') {
+          invoiceData.status = 'Approved';
+          invoiceData.autoApproved = true;
+        }
+
+        // Update PO
+        await poSnap.docs[0].ref.update({
+          status: invoiceData.matchStatus === 'exact' ? 'matched' : 'invoiced',
+          vendorInvoiceId: invoiceData.invoiceNum,
+          invoiceTotal: total,
+          invoiceReceivedAt: admin.firestore.FieldValue.serverTimestamp(),
+          invoiceSource: 'webhook',
+          matchStatus: invoiceData.matchStatus,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+    }
+
+    await db.collection('tenants').doc(orgId).collection('invoices').add(invoiceData);
+    console.log("Invoice created:", invoiceData.invoiceNum, "$" + total, "match:", invoiceData.matchStatus);
+
+  } else if (type === 'order.confirmed' || type === 'order.shipped') {
+    // Order status update
+    const orderRef = payload.poNumber || payload.purchaseOrderNumber;
+    if (orderRef) {
+      const poSnap = await db.collection('tenants').doc(orgId)
+        .collection('purchaseOrders')
+        .where('poNumber', '==', orderRef)
+        .limit(1).get();
+
+      if (!poSnap.empty) {
+        await poSnap.docs[0].ref.update({
+          status: type === 'order.confirmed' ? 'confirmed' : 'shipped',
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        console.log("PO", orderRef, "status updated to", type);
+      }
+    }
+
+  } else if (type === 'catalog' || type === 'catalog.update') {
+    // Product catalog update
+    const items = payload.items || [];
+    const batch = db.batch();
+    for (const item of items) {
+      const ref = db.collection('tenants').doc(orgId)
+        .collection('inventoryCatalog').doc(item.supc || item.sku || item.id);
+      batch.set(ref, {
+        sku: item.supc || item.sku || '',
+        name: item.description || item.name || '',
+        vendor: 'Sysco',
+        unitCost: Number(item.price || item.unitPrice || 0),
+        packSize: item.packSize || item.pack || '',
+        category: item.category || '',
+        unit: item.unitOfMeasure || 'ea',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+    }
+    await batch.commit();
+    console.log("Catalog updated:", items.length, "items");
+  }
 }
 
 async function handlePOSWebhook(orgId, integrationId, payload) {
-  // Process daily sales, SKU-level transactions
-  const transactions = payload.transactions || [];
-  console.log(integrationId + " webhook: " + transactions.length + " transactions");
-  // TODO: write to tenants/{orgId}/posData and salesSubmissions
+  const transactions = payload.transactions || payload.sales || [];
+  console.log(integrationId + " webhook:", transactions.length, "transactions");
+
+  if (transactions.length === 0) return;
+
+  const batch = db.batch();
+  let totalSales = 0;
+
+  for (const txn of transactions) {
+    const ref = db.collection('tenants').doc(orgId)
+      .collection('posTransactions').doc(txn.id || txn.transactionId || admin.firestore.FieldValue.serverTimestamp().toString());
+    batch.set(ref, {
+      integrationId,
+      transactionId: txn.id || txn.transactionId || '',
+      date: txn.date || txn.timestamp || new Date().toISOString(),
+      total: Number(txn.total || txn.amount || 0),
+      tax: Number(txn.tax || 0),
+      items: txn.items || [],
+      paymentMethod: txn.paymentMethod || txn.paymentType || '',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    totalSales += Number(txn.total || txn.amount || 0);
+  }
+
+  await batch.commit();
+  console.log("Processed", transactions.length, "transactions, total: $" + totalSales.toFixed(2));
 }
 
 async function handleNetSuiteWebhook(orgId, payload) {
-  // Process sync confirmations, GL updates
-  console.log("NetSuite webhook received");
-  // TODO: update sync status for exported JEs/invoices
+  const type = payload.type || 'unknown';
+  console.log("NetSuite webhook type:", type);
+
+  if (type === 'sync.complete' || type === 'je.posted') {
+    // Mark synced items
+    const ids = payload.ids || payload.journalEntryIds || [];
+    const batch = db.batch();
+    for (const id of ids) {
+      const ref = db.collection('tenants').doc(orgId).collection('journalEntries').doc(id);
+      batch.update(ref, {
+        syncedToNetSuite: true,
+        syncedAt: admin.firestore.FieldValue.serverTimestamp(),
+        netsuiteId: payload.netsuiteIds?.[id] || null,
+      });
+    }
+    await batch.commit();
+    console.log("Marked", ids.length, "JEs as synced to NetSuite");
+  }
 }

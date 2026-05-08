@@ -209,18 +209,42 @@ export class SyscoAdapter extends IntegrationAdapter {
   }
 
   async testConnection(credentials) {
-    // Will call Sysco API /v1/ping or similar
-    // For now, validate that key format is correct
     if (!credentials.apiKey || credentials.apiKey.length < 10) {
       return { success: false, error: 'Invalid API key format' }
     }
+    // When API access arrives, this will call Sysco /v1/auth/test
     return { success: true }
   }
 
   async performSync(options) {
-    // Will call Sysco API to fetch catalog, prices
-    // Then write to tenants/{orgId}/inventoryCatalog
-    return { itemsProcessed: 0, message: 'Sysco sync not yet configured — waiting for API access' }
+    // When API access arrives, this will:
+    // 1. Poll /v1/invoices?since={lastSync} for new invoices
+    // 2. For each invoice, call processVendorInvoice() to match + write to AP
+    // 3. Poll /v1/orders/{id}/status for order status updates
+    // 4. Optionally sync catalog /v1/products for price updates
+    
+    const syncType = options.type || 'all'
+    
+    if (syncType === 'invoices' || syncType === 'all') {
+      // PLACEHOLDER: Replace with real Sysco API call
+      // const response = await fetch('https://api.sysco.com/v1/invoices?since=' + lastSync, {
+      //   headers: { 'Authorization': 'Bearer ' + this.config.apiKey }
+      // })
+      // const invoices = await response.json()
+      // for (const inv of invoices) {
+      //   await processVendorInvoice(this.orgId, {
+      //     vendor: 'Sysco', vendorId: 'sysco',
+      //     invoiceNumber: inv.invoiceNumber,
+      //     invoiceDate: inv.invoiceDate,
+      //     lineItems: inv.lineItems,
+      //     total: inv.totalAmount,
+      //     source: 'api',
+      //     poNumber: inv.purchaseOrderNumber,
+      //   })
+      // }
+    }
+    
+    return { itemsProcessed: 0, message: 'Awaiting Sysco API credentials — pipeline ready' }
   }
 }
 
