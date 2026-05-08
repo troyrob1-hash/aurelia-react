@@ -97,3 +97,25 @@ export async function saveInventory(orgId, locationName, items, user, periodKey)
 }
 
 export { locationId }
+// Default GL code mapping by category
+export const GL_MAP = {
+  'Beverages': 'cogs_food',
+  'Dairy': 'cogs_food',
+  'Produce': 'cogs_food',
+  'Protein': 'cogs_food',
+  'Dry Goods': 'cogs_food',
+  'Frozen': 'cogs_food',
+  'Bakery': 'cogs_food',
+  'Seafood': 'cogs_food',
+  'Condiments': 'cogs_food',
+  'Spices': 'cogs_food',
+  'Paper': 'cogs_supplies',
+  'Cleaning': 'cogs_supplies',
+  'Disposables': 'cogs_supplies',
+  'Equipment': 'cogs_equipment',
+  'Smallwares': 'cogs_equipment',
+}
+
+export function glCodeForCategory(category) {
+  return GL_MAP[category] || 'cogs_food'
+}

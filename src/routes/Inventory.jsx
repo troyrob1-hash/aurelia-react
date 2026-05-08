@@ -67,7 +67,7 @@ export default function Inventory() {
   const [showParPanel, setShowParPanel] = useState(false)
   const [countMode, setCountMode] = useState('full')  // 'quick' | 'section' | 'full'
   const [showManage, setShowManage] = useState(false)
-  const [customDraft, setCustomDraft] = useState({ name: '', vendor: '', unitCost: '', packSize: '' })
+  const [customDraft, setCustomDraft] = useState({ name: '', vendor: '', unitCost: '', packSize: '', glCode: '' })
   const [manageSearch, setManageSearch] = useState('')
   const [whyItem, setWhyItem] = useState(null)
   const [showBuddySetup, setShowBuddySetup] = useState(false)
@@ -203,7 +203,7 @@ export default function Inventory() {
       )
 
       // Save as prior period snapshot (path that useInventory reads from)
-      const cleanItems = seededItems.map(i => ({ id: String(i.id), name: String(i.name || ''), qty: Number(i.qty || 0), unitCost: Number(i.unitCost || 0), category: String(i.category || '') }))
+      const cleanItems = seededItems.map(i => ({ id: String(i.id), name: String(i.name || ''), qty: Number(i.qty || 0), unitCost: Number(i.unitCost || 0), category: String(i.category || ''), glCode: String(i.glCode || '') }))
       await setDoc(
         fbDoc(db, 'tenants', orgId, 'locations', locKey, 'inventory', priorPK),
         {
@@ -292,6 +292,7 @@ export default function Inventory() {
       return {
         'Item': item.name || '',
         'Category': item.category || item.vendor || '',
+        'GL Code': item.glCode || '',
         'SKU': item.sku || '',
         'Unit': item.unit || 'ea',
         'Opening': opening,
@@ -982,7 +983,7 @@ export default function Inventory() {
                                 {item.name}
                                 {item._belowPar && <span className={styles.parFlag}>↓ Par</span>}
                               </div>
-                              {item.vendor && <div className={styles.vendor}>{item.vendor}</div>}
+                              {item.vendor && <div className={styles.vendor}>{item.vendor}{item.glCode ? ' · ' + item.glCode : ''}</div>}
                             </div>
                           </div>
                         </td>
