@@ -48,15 +48,6 @@ function fmt(n) {
 }
 function pct(n, base) {
   if (!base || base === 0) return '—'
-
-  // Labor % of GFS alert
-  const laborAlertThreshold = 35
-  const totalLabor = rows.reduce((s, r) => s + (r.amount || 0), 0)
-  const gfsTotal = pnl?.gfs_total || 0
-  const laborPct = gfsTotal > 0 ? (totalLabor / gfsTotal) * 100 : 0
-  const laborOverBudget = pnl?.budget_labor && totalLabor > pnl.budget_labor
-  const laborBudgetVar = pnl?.budget_labor ? ((totalLabor / pnl.budget_labor - 1) * 100).toFixed(1) : null
-
   return ((n / base) * 100).toFixed(1) + '%'
 }
 function varianceCls(v) {
@@ -82,6 +73,7 @@ export default function LaborPlanner() {
 
   const [periodView, setPeriodView]   = useState('Weekly')
   const [rows, setRows]               = useState([])
+  const [pnl, setPnl]                 = useState({})
   const [source, setSource]           = useState('')
   const [importedAt, setImportedAt]   = useState(null)
   const [importedBy, setImportedBy]   = useState('')
@@ -111,6 +103,15 @@ export default function LaborPlanner() {
       } catch {}
     })()
   }, [selectedLocation, periodKey])
+
+  // Labor alert calculations
+  const laborAlertThreshold = 35
+  const totalLabor = rows.reduce((s, r) => s + (r.amount || 0), 0)
+  const gfsTotal = pnl?.gfs_total || 0
+  const laborPct = gfsTotal > 0 ? (totalLabor / gfsTotal) * 100 : 0
+  const laborOverBudget = pnl?.budget_labor && totalLabor > pnl.budget_labor
+  const laborBudgetVar = pnl?.budget_labor ? ((totalLabor / pnl.budget_labor - 1) * 100).toFixed(1) : null
+
 
   async function handleCloseTab() {
     if (!selectedLocation || selectedLocation === 'all') return
@@ -168,7 +169,9 @@ export default function LaborPlanner() {
         const locKey = location || 'all'
         const snap = await getDoc(doc(db, 'tenants', orgId, 'pnl', locKey, 'periods', periodKey))
         if (!snap.exists()) return
-        const pnl = snap.data() || {}
+        const pnlData = snap.data() || {}
+        setPnl(pnlData)
+        const pnl = pnlData
         const budgetLaborKeys = Object.keys(pnl).filter(k => k.startsWith('budget_cogs_labor') || k.startsWith('budget_labor'))
         console.log('[labor-budget-debug]', {
           path: `tenants/${orgId}/pnl/${locKey}/periods/${periodKey}`,
