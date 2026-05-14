@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useMemo } from 'react'
+import { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { db } from '@/lib/firebase'
 import { collection, onSnapshot } from 'firebase/firestore'
@@ -19,6 +19,7 @@ export function LocationProvider({ children }) {
   const [regionsById,     setRegionsById]     = useState({})
   const [selectedLocation, setSelectedLocation] = useState('all')  // still a name string
   const [autoSelected,    setAutoSelected]    = useState(false)
+  const [selectedSubCafe, setSelectedSubCafe] = useState(null)
   const [loadingLocations, setLoadingLocations] = useState(true)
   const [loadingRegions,  setLoadingRegions]  = useState(true)
 
@@ -70,6 +71,34 @@ export function LocationProvider({ children }) {
     )
     return unsub
   }, [user?.tenantId])
+
+  // Sub-cafe helpers
+  const parentLocations = useMemo(() => 
+    allLocations.filter(l => l.type === 'parent' || (l.subLocations && l.subLocations.length > 0)),
+    [allLocations]
+  )
+  
+  const getSubCafes = useCallback((parentName) => {
+    const parent = allLocations.find(l => l.name === parentName)
+    if (!parent?.subLocations) return []
+    return allLocations.filter(l => parent.subLocations.includes(l.id) || l.parentLocation === parentName)
+  }, [allLocations])
+
+  const isParentLocation = useCallback((locName) => {
+    const loc = allLocations.find(l => l.name === locName)
+    return loc?.type === 'parent' || (loc?.subLocations && loc.subLocations.length > 0)
+  }, [allLocations])
+
+  const getParentName = useCallback((locName) => {
+    const loc = allLocations.find(l => l.name === locName)
+    return loc?.parentLocation || null
+  }, [allLocations])
+
+  // For display: top-level locations = parents + standalone (no parentLocation)
+  const topLevelLocations = useMemo(() =>
+    allLocations.filter(l => !l.parentLocation),
+    [allLocations]
+  )
 
   // Resolve the user's visible locations as an array
   const visibleLocations = useMemo(
@@ -186,6 +215,8 @@ export function LocationProvider({ children }) {
       locationsByName,  // new — handy for name → object lookups in consumers
       selectedLocation,
       setSelectedLocation,
+        selectedSubCafe, setSelectedSubCafe,
+        getSubCafes, isParentLocation, getParentName, topLevelLocations,
       currentLocation,
       loading,
       isAllLocations: selectedLocation === 'all',

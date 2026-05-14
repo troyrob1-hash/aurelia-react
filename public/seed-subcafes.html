@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head><title>Seed Sub-Cafes</title></head>
+<body style="font-family:monospace;padding:20px;background:#0f172a;color:#e2e8f0;">
+<h2>Seed Qualcomm SD Sub-Cafes</h2>
+<pre id="log">Ready — click Run Seed</pre>
+<button id="run" onclick="seedSubCafes()" style="padding:12px 24px;background:#F15D3B;color:#fff;border:none;border-radius:8px;font-size:16px;cursor:pointer;margin-top:16px;">Run Seed</button>
+
+<script type="module">
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js'
+import { getFirestore, doc, getDoc, updateDoc, setDoc } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js'
+
+const app = initializeApp({
+  apiKey: "AIzaSyBWn6zVdd6E4yQrYMr1NN1a8tMBDWdpZbA",
+  authDomain: "the-grove-70180.firebaseapp.com",
+  projectId: "the-grove-70180",
+})
+
+const db = getFirestore(app)
+const log = document.getElementById('log')
+
+function addLog(msg) { log.textContent += '\n' + msg }
+
+window.seedSubCafes = async function() {
+  document.getElementById('run').disabled = true
+  log.textContent = 'Starting...'
+  
+  try {
+    const PARENT_DOC = 'cr_qualcommsandiego'
+    const parentRef = doc(db, 'orgs', 'fooda', 'locations', PARENT_DOC)
+    const parentSnap = await getDoc(parentRef)
+    
+    if (!parentSnap.exists()) {
+      addLog('ERROR: Parent doc not found: ' + PARENT_DOC)
+      return
+    }
+    
+    const parentData = parentSnap.data()
+    addLog('Found parent: ' + parentData.name)
+    
+    await updateDoc(parentRef, {
+      type: 'parent',
+      subLocations: ['cr_qcom_cafe_az', 'cr_qcom_cafe_wt', 'cr_qcom_cafe_s', 'cr_qcom_cafe_q'],
+    })
+    addLog('Updated parent with subLocations')
+    
+    const subCafes = [
+      { id: 'cr_qcom_cafe_az', name: 'Cafe AZ', shortCode: 'AZ' },
+      { id: 'cr_qcom_cafe_wt', name: 'Cafe WT', shortCode: 'WT' },
+      { id: 'cr_qcom_cafe_s',  name: 'Cafe S',  shortCode: 'S' },
+      { id: 'cr_qcom_cafe_q',  name: 'Cafe Q',  shortCode: 'Q' },
+    ]
+    
+    for (const cafe of subCafes) {
+      const ref = doc(db, 'orgs', 'fooda', 'locations', cafe.id)
+      await setDoc(ref, {
+        name: cafe.name,
+        shortCode: cafe.shortCode,
+        type: 'sub-cafe',
+        parentLocation: parentData.name,
+        parentLocationId: PARENT_DOC,
+        active: true,
+        director: parentData.director || 'Troy Robinson',
+        timezone: parentData.timezone || 'America/Los_Angeles',
+      }, { merge: true })
+      addLog('  Created: ' + cafe.name + ' -> ' + cafe.id)
+    }
+    
+    addLog('\nDone! Refresh the app to see sub-cafes in the location dropdown.')
+  } catch(e) {
+    addLog('ERROR: ' + e.message)
+    document.getElementById('run').disabled = false
+  }
+}
+</script>
+</body>
+</html>

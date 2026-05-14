@@ -259,26 +259,26 @@ service cloud.firestore {
     // ============================================================
     match /orgs/{orgId} {
       allow read:  if ownsTenant(orgId);
-      allow write: if ownsTenant(orgId) && isAdmin();
+      allow write: if ownsTenant(orgId) && isManager();
 
       match /users/{uid} {
         allow read:  if ownsTenant(orgId) && isManager();
-        allow write: if ownsTenant(orgId) && isAdmin();
+        allow write: if ownsTenant(orgId) && isManager();
       }
 
       match /userLocations/{joinId} {
         allow read:  if ownsTenant(orgId) && isManager();
-        allow write: if ownsTenant(orgId) && isAdmin();
+        allow write: if ownsTenant(orgId) && isManager();
       }
 
       match /locations/{locationId} {
         allow read:  if ownsTenant(orgId);
-        allow write: if ownsTenant(orgId) && isAdmin();
+        allow write: if ownsTenant(orgId) && isManager();
       }
 
       match /apiKeys/{keyId} {
         allow read:  if ownsTenant(orgId) && isAdmin();
-        allow write: if ownsTenant(orgId) && isAdmin();
+        allow write: if ownsTenant(orgId) && isManager();
       }
 
       match /auditLog/{logId} {

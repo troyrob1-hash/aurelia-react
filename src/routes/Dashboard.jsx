@@ -18,6 +18,7 @@ import {
 import styles from './Dashboard.module.css'
 import WhyPanel from './components/WhyPanel'
 import { buildPeriodDiff } from '@/lib/whyRules'
+import { rollupPnL } from '@/lib/pnlRollup'
 
 const DEFAULT_SCHEMA = [
   {
@@ -348,7 +349,7 @@ export default function Dashboard() {
   const { user } = useAuthStore()
   const isDirector = /^(admin|director)$/i.test(user?.role || '')
   const orgId    = user?.tenantId
-  const { selectedLocation, visibleLocations } = useLocations()
+  const { selectedLocation, visibleLocations, getSubCafes, isParentLocation } = useLocations()
   const { periodKey } = usePeriod()
 
   const [locationData, setLocationData] = useState([]) // for ranking table
