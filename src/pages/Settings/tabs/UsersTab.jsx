@@ -4,7 +4,7 @@ import { db, functions }   from "@/lib/firebase";
 import { httpsCallable }   from "firebase/functions";
 import {
   collection, query, orderBy,
-  limit, startAfter, getDocs, where
+  limit, startAfter, getDocs, doc, updateDoc, where
 } from "firebase/firestore";
 import { useAuth }         from "@/hooks/useAuth";
 import InviteModal         from "../components/InviteModal";
@@ -24,11 +24,13 @@ export default function UsersTab() {
   const isAdmin          = canAdministerSystem(user);
 
   const [users,       setUsers]       = useState([]);
+  const [accessReqs,  setAccessReqs]  = useState([]);
   const [loading,     setLoading]     = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [lastDoc,     setLastDoc]     = useState(null);
   const [hasMore,     setHasMore]     = useState(true);
   const [showInvite,  setShowInvite]  = useState(false);
+  const [approveReq,  setApproveReq]  = useState(null);
   const [filter,      setFilter]      = useState("all");
   const [error,       setError]       = useState(null);
   const [search,      setSearch]      = useState("");
@@ -66,7 +68,40 @@ export default function UsersTab() {
 
   useEffect(() => { fetchUsers(); }, [fetchUsers]);
 
-  const handleInviteSent = () => {
+  // Fetch pending access requests
+  const fetchAccessReqs = useCallback(async () => {
+    try {
+      const snap = await getDocs(
+        query(collection(db, "tenants", orgId, "accessRequests"), where("status", "==", "pending"), orderBy("createdAt", "desc"))
+      );
+      setAccessReqs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    } catch (e) { console.error("Failed to load access requests:", e); }
+  }, [orgId]);
+
+  useEffect(() => { fetchAccessReqs(); }, [fetchAccessReqs]);
+
+  async function approveRequest(req) {
+    setShowInvite(true);
+    setApproveReq(req);
+  }
+
+  async function denyRequest(req) {
+    if (!window.confirm('Deny access request from ' + req.name + '?')) return;
+    try {
+      await updateDoc(doc(db, "tenants", orgId, "accessRequests", req.id), { status: "denied" });
+      setAccessReqs(prev => prev.filter(r => r.id !== req.id));
+    } catch (e) { console.error(e); }
+  }
+
+  const handleInviteSent = async () => {
+    // If approving an access request, mark it as approved
+    if (approveReq) {
+      try {
+        await updateDoc(doc(db, "tenants", orgId, "accessRequests", approveReq.id), { status: "approved" });
+        setAccessReqs(prev => prev.filter(r => r.id !== approveReq.id));
+      } catch (e) { console.error(e); }
+      setApproveReq(null);
+    }
     setShowInvite(false);
     toast.success("Invitation sent successfully");
     fetchUsers();
@@ -182,6 +217,39 @@ export default function UsersTab() {
 
       {error && <div className="error-banner">{error}</div>}
 
+      {/* Pending access requests */}
+      {accessReqs.length > 0 && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#F15D3B', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#F15D3B', display: 'inline-block' }} />
+            {accessReqs.length} pending access {accessReqs.length === 1 ? 'request' : 'requests'}
+          </div>
+          {accessReqs.map(req => (
+            <div key={req.id} style={{
+              display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+              padding: '12px 16px', background: '#fffbeb', border: '1px solid #fde68a',
+              borderRadius: 10, marginBottom: 6,
+            }}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>{req.name}</div>
+                <div style={{ fontSize: 13, color: '#64748b' }}>{req.email}</div>
+                {req.message && <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 2, fontStyle: 'italic' }}>"{req.message}"</div>}
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={() => approveRequest(req)}
+                  style={{ padding: '6px 16px', fontSize: 13, fontWeight: 600, background: '#1D9E75', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+                  Approve
+                </button>
+                <button onClick={() => denyRequest(req)}
+                  style={{ padding: '6px 16px', fontSize: 13, fontWeight: 500, background: '#fff', color: '#dc2626', border: '1px solid #fecaca', borderRadius: 6, cursor: 'pointer' }}>
+                  Deny
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {loading ? (
         <Spinner />
       ) : users.length === 0 ? (
@@ -242,8 +310,10 @@ export default function UsersTab() {
 
       {showInvite && (
         <InviteModal
+          prefillEmail={approveReq?.email || ''}
+          prefillName={approveReq?.name || ''}
           orgId={orgId}
-          onClose={() => setShowInvite(false)}
+          onClose={() => { setShowInvite(false); setApproveReq(null); }}
           onSuccess={handleInviteSent}
         />
       )}

@@ -1,5 +1,5 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { usePeriod, getWeekLabel } from '@/store/PeriodContext'
@@ -10,6 +10,7 @@ import {
   Users, Settings, LogOut, ChevronDown, Bell, MapPin, Menu, X
 } from 'lucide-react'
 import AureliaChat from '@/components/AureliaChat'
+import { collection, query, where, onSnapshot, doc, updateDoc, orderBy } from 'firebase/firestore'
 import styles from './AppShell.module.css'
 
 const NAV = [
@@ -29,6 +30,38 @@ export default function AppShell() {
   const { groupedLocations, selectedLocation, setSelectedLocation , getSubCafes, isParentLocation } = useLocations()
   const { year, period, week, weeks, setYear, setPeriod, setWeek, prevWeek, nextWeek } = usePeriod()
   const navigate                                                     = useNavigate()
+
+  // Notification bell
+  const [notifications, setNotifications] = useState([])
+  const [showNotifs, setShowNotifs] = useState(false)
+  const orgId = user?.tenantId || 'fooda'
+
+  useEffect(() => {
+    if (!orgId) return
+    const q = query(
+      collection(db, 'tenants', orgId, 'notifications'),
+      where('read', '==', false)
+    )
+    const unsub = onSnapshot(q, snap => {
+      const notifs = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+      notifs.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0))
+      setNotifications(notifs)
+    })
+    return unsub
+  }, [orgId])
+
+  async function markRead(notifId) {
+    try {
+      await updateDoc(doc(db, 'tenants', orgId, 'notifications', notifId), { read: true })
+    } catch (e) { console.error(e) }
+  }
+
+  async function markAllRead() {
+    for (const n of notifications) {
+      try { await updateDoc(doc(db, 'tenants', orgId, 'notifications', n.id), { read: true }) } catch {}
+    }
+  }
+
   const [menuOpen, setMenuOpen]       = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [periodClosed, setPeriodClosed] = useState(false)
@@ -113,8 +146,13 @@ export default function AppShell() {
               <option value="all">All Locations</option>
               {Object.entries(groupedLocations).map(([regionName, locs]) => (
                 <optgroup key={regionName} label={regionName}>
-                  {locs.map(loc => (
-                    <option key={loc.name} value={loc.name}>{cleanLocName(loc.name)}</option>
+                  {locs.filter(loc => loc.type !== 'sub-cafe').map(loc => (
+                    <React.Fragment key={loc.name}>
+                      <option value={loc.name}>{cleanLocName(loc.name)}</option>
+                      {loc.type === 'parent' && getSubCafes(loc.id || loc.name).map(sub => (
+                        <option key={sub.name} value={sub.name}>&nbsp;&nbsp;↳ {cleanLocName(sub.name)}</option>
+                      ))}
+                    </React.Fragment>
                   ))}
                 </optgroup>
               ))}
@@ -169,6 +207,41 @@ export default function AppShell() {
         </div>
 
         <div className={styles.topbarRight}>
+
+            {/* Notification bell */}
+            <div style={{ position: 'relative' }}>
+              <button onClick={() => setShowNotifs(!showNotifs)} 
+                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 6, position: 'relative' }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round">
+                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                </svg>
+                {notifications.length > 0 && (
+                  <span style={{ position: 'absolute', top: 2, right: 2, width: 16, height: 16, borderRadius: '50%', background: '#F15D3B', color: '#fff', fontSize: 10, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {notifications.length}
+                  </span>
+                )}
+              </button>
+              {showNotifs && (
+                <div style={{ position: 'absolute', top: '100%', right: 0, width: 320, background: '#fff', borderRadius: 12, boxShadow: '0 8px 32px rgba(0,0,0,0.15)', border: '1px solid #e5e7eb', zIndex: 100, marginTop: 8 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid #f1f5f9' }}>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: '#0f172a' }}>Notifications</span>
+                    {notifications.length > 0 && (
+                      <button onClick={markAllRead} style={{ fontSize: 12, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>Mark all read</button>
+                    )}
+                  </div>
+                  <div style={{ maxHeight: 300, overflow: 'auto' }}>
+                    {notifications.length === 0 ? (
+                      <div style={{ padding: '20px 16px', textAlign: 'center', fontSize: 13, color: '#94a3b8' }}>No new notifications</div>
+                    ) : notifications.map(n => (
+                      <div key={n.id} onClick={() => markRead(n.id)} style={{ padding: '10px 16px', borderBottom: '1px solid #f8fafc', cursor: 'pointer', background: '#fffbeb' }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>{n.title}</div>
+                        <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{n.message}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           <button className={styles.notifBtn}><Bell size={16}/></button>
           <button className={styles.userBtn} onClick={() => setMenuOpen(v => !v)}>
             <div className={styles.avatar}>{(user?.name || 'U').charAt(0).toUpperCase()}</div>

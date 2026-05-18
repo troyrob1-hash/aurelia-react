@@ -1,8 +1,8 @@
 // src/pages/Settings/tabs/LocationsTab.jsx
-import { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   collection, query, orderBy,
-  getDocs, doc, setDoc, updateDoc,
+  getDocs, getDoc, doc, setDoc, updateDoc,
   serverTimestamp
 } from "firebase/firestore";
 import { db }       from "@/lib/firebase";
@@ -30,10 +30,15 @@ const EMPTY_FORM = {
 export default function LocationsTab() {
   const { orgId, user } = useAuth();
   const isAdmin = canAdministerSystem(user);
+  const isDirector = isAdmin || user?.role === 'director' || user?.role === 'Director';
 
   const [locations, setLocations] = useState([]);
   const [loading,   setLoading]   = useState(true);
   const [modal,     setModal]     = useState(null);
+  const [subModal,  setSubModal]  = useState(false);
+  const [subParent, setSubParent] = useState('');
+  const [subName,   setSubName]   = useState('');
+  const [subCode,   setSubCode]   = useState('');
   const [error,     setError]     = useState(null);
 
   const fetchLocations = useCallback(async () => {
@@ -93,8 +98,56 @@ export default function LocationsTab() {
     fetchLocations();
   };
 
-  const active   = locations.filter(l => l.active);
-  const inactive = locations.filter(l => !l.active);
+
+
+  // Sub-cafe management
+  const getSubCafes = (parentId) => locations.filter(l => l.parentLocationId === parentId);
+  
+  async function addSubCafe() {
+    if (!subName.trim() || !subParent) return;
+    const parent = locations.find(l => l.locationId === subParent);
+    if (!parent) return;
+    const shortCode = subCode.trim() || subName.trim().replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+    const docId = parent.locationId + '_' + subName.trim().replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+    try {
+      await setDoc(doc(db, 'orgs', orgId, 'locations', docId), {
+        locationId: docId,
+        name: subName.trim(),
+        shortCode,
+        type: 'sub-cafe',
+        parentLocation: parent.name,
+        parentLocationId: parent.locationId,
+        active: true,
+        director: parent.director || '',
+        timezone: parent.timezone || 'America/Los_Angeles',
+        address: parent.address || {},
+      });
+      const parentRef = doc(db, 'orgs', orgId, 'locations', parent.locationId);
+      const parentSnap = await getDoc(parentRef);
+      const existing = parentSnap.data()?.subLocations || [];
+      await updateDoc(parentRef, {
+        type: 'parent',
+        subLocations: [...existing, docId],
+      });
+      setSubName(''); setSubCode(''); setSubParent(''); setSubModal(false);
+      fetchLocations();
+    } catch (e) { console.error(e); setError('Failed to add sub-location'); }
+  }
+
+  async function makeParent(loc) {
+    if (!window.confirm('Convert "' + loc.name + '" to a parent location with sub-cafes?')) return;
+    try {
+      await updateDoc(doc(db, 'orgs', orgId, 'locations', loc.locationId), {
+        type: 'parent',
+        subLocations: [],
+      });
+      fetchLocations();
+    } catch (e) { console.error(e); setError('Failed to update location'); }
+  }
+
+  // Separate parents, sub-cafes, and standalones
+  const active = locations.filter(l => l.active !== false && l.type !== 'sub-cafe');
+  const inactive = locations.filter(l => l.active === false);
 
   return (
     <div className="tab-content">
@@ -102,11 +155,14 @@ export default function LocationsTab() {
         <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
           {active.length} active {active.length === 1 ? "location" : "locations"}
         </div>
-        {isAdmin && (
-          <button className="btn-primary" onClick={() => setModal({ mode: "add" })}>
-            + Add location
-          </button>
-        )}
+        <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn-primary" onClick={() => setModal({ mode: "add" })}>
+              + Add location
+            </button>
+            <button onClick={() => setSubModal(true)} style={{ padding: '8px 16px', fontSize: 13, fontWeight: 600, background: 'rgba(29,158,117,0.08)', color: '#1D9E75', border: '1px solid rgba(29,158,117,0.2)', borderRadius: 8, cursor: 'pointer' }}>
+              + Add sub-location
+            </button>
+          </div>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
@@ -122,15 +178,22 @@ export default function LocationsTab() {
           <table className="data-table">
             <thead>
               <tr>
-                <th>Name</th><th>Code</th><th>City</th><th>Timezone</th><th>Status</th>
+                <th>Name</th><th>Code</th><th>Type</th><th>City</th><th>Timezone</th><th>Status</th>
                 {isAdmin && <th></th>}
               </tr>
             </thead>
             <tbody>
               {active.map(l => (
-                <LocationRow key={l.locationId} location={l} isAdmin={isAdmin}
-                  onEdit={() => setModal({ mode: "edit", location: l })}
-                  onDeactivate={() => handleDeactivate(l.locationId)} />
+                <React.Fragment key={l.locationId}>
+                  <LocationRow location={l} isAdmin={isAdmin}
+                    onEdit={() => setModal({ mode: "edit", location: l })}
+                    onDeactivate={() => handleDeactivate(l.locationId)} />
+                  {l.type === 'parent' && getSubCafes(l.locationId).map(sub => (
+                    <LocationRow key={sub.locationId || sub.name} location={sub} isAdmin={isAdmin} isSub
+                      onEdit={() => setModal({ mode: "edit", location: sub })}
+                      onDeactivate={() => handleDeactivate(sub.locationId)} />
+                  ))}
+                </React.Fragment>
               ))}
             </tbody>
           </table>
@@ -157,29 +220,83 @@ export default function LocationsTab() {
         <LocationModal mode={modal.mode} location={modal.location}
           onClose={() => setModal(null)} onSave={handleSave} />
       )}
+
+      {subModal && (
+        <div className="modal-overlay" onClick={() => setSubModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
+            <div className="modal-header">
+              <h2>Add sub-location</h2>
+              <button className="modal-close" onClick={() => setSubModal(false)}>&times;</button>
+            </div>
+            <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <label style={{ fontSize: 13, fontWeight: 500 }}>Parent location</label>
+                <select value={subParent} onChange={e => setSubParent(e.target.value)}
+                  style={{ padding: '10px 12px', border: '1px solid var(--color-border)', borderRadius: 8, fontSize: 14, background: 'var(--color-background-primary)' }}>
+                  <option value="">Where will this sub-location live?</option>
+                  {locations.filter(l => l.active !== false && l.type !== 'sub-cafe').map(l => (
+                    <option key={l.locationId} value={l.locationId}>{l.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <label style={{ fontSize: 13, fontWeight: 500 }}>Sub-location name</label>
+                <input value={subName} onChange={e => setSubName(e.target.value)}
+                  placeholder="e.g. Cafe AZ"
+                  style={{ padding: '10px 12px', border: '1px solid var(--color-border)', borderRadius: 8, fontSize: 14 }} />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <label style={{ fontSize: 13, fontWeight: 500 }}>Short code</label>
+                <input value={subCode} onChange={e => setSubCode(e.target.value)}
+                  placeholder="e.g. AZ"
+                  style={{ padding: '10px 12px', border: '1px solid var(--color-border)', borderRadius: 8, fontSize: 14, maxWidth: 120 }} />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button className="btn-secondary" onClick={() => setSubModal(false)}>Cancel</button>
+              <button className="btn-primary" onClick={addSubCafe} disabled={!subParent || !subName.trim()}>
+                Add sub-location
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function LocationRow({ location: l, isAdmin, inactive, onEdit, onDeactivate, onReactivate }) {
+function LocationRow({ location: l, isAdmin, inactive, onEdit, onDeactivate, onReactivate, isSub }) {
   return (
-    <tr className={inactive ? "row-inactive" : ""}>
-      <td style={{ fontWeight: 500 }}>{l.name}</td>
-      <td><span style={{ fontFamily: "var(--font-mono)", fontSize: 12, background: "var(--color-background-secondary)", padding: "2px 8px", borderRadius: 6 }}>{l.shortCode}</span></td>
-      <td className="text-secondary">{l.address?.city}{l.address?.state ? `, ${l.address.state}` : ""}</td>
-      <td className="text-secondary" style={{ fontSize: 12 }}>{l.timezone}</td>
-      <td><span className={`badge ${inactive ? "badge-gray" : "badge-green"}`}>{inactive ? "Inactive" : "Active"}</span></td>
-      {isAdmin && (
-        <td style={{ textAlign: "right", display: "flex", gap: 6, justifyContent: "flex-end" }}>
-          {!inactive ? (
-            <><button className="action-btn" onClick={onEdit}>Edit</button>
-            <button className="action-btn danger" onClick={onDeactivate}>Deactivate</button></>
-          ) : (
-            <button className="action-btn" onClick={onReactivate}>Reactivate</button>
-          )}
+    <>
+      <tr className={inactive ? "row-inactive" : ""} style={isSub ? { background: 'var(--color-background-secondary)' } : {}}>
+        <td style={{ fontWeight: 500, paddingLeft: isSub ? 32 : 12 }}>
+          {isSub && <span style={{ color: 'var(--color-text-tertiary)', marginRight: 6 }}>↳</span>}
+          {l.name}
         </td>
-      )}
-    </tr>
+        <td><span style={{ fontFamily: "var(--font-mono)", fontSize: 12, background: "var(--color-background-secondary)", padding: "2px 8px", borderRadius: 6 }}>{l.shortCode}</span></td>
+        <td>
+          {l.type === 'parent' && <span className="badge badge-blue" style={{ fontSize: 10 }}>Parent</span>}
+          {l.type === 'sub-cafe' && <span className="badge badge-gray" style={{ fontSize: 10 }}>Sub-cafe</span>}
+          {!l.type && <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>Standalone</span>}
+        </td>
+        <td className="text-secondary">{l.address?.city}{l.address?.state ? `, ${l.address.state}` : ""}</td>
+        <td className="text-secondary" style={{ fontSize: 12 }}>{l.timezone}</td>
+        <td><span className={`badge ${inactive ? "badge-gray" : "badge-green"}`}>{inactive ? "Inactive" : "Active"}</span></td>
+        {isAdmin && (
+          <td style={{ textAlign: "right", whiteSpace: 'nowrap' }}>
+            {!inactive ? (
+              <>
+                <button className="action-btn" onClick={onEdit}>Edit</button>
+              </>
+            ) : (
+              <button className="action-btn" onClick={onReactivate}>Reactivate</button>
+            )}
+          </td>
+        )}
+      </tr>
+
+
+    </>
   );
 }
 

@@ -221,7 +221,7 @@ exports.inviteUser = onCall(async (request) => {
     const cognitoRes = await cognito.adminCreateUser({
       UserPoolId:        POOL_ID,
       Username:          email,
-      MessageAction:     "SUPPRESS",
+      // MessageAction: "SUPPRESS",  // removed — Cognito sends welcome email with temp password
       UserAttributes: [
         { Name: "email",          Value: email },
         { Name: "email_verified", Value: "true" },
@@ -383,6 +383,47 @@ exports.submitAccessRequest = onCall(
         userAgent,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       });
+
+    // Notify admins — write to a notifications collection for in-app alerts
+    await db
+      .collection("tenants").doc(tenantId)
+      .collection("notifications").doc(requestId)
+      .set({
+        type: "access_request",
+        title: "New access request",
+        message: trimmedName + " (" + trimmedEmail + ") requested access" + (trimmedMsg ? ": " + trimmedMsg : ""),
+        read: false,
+        requestId,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+    // Email admin about new access request
+    try {
+      const AWS = require("aws-sdk");
+      const ses = new AWS.SES({ region: "us-east-2" });
+      await ses.sendEmail({
+        Source: "aurelia@fooda.com",
+        Destination: { ToAddresses: ["troy.robinson@fooda.com"] },
+        Message: {
+          Subject: { Data: "Aurelia — New access request from " + trimmedName },
+          Body: {
+            Html: {
+              Data: "<div style='font-family:sans-serif;max-width:480px;margin:0 auto;padding:20px;'>"
+                + "<div style='background:#F15D3B;color:#fff;padding:12px 20px;border-radius:10px 10px 0 0;font-weight:700;'>Aurelia FMS</div>"
+                + "<div style='background:#fff;border:1px solid #e5e7eb;border-top:none;padding:20px;border-radius:0 0 10px 10px;'>"
+                + "<h2 style='margin:0 0 12px;font-size:18px;color:#0f172a;'>New access request</h2>"
+                + "<p style='margin:0 0 8px;color:#334155;'><strong>" + trimmedName + "</strong> (" + trimmedEmail + ") requested access to Aurelia.</p>"
+                + (trimmedMsg ? "<p style='margin:0 0 8px;color:#64748b;font-style:italic;'>"" + trimmedMsg + ""</p>" : "")
+                + "<p style='margin:16px 0 0;'><a href='https://aureliafms.com/settings' style='display:inline-block;padding:10px 24px;background:#1D9E75;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;'>Review in Aurelia</a></p>"
+                + "</div></div>"
+            }
+          }
+        }
+      }).promise();
+    } catch (emailErr) {
+      // Don't fail the request if email fails — notification is already in Firestore
+      console.warn("Failed to send admin email:", emailErr.message);
+    }
 
     return { success: true };
   }

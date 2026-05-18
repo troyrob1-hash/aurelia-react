@@ -14,10 +14,10 @@ import { httpsCallable } from "firebase/functions";
 import { useLocations, cleanLocName } from "@/store/LocationContext";
 import { ASSIGNABLE_ROLES } from "@/lib/permissions";
 
-export default function InviteModal({ orgId, onClose, onSuccess }) {
+export default function InviteModal({ orgId, onClose, onSuccess, prefillEmail, prefillName }) {
   const { allLocations, regionsList } = useLocations();
 
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(prefillEmail || "");
   const [displayName, setDisplayName] = useState("");
   const [roles, setRoles] = useState(["manager"]);
   const [managedRegionIds, setManagedRegionIds] = useState([]);

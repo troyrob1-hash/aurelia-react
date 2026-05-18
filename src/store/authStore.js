@@ -38,7 +38,8 @@ export const useAuthStore = create((set, get) => ({
     }
   },
 
-  setAuth: (session, attrs) => {
+  clearAuth: () => set({ user: null, session: null }),
+    setAuth: (session, attrs) => {
     set({ session, user: mapUser(attrs), error: null })
   },
 

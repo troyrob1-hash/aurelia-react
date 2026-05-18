@@ -78,14 +78,18 @@ export function LocationProvider({ children }) {
     [allLocations]
   )
   
-  const getSubCafes = useCallback((parentName) => {
-    const parent = allLocations.find(l => l.name === parentName)
-    if (!parent?.subLocations) return []
-    return allLocations.filter(l => parent.subLocations.includes(l.id) || l.parentLocation === parentName)
+  const getSubCafes = useCallback((parentIdOrName) => {
+    const parent = allLocations.find(l => l.name === parentIdOrName || l.id === parentIdOrName || l.locationId === parentIdOrName)
+    if (!parent) return []
+    return allLocations.filter(l => 
+      l.parentLocationId === parent.locationId ||
+      l.parentLocationId === parent.id ||
+      l.parentLocation === parent.name
+    )
   }, [allLocations])
 
-  const isParentLocation = useCallback((locName) => {
-    const loc = allLocations.find(l => l.name === locName)
+  const isParentLocation = useCallback((locNameOrId) => {
+    const loc = allLocations.find(l => l.name === locNameOrId || l.id === locNameOrId || l.locationId === locNameOrId)
     return loc?.type === 'parent' || (loc?.subLocations && loc.subLocations.length > 0)
   }, [allLocations])
 
