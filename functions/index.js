@@ -413,7 +413,7 @@ exports.submitAccessRequest = onCall(
                 + "<div style='background:#fff;border:1px solid #e5e7eb;border-top:none;padding:20px;border-radius:0 0 10px 10px;'>"
                 + "<h2 style='margin:0 0 12px;font-size:18px;color:#0f172a;'>New access request</h2>"
                 + "<p style='margin:0 0 8px;color:#334155;'><strong>" + trimmedName + "</strong> (" + trimmedEmail + ") requested access to Aurelia.</p>"
-                + (trimmedMsg ? "<p style='margin:0 0 8px;color:#64748b;font-style:italic;'>"" + trimmedMsg + ""</p>" : "")
+                + (trimmedMsg ? "<p style='margin:0 0 8px;color:#64748b;font-style:italic;'>" + trimmedMsg + "</p>" : "")
                 + "<p style='margin:16px 0 0;'><a href='https://aureliafms.com/settings' style='display:inline-block;padding:10px 24px;background:#1D9E75;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;'>Review in Aurelia</a></p>"
                 + "</div></div>"
             }
