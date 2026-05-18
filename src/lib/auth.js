@@ -107,7 +107,8 @@ export async function signOut() {
   await signOutFirebase()
 }
 
-export async function signUp(email, password, name) {
+// DISABLED — all signups go through Request Access + admin approval
+// async function signUp(email, password, name) {
   return cognitoPost('SignUp', {
     ClientId: CLIENT_ID,
     Username: email,
