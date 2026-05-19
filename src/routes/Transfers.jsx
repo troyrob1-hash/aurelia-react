@@ -1,3 +1,4 @@
+import SubCafeBar from '@/components/ui/SubCafePrompt'
 import { useState, useEffect, useMemo } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
@@ -78,7 +79,7 @@ const EMPTY = {
 export default function Transfers() {
   const { user }             = useAuthStore()
   const orgId                = user?.tenantId
-  const { selectedLocation, setSelectedLocation, groupedLocations, visibleLocations } = useLocations()
+  const { selectedLocation, setSelectedLocation, groupedLocations, visibleLocations , isParentLocation , getParentName } = useLocations()
   const { periodKey }        = usePeriod()
   const toast                = useToast()
   const isDirector           = /^(admin|director)$/i.test(user?.role || '')
@@ -514,6 +515,14 @@ export default function Transfers() {
 
   return (
     <div className={styles.page}>
+
+
+      {(isParentLocation?.(selectedLocation) || getParentName?.(selectedLocation)) && (
+        <SubCafeBar
+          parentName={isParentLocation?.(selectedLocation) ? selectedLocation : getParentName?.(selectedLocation)}
+          activeSubCafe={isParentLocation?.(selectedLocation) ? null : selectedLocation}
+        />
+      )}
 
       {/* ── Header ── */}
       <div className={styles.header}>

@@ -232,7 +232,7 @@ function parseExcel(rows, budgetYear) {
 export default function Budgets() {
   const { user }             = useAuthStore()
   const orgId                = user?.tenantId
-  const { selectedLocation, setSelectedLocation, visibleLocations, groupedLocations } = useLocations()
+  const { selectedLocation, setSelectedLocation, visibleLocations, groupedLocations , isParentLocation, getSubCafes } = useLocations()
   const { year: ctxYear }    = usePeriod()
   const toast                = useToast()
   const isDirector           = /^(admin|director)$/i.test(user?.role || '')

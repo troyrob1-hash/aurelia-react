@@ -1,3 +1,4 @@
+import SubCafeBar from '@/components/ui/SubCafePrompt'
 import { useState, useMemo, useEffect, Fragment, useCallback, useRef } from 'react'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { useToast } from '@/components/ui/Toast'
@@ -79,7 +80,7 @@ const SPEND_CATEGORIES = [
 const TOTAL_SPEND_PCT = SPEND_CATEGORIES.reduce((s, c) => s + c.pctGFS, 0) // 4.9%
 
 export default function OrderHub() {
-  const { selectedLocation, setSelectedLocation } = useLocations()
+  const { selectedLocation, setSelectedLocation , isParentLocation , getParentName } = useLocations()
   const toast = useToast()
   const { user } = useAuthStore()
   
@@ -768,6 +769,13 @@ export default function OrderHub() {
 
   return (
     <div className={styles.page}>
+      {(isParentLocation?.(selectedLocation) || getParentName?.(selectedLocation)) && (
+        <SubCafeBar
+          parentName={isParentLocation?.(selectedLocation) ? selectedLocation : getParentName?.(selectedLocation)}
+          activeSubCafe={isParentLocation?.(selectedLocation) ? null : selectedLocation}
+        />
+      )}
+
       {/* View Toggle + Toolbar */}
       <div className={styles.toolbar}>
         <div className={styles.viewToggle}>
@@ -1414,6 +1422,7 @@ export default function OrderHub() {
                   <div className={styles.approvalPill} style={{
                     background: '#f0fdf4', borderColor: '#a7f3d0', color: '#065f46',
                   }}>
+
                     <CheckCircle size={12}/>
                     <span><strong>Auto-approved.</strong> Orders under ${APPROVAL_THRESHOLDS.AUTO_APPROVE} per vendor submit directly.</span>
                   </div>

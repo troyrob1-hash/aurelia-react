@@ -1,3 +1,4 @@
+import SubCafeBar from '@/components/ui/SubCafePrompt'
 import { useState, useEffect, useMemo } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
@@ -17,7 +18,7 @@ const fmtN = v => Number(v || 0).toLocaleString('en-US', { maximumFractionDigits
 export default function WasteLog() {
   const user = useAuthStore(s => s.user)
   const orgId = user?.tenantId
-  const { selectedLocation, setSelectedLocation, visibleLocations } = useLocations()
+  const { selectedLocation, setSelectedLocation, visibleLocations , isParentLocation , getParentName } = useLocations()
   const { periodKey, year, period, week } = usePeriod()
   const toast = useToast()
 
@@ -198,6 +199,14 @@ export default function WasteLog() {
 
   return (
     <div style={{ padding: '1.5rem', maxWidth: 1400, margin: '0 auto' }}>
+
+      {(isParentLocation?.(selectedLocation) || getParentName?.(selectedLocation)) && (
+        <SubCafeBar
+          parentName={isParentLocation?.(selectedLocation) ? selectedLocation : getParentName?.(selectedLocation)}
+          activeSubCafe={isParentLocation?.(selectedLocation) ? null : selectedLocation}
+        />
+      )}
+
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
         <div>

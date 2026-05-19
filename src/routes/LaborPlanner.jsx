@@ -1,3 +1,4 @@
+import SubCafeBar from '@/components/ui/SubCafePrompt'
 import { useState, useMemo, useEffect } from 'react'
 import { useToast } from '@/components/ui/Toast'
 import AllLocationsGrid from '@/components/AllLocationsGrid'
@@ -65,7 +66,7 @@ export default function LaborPlanner() {
   const toast = useToast()
   const { user } = useAuthStore()
   const orgId = user?.tenantId
-  const { selectedLocation, setSelectedLocation } = useLocations()
+  const { selectedLocation, setSelectedLocation , isParentLocation , getParentName } = useLocations()
   const location = selectedLocation === 'all' ? null : selectedLocation
 
   // ── Fix 1: use periodKey from PeriodContext ──────────────────
@@ -480,6 +481,14 @@ export default function LaborPlanner() {
 
   return (
     <div className={styles.page}>
+
+      {(isParentLocation?.(selectedLocation) || getParentName?.(selectedLocation)) && (
+        <SubCafeBar
+          parentName={isParentLocation?.(selectedLocation) ? selectedLocation : getParentName?.(selectedLocation)}
+          activeSubCafe={isParentLocation?.(selectedLocation) ? null : selectedLocation}
+        />
+      )}
+
       {laborPct > laborAlertThreshold && gfsTotal > 0 && (
         <div style={{
           padding: '12px 18px', marginBottom: 16, borderRadius: 10,

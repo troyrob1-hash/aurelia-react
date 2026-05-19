@@ -1,3 +1,4 @@
+import SubCafeBar from '@/components/ui/SubCafePrompt'
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
@@ -49,7 +50,7 @@ export default function Inventory() {
   // FIXED: Consistent orgId pattern
   const orgId = user?.tenantId || null
   
-  const { selectedLocation, setSelectedLocation } = useLocations()
+  const { selectedLocation, setSelectedLocation , isParentLocation , getParentName } = useLocations()
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768)
@@ -549,6 +550,14 @@ export default function Inventory() {
   // ─── Render ────────────────────────────────────────────────────────────────
   return (
     <div className={styles.pageWrap}>
+
+      {(isParentLocation?.(selectedLocation) || getParentName?.(selectedLocation)) && (
+        <SubCafeBar
+          parentName={isParentLocation?.(selectedLocation) ? selectedLocation : getParentName?.(selectedLocation)}
+          activeSubCafe={isParentLocation?.(selectedLocation) ? null : selectedLocation}
+        />
+      )}
+
       {/* Category Chips */}
       <div className={styles.chipBar}>
         <button 

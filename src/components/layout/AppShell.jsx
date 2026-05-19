@@ -148,12 +148,7 @@ export default function AppShell() {
               {Object.entries(groupedLocations).map(([regionName, locs]) => (
                 <optgroup key={regionName} label={regionName}>
                   {locs.filter(loc => loc.type !== 'sub-cafe').map(loc => (
-                    <React.Fragment key={loc.name}>
-                      <option value={loc.name}>{cleanLocName(loc.name)}</option>
-                      {loc.type === 'parent' && getSubCafes(loc.id || loc.name).map(sub => (
-                        <option key={sub.name} value={sub.name}>&nbsp;&nbsp;↳ {cleanLocName(sub.name)}</option>
-                      ))}
-                    </React.Fragment>
+                    <option key={loc.name} value={loc.name}>{cleanLocName(loc.name)}</option>
                   ))}
                 </optgroup>
               ))}

@@ -1,3 +1,4 @@
+import SubCafeBar from '@/components/ui/SubCafePrompt'
 import { useState, useEffect, useMemo, useRef, Fragment } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
@@ -82,7 +83,7 @@ export default function Purchasing() {
   const { user }    = useAuthStore()
   const orgId       = user?.tenantId
   const toast       = useToast()
-  const { selectedLocation, setSelectedLocation, visibleLocations } = useLocations()
+  const { selectedLocation, setSelectedLocation, visibleLocations , isParentLocation , getParentName } = useLocations()
   const { periodKey } = usePeriod()
   const [apClosed, setApClosed] = useState(false)
   const [spendTracker, setSpendTracker] = useState(null)
@@ -999,11 +1000,19 @@ export default function Purchasing() {
       className={styles.page}
       {...dragHandlers}
     >
+
       {isDragging && (
         <DropZoneOverlay
           title="Drop invoice file here"
           subtitle="Accepts .xlsx, .xls, .csv, or .pdf invoices"
           onClose={dismissDropZone}
+        />
+      )}
+
+      {(isParentLocation?.(selectedLocation) || getParentName?.(selectedLocation)) && (
+        <SubCafeBar
+          parentName={isParentLocation?.(selectedLocation) ? selectedLocation : getParentName?.(selectedLocation)}
+          activeSubCafe={isParentLocation?.(selectedLocation) ? null : selectedLocation}
         />
       )}
 

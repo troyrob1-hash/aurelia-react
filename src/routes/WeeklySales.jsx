@@ -1,3 +1,4 @@
+import SubCafeBar from '@/components/ui/SubCafePrompt'
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
@@ -72,7 +73,7 @@ function getYoYKey(key) {
 export default function WeeklySales() {
   const { user }             = useAuthStore()
   const orgId                = user?.tenantId
-  const { selectedLocation, setSelectedLocation, visibleLocations, currentLocation, groupedLocations } = useLocations()
+  const { selectedLocation, setSelectedLocation, visibleLocations, currentLocation, groupedLocations , isParentLocation , getParentName } = useLocations()
   const { year, period, week: weekNum, currentWeek, periodKey, prevWeek, nextWeek } = usePeriod()
   const toast                = useToast()
 
@@ -1389,6 +1390,7 @@ export default function WeeklySales() {
       className={styles.page}
       {...dragHandlers}
     >
+
       {isDragging && (
         <DropZoneOverlay
           title="Drop sales file here"
@@ -2126,6 +2128,18 @@ export default function WeeklySales() {
               )
             })}
           </div>
+        </div>
+      )}
+
+      {/* ── Sub-cafe selector ── */}
+      {isParentLocation?.(selectedLocation) && (
+        <div style={{ marginBottom: 12 }}>
+          <SubCafeBar parentName={selectedLocation} activeSubCafe={null} />
+        </div>
+      )}
+      {getParentName?.(selectedLocation) && (
+        <div style={{ marginBottom: 12 }}>
+          <SubCafeBar parentName={getParentName(selectedLocation)} activeSubCafe={selectedLocation} />
         </div>
       )}
 
