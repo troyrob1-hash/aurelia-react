@@ -10,6 +10,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import { subscribePnL, fetchPnLHistory, weeksInPeriod } from './pnl'
+import { useLocations } from '@/store/LocationContext'
 
 // Keys that are numeric and get summed in aggregation.
 // Keep this list in sync with what the P&L schema actually reads.
@@ -28,6 +29,14 @@ export function usePnL(location, period) {
   const [data, setData] = useState({})
   const [loading, setLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState(null)
+  const { allLocations } = useLocations()
+
+  // Determine if this is a parent location with sub-cafes
+  const locObj = allLocations.find(l => l.name === location || l.id === location || l.locationId === location)
+  const isParent = locObj?.type === 'parent'
+  const subCafes = isParent
+    ? allLocations.filter(l => l.parentLocationId === locObj?.locationId || l.parentLocationId === locObj?.id || l.parentLocation === locObj?.name)
+    : []
 
   useEffect(() => {
     if (!location || !period) {
@@ -35,6 +44,69 @@ export function usePnL(location, period) {
       setLoading(false)
       return
     }
+
+    // Parent location: subscribe to all sub-cafe P&Ls and aggregate
+    if (isParent && subCafes.length > 0) {
+      setLoading(true)
+      const subSnapshots = {}
+      const unsubs = []
+
+      for (const sub of subCafes) {
+        if (period.endsWith('-MONTHLY')) {
+          // Monthly: aggregate weeks for each sub-cafe
+          const base = period.replace('-MONTHLY', '')
+          const parts = base.match(/(\d+)-P(\d+)/)
+          if (!parts) continue
+          const numWks = weeksInPeriod(parseInt(parts[1]), parseInt(parts[2]))
+          for (let w = 1; w <= numWks; w++) {
+            const wk = base + '-W' + w
+            const subKey = sub.name + '|' + wk
+            unsubs.push(subscribePnL(sub.name, wk, (snap) => {
+              subSnapshots[subKey] = snap
+              aggregateAndSet()
+            }))
+          }
+        } else {
+          unsubs.push(subscribePnL(sub.name, period, (snap) => {
+            subSnapshots[sub.name] = snap
+            aggregateAndSet()
+          }))
+        }
+      }
+
+      // Also subscribe to the parent's own doc (for budget fields)
+      unsubs.push(subscribePnL(location, period, (snap) => {
+        subSnapshots['__parent__'] = snap
+        aggregateAndSet()
+      }))
+
+      function aggregateAndSet() {
+        const merged = {}
+        Object.entries(subSnapshots).forEach(([key, snap]) => {
+          if (key === '__parent__') {
+            // Only pull budget fields from parent
+            Object.entries(snap).forEach(([k, v]) => {
+              if (k.startsWith('budget_') && typeof v === 'number') {
+                merged[k] = v
+              }
+            })
+            return
+          }
+          Object.entries(snap).forEach(([k, v]) => {
+            if (typeof v === 'number') merged[k] = (merged[k] || 0) + v
+            else if (!(k in merged)) merged[k] = v
+          })
+        })
+        merged._isRollup = true
+        merged._subCafeCount = subCafes.length
+        setData(merged)
+        setLoading(false)
+        setLastUpdated(new Date())
+      }
+
+      return () => unsubs.forEach(fn => fn())
+    }
+
     // Monthly view: aggregate all week docs for this period
     if (period.endsWith('-MONTHLY')) {
       setLoading(true)

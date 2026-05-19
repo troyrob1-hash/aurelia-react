@@ -10,6 +10,7 @@ import {
   Users, Settings, LogOut, ChevronDown, Bell, MapPin, Menu, X
 } from 'lucide-react'
 import AureliaChat from '@/components/AureliaChat'
+import { db } from '@/lib/firebase'
 import { collection, query, where, onSnapshot, doc, updateDoc, orderBy } from 'firebase/firestore'
 import styles from './AppShell.module.css'
 

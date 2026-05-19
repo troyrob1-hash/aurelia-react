@@ -108,19 +108,19 @@ export async function signOut() {
 }
 
 // DISABLED — all signups go through Request Access + admin approval
-// async function signUp(email, password, name) {
-  return cognitoPost('SignUp', {
-    ClientId: CLIENT_ID,
-    Username: email,
-    Password: password,
-    UserAttributes: [
-      { Name: 'email', Value: email },
-      { Name: 'name',  Value: name  },
-      { Name: 'custom:role',     Value: 'viewer' },
-      { Name: 'custom:tenantId', Value: 'fooda'  },
-    ],
-  })
-}
+// export async function signUp(email, password, name) {
+//   return cognitoPost('SignUp', {
+//     ClientId: CLIENT_ID,
+//     Username: email,
+//     Password: password,
+//     UserAttributes: [
+//       { Name: 'email', Value: email },
+//       { Name: 'name',  Value: name  },
+//       { Name: 'custom:role',     Value: 'viewer' },
+//       { Name: 'custom:tenantId', Value: 'fooda'  },
+//     ],
+//   })
+// }
 
 export async function confirmSignUp(email, code) {
   return cognitoPost('ConfirmSignUp', {
