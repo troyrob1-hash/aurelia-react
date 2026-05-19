@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
@@ -7,6 +8,7 @@ import {
   Trash2, FileText, LayoutGrid, ArrowLeftRight, Settings, Users
 } from 'lucide-react'
 import styles from './Home.module.css'
+import Onboarding from '@/components/Onboarding'
 
 const MODULES = [
   {
@@ -109,6 +111,10 @@ function greeting() {
 }
 
 export default function Home() {
+  const [showOnboarding, setShowOnboarding] = useState(
+    () => !localStorage.getItem('aurelia_onboarded')
+  )
+
   const navigate              = useNavigate()
   const { user }              = useAuthStore()
   const { selectedLocation }  = useLocations()
@@ -122,6 +128,7 @@ export default function Home() {
 
   return (
     <div className={styles.page}>
+      {showOnboarding && <Onboarding onComplete={() => setShowOnboarding(false)} />}
       <div className={styles.greeting}>
         <div className={styles.greetingText}>{greeting()}, {name}</div>
         <div className={styles.greetingSub}>

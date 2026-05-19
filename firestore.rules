@@ -290,6 +290,14 @@ service cloud.firestore {
         allow read:  if ownsTenant(orgId);
         allow write: if false;
       }
+
+      // Ramp sync audit trail
+      match /rampSync/{syncId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isManager();
+      }
+
+
     }
 
     // ============================================================
