@@ -204,7 +204,7 @@ export default function Inventory() {
       if (batchCount > 0) await batch.commit()
 
       toast.success('Imported ' + count + ' items to ' + cleanLocName(location) + "'s catalog")
-      if (typeof reload === 'function') reload()
+      if (typeof load === 'function') load()
 
     } catch (err) {
       console.error('Catalog upload error:', err)
@@ -1412,6 +1412,67 @@ export default function Inventory() {
                         </div>
                       ))}
                     </div>
+
+                  {/* ── Edit item ── */}
+                  <div style={{ borderTop: '0.5px solid #e2e8f0', padding: '16px 0' }}>
+                    <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500, marginBottom: 12 }}>
+                      Edit item
+                    </div>
+                    {[
+                      { label: 'Category', field: 'category', type: 'select', options: categories.map(cat => ({ value: cat.key, label: cat.label })) },
+                      { label: 'Vendor', field: 'vendor', type: 'text' },
+                      { label: 'Pack size', field: 'packSize', type: 'text' },
+                      { label: 'Qty per pack', field: 'qtyPerPack', type: 'number' },
+                      { label: 'Pack price', field: 'packPrice', type: 'number', prefix: '$' },
+                      { label: 'Unit cost', field: 'unitCost', type: 'number', prefix: '$' },
+                      { label: 'GL code', field: 'glCode', type: 'text' },
+                      { label: 'Par level', field: 'parLevel', type: 'number' },
+                    ].map(f => (
+                      <div key={f.field} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                        <label style={{ fontSize: 13, color: '#475569', minWidth: 100 }}>{f.label}</label>
+                        {f.type === 'select' ? (
+                          <select
+                            defaultValue={(() => {
+                              const catName = (item.category || '').toLowerCase()
+                              const keyMap = { barista: 'bar_items', snacks: 'pantry', beverages: 'beverages', condiments: 'condiments', cafeteria: 'pantry', dairy: 'dairy', frozen: 'frozen' }
+                              return keyMap[catName] || item._cat || 'general'
+                            })()}
+                            onChange={async (e) => {
+                              const catKey = e.target.value
+                              const catLabel = categories.find(cat => cat.key === catKey)?.label || catKey
+                              const { doc: fbDoc, updateDoc } = await import('firebase/firestore')
+                              const locKey = sanitizeDocId(location)
+                              await updateDoc(fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', item.id), { category: catLabel })
+                              load()
+                              toast.success('Category updated')
+                            }}
+                            style={{ width: 180, padding: '5px 8px', fontSize: 13, borderRadius: 6, border: '0.5px solid #e2e8f0' }}
+                          >
+                            {f.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                          </select>
+                        ) : (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                            {f.prefix && <span style={{ fontSize: 13, color: '#94a3b8' }}>{f.prefix}</span>}
+                            <input
+                              type={f.type}
+                              defaultValue={item[f.field] ?? ''}
+                              onBlur={async (e) => {
+                                const val = f.type === 'number' ? (parseFloat(e.target.value) || 0) : e.target.value.trim()
+                                if (val === (item[f.field] ?? '')) return
+                                const { doc: fbDoc, updateDoc } = await import('firebase/firestore')
+                                const locKey = sanitizeDocId(location)
+                                await updateDoc(fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', item.id), { [f.field]: val })
+                                load()
+                                toast.success(f.label + ' updated')
+                              }}
+                              style={{ width: f.type === 'number' ? 100 : 160, padding: '5px 8px', fontSize: 13, borderRadius: 6, border: '0.5px solid #e2e8f0' }}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
                   </div>
                 </div>
               </aside>
