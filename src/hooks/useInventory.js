@@ -149,7 +149,7 @@ export function useInventory(orgId, locationId, periodKey, user) {
               parLevel: item.parLevel,
               reorderPoint: item.reorderPoint,
               avgDailyUsage: item.avgDailyUsage,
-              lastCountedAt: item.lastCountedAt,
+              lastCountedAt: item.lastCountedAt || null,
               isCatalogItem: true,
               category: (item.category && item.category !== 'General' && item.category !== 'Other') ? item.category : inferCategory(item.glCode, item.itemType, item.name),
             }
@@ -502,8 +502,8 @@ export function useInventory(orgId, locationId, periodKey, user) {
                 parLevel: item.parLevel || null,
                 reorderPoint: item.reorderPoint || null,
                 avgDailyUsage: item.avgDailyUsage || null,
-                lastCountedAt: item.lastCountedAt,
-                lastCountedBy: item.lastCountedBy,
+                lastCountedAt: item.lastCountedAt || null,
+                lastCountedBy: item.lastCountedBy || null,
                 updatedAt: serverTimestamp(),
                 updatedBy: user?.email
               },
