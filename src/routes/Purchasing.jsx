@@ -1009,12 +1009,7 @@ export default function Purchasing() {
         />
       )}
 
-      {(isParentLocation?.(selectedLocation) || getParentName?.(selectedLocation)) && (
-        <SubCafeBar
-          parentName={isParentLocation?.(selectedLocation) ? selectedLocation : getParentName?.(selectedLocation)}
-          activeSubCafe={isParentLocation?.(selectedLocation) ? null : selectedLocation}
-        />
-      )}
+
 
       {/* ── Header ── */}
       <div className={styles.header}>
@@ -1073,6 +1068,18 @@ export default function Purchasing() {
 
         </div>
       </div>
+
+      {/* ── Sub-cafe selector ── */}
+      {isParentLocation?.(selectedLocation) && (
+        <div style={{ marginBottom: 16 }}>
+          <SubCafeBar parentName={selectedLocation} activeSubCafe={null} />
+        </div>
+      )}
+      {getParentName?.(selectedLocation) && (
+        <div style={{ marginBottom: 16 }}>
+          <SubCafeBar parentName={getParentName(selectedLocation)} activeSubCafe={selectedLocation} />
+        </div>
+      )}
 
       {/* Period closed banner */}
       {periodClosed && (

@@ -27,6 +27,27 @@ function calcDaysOnHand(qty, avgDailyUsage) {
   return Math.round((qty / avgDailyUsage) * 10) / 10
 }
 
+function inferCategory(glCode, itemType, itemName) {
+  const gl = String(glCode || '').toLowerCase()
+  const t = String(itemType || '').toLowerCase()
+  const n = String(itemName || '').toLowerCase()
+  if (gl.includes('12002')) return 'Barista'
+  if (t.includes('barista')) return 'Barista'
+  if (t.includes('beverage') || t.includes('bev')) return 'Beverages'
+  if (t.includes('snack') || t.includes('snac')) return 'Snacks'
+  if (t.includes('condiment') || t.includes('cond')) return 'Condiments'
+  const bevWords = ['juice','water','soda','kombucha','tea ','lemonade','coffee','frappuccino','cola','coke','sprite','gatorade','celsius','red bull','rockstar','yerba','milk','almond milk','oat milk','soy milk','coconut milk','half and half','half & half','cream','protein shake','naked','illy','tractor','aura bora','boylan','virgil','joe ','eclipse','boxed water','smart water','topochico','perrier','pelegrino','pellegrino','diet coke','coke zero','coconut water','cold brew']
+  if (bevWords.some(w => n.includes(w))) return 'Beverages'
+  const barWords = ['cafe moto','espresso','chai','syrup','ghirardelli','david rio','matcha','teavana','starbucks','cream charger','agave','caramel sauce','chocolate sauce','white chocolate sauce','pumpkin spice','caramel brulee','freeze dried','dragonfruit','strawberry acai','mango dragonfruit','cinnamon','heavy cream','decaf moto','charger','latte']
+  if (barWords.some(w => n.includes(w))) return 'Barista'
+  const condWords = ['sauce','sriracha','cholula','tapatio','tabasco','ketchup','mustard','mayonnaise','soy sauce','salt packet','pepper packet','sugar','sweetener','packet','cracker','saltine']
+  if (condWords.some(w => n.includes(w))) return 'Condiments'
+  const snackWords = ['bar','chip','cookie','candy','chocolate','gummy','gummi','bears','jerky','pretzel','popcorn','puffcorn','nut ','nuts','almond','cashew','granola','oatmeal','yogurt','cheese','string cheese','salami','hummus','guacamole','pickle','olive','seaweed','mints','mint','gum','fruit','wafel','waffle','uncrustable','pop tart','oreo','ice cream','frozen','soup','cheesecake','brownie','blondie','marshmallow','rice crisp','snickers','twix','kit kat','reese','m&m','skittles','starburst','haribo','kind ','clif','rxbar','rx bar','builder','luna','88 acres','lenka','shameless','love corn','lovecorn','hippeas','popchips','uglies','north fork','sahale','ferris','poshi','bean vivo','gimme','quinn','solely','soley','chimes','vegobear','rip van','awake','justin','righteous','legally addictive','sabra','unreal','k protein','special k','nature valley','nut harvest','barebell','kopper','peeled','blue bunny','sweet street','sweet craft','dibs','haagen','ice cream cone','soft frozen','core power','oikos','block & barrel','marish','orchard valley','blobs','apple','fuji','banana','grand','frito']
+  if (snackWords.some(w => n.includes(w))) return 'Snacks'
+  if (gl.includes('12000')) return 'Snacks'
+  return 'Other'
+}
+
 export function useInventory(orgId, locationId, periodKey, user) {
   const [items, setItems] = useState([])
   const [priorItems, setPriorItems] = useState([])
@@ -101,37 +122,70 @@ export function useInventory(orgId, locationId, periodKey, user) {
       }
 
       const locationOverrides = {}
+      const locationHasOwnCatalog = !locationItemsSnap.empty && locationItemsSnap.docs.some(d => d.data().isCatalogItem)
       locationItemsSnap.forEach(d => {
         locationOverrides[d.id] = d.data()
       })
 
-      const inventoryItems = masterItems
-        .filter(item => {
-          const override = locationOverrides[String(item.id)]
-          return !override?.removed
-        })
-        .map(item => {
-          const override = locationOverrides[String(item.id)] || {}
-          return {
-            id: String(item.id),
-            name: item.name,
-            unitCost: item.unitCost || 0,
-            packSize: item.packSize,
-            qtyPerPack: item.qtyPerPack,
-            packPrice: item.packPrice,
-            vendor: item.vendor,
-            glCode: item.glCode,
-            sellingPrice: item.sellingPrice,
-            itemType: item.itemType,
-            qty: override.qty ?? null,
-            parLevel: override.parLevel,
-            reorderPoint: override.reorderPoint,
-            avgDailyUsage: override.avgDailyUsage,
-            lastCountedAt: override.lastCountedAt,
+      // If location has its own catalog (uploaded by manager), use that instead of master
+      let inventoryItems
+      if (locationHasOwnCatalog) {
+        inventoryItems = locationItemsSnap.docs
+          .filter(d => !d.data().removed)
+          .map(d => {
+            const item = d.data()
+            return {
+              id: d.id,
+              name: item.name || '',
+              unitCost: item.unitCost || 0,
+              packSize: item.packSize,
+              qtyPerPack: item.qtyPerPack,
+              packPrice: item.packPrice,
+              vendor: item.vendor,
+              glCode: item.glCode,
+              sellingPrice: item.sellingPrice,
+              itemType: item.itemType,
+              qty: item.qty ?? null,
+              parLevel: item.parLevel,
+              reorderPoint: item.reorderPoint,
+              avgDailyUsage: item.avgDailyUsage,
+              lastCountedAt: item.lastCountedAt,
+              isCatalogItem: true,
+              category: (item.category && item.category !== 'General' && item.category !== 'Other') ? item.category : inferCategory(item.glCode, item.itemType, item.name),
+            }
+          })
+        console.log('Using location-specific catalog:', inventoryItems.length, 'items')
+      } else {
+        // Fall back to master catalog with overrides
+        inventoryItems = masterItems
+          .filter(item => {
+            const override = locationOverrides[String(item.id)]
+            return !override?.removed
+          })
+          .map(item => {
+            const override = locationOverrides[String(item.id)] || {}
+            return {
+              id: String(item.id),
+              name: item.name,
+              unitCost: item.unitCost || 0,
+              packSize: item.packSize,
+              qtyPerPack: item.qtyPerPack,
+              packPrice: item.packPrice,
+              vendor: item.vendor,
+              glCode: item.glCode,
+              sellingPrice: item.sellingPrice,
+              itemType: item.itemType,
+              qty: override.qty ?? null,
+              parLevel: override.parLevel,
+              reorderPoint: override.reorderPoint,
+              avgDailyUsage: override.avgDailyUsage,
+              lastCountedAt: override.lastCountedAt,
             lastCountedBy: override.lastCountedBy,
             isKey: override.isKey || false,
+            category: override.category || inferCategory(item.glCode, item.itemType, item.name),
           }
         })
+      }
 
       // Pick up custom items — overrides that aren't tied to a master item.
       // These have id starting with 'custom_' and the data is fully self-contained.
@@ -461,7 +515,7 @@ export function useInventory(orgId, locationId, periodKey, user) {
       await Promise.all(batch)
 
       const closingValue = items.reduce((sum, item) => {
-        return sum + ((item.qty || 0) * (item.unitCost || 0))
+        return sum + ((item.qty || 0) * (item.packPrice || ((item.qtyPerPack || 1) * (item.unitCost || 0))))
       }, 0)
 
       const cogs = Math.max(0, openingValue + purchases - closingValue)
@@ -550,7 +604,7 @@ export function useInventory(orgId, locationId, periodKey, user) {
         _daysOnHand: daysOnHand,
         _belowPar: belowPar,
         _atReorder: atReorder,
-        _value: (item.qty || 0) * (item.unitCost || 0)
+        _value: (item.qty || 0) * (item.packPrice || ((item.qtyPerPack || 1) * (item.unitCost || 0)))
       }
     })
   }, [items, priorItems, categories])
@@ -634,6 +688,27 @@ export function useInventory(orgId, locationId, periodKey, user) {
 }
 
 function assignCategory(item, categories) {
+  // Use the item's own category first (set by inferCategory or upload)
+  if (item.category && item.category !== 'Other' && item.category !== 'General') {
+    const catName = item.category.toLowerCase()
+    // Map common names to category keys
+    const keyMap = {
+      'barista': 'bar_items',
+      'snacks': 'pantry',
+      'beverages': 'beverages',
+      'condiments': 'condiments',
+      'cafeteria': 'pantry',
+      'dairy': 'dairy',
+      'frozen': 'frozen',
+      'proteins': 'proteins',
+      'produce': 'produce',
+    }
+    if (keyMap[catName]) return keyMap[catName]
+    const match = categories.find(c => c.key === catName || c.label.toLowerCase() === catName)
+    if (match) return match.key
+    return catName
+  }
+
   for (const cat of categories) {
     if (cat.rx && new RegExp(cat.rx, 'i').test(item.name || '')) {
       return cat.key
@@ -654,6 +729,7 @@ function getDefaultCategories() {
     { key: 'frozen', label: 'Frozen', color: '#1d4ed8', bg: '#dbeafe', keywords: ['ice cream', 'frozen', 'popsicle'] },
     { key: 'proteins', label: 'Proteins', color: '#b91c1c', bg: '#fee2e2', keywords: ['chicken', 'beef', 'steak', 'salmon', 'fish', 'pork', 'turkey', 'shrimp'] },
     { key: 'produce', label: 'Produce', color: '#15803d', bg: '#dcfce7', keywords: ['lettuce', 'tomato', 'onion', 'pepper', 'carrot', 'fruit', 'apple', 'banana'] },
+    { key: 'condiments', label: 'Condiments', color: '#64748b', bg: '#f1f5f9', keywords: ['sauce', 'ketchup', 'mustard', 'mayo', 'salt', 'pepper', 'sugar', 'sweetener', 'packet', 'sriracha', 'cholula', 'tabasco', 'tapatio', 'soy sauce', 'cracker'] },
     { key: 'general', label: 'General', color: '#374151', bg: '#f3f4f6', keywords: [] }
   ]
 }

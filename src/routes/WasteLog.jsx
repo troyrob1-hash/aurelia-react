@@ -200,12 +200,7 @@ export default function WasteLog() {
   return (
     <div style={{ padding: '1.5rem', maxWidth: 1400, margin: '0 auto' }}>
 
-      {(isParentLocation?.(selectedLocation) || getParentName?.(selectedLocation)) && (
-        <SubCafeBar
-          parentName={isParentLocation?.(selectedLocation) ? selectedLocation : getParentName?.(selectedLocation)}
-          activeSubCafe={isParentLocation?.(selectedLocation) ? null : selectedLocation}
-        />
-      )}
+
 
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
@@ -226,6 +221,18 @@ export default function WasteLog() {
       </div>
 
       {/* KPIs */}
+      {/* ── Sub-cafe selector ── */}
+      {isParentLocation?.(selectedLocation) && (
+        <div style={{ marginBottom: 16 }}>
+          <SubCafeBar parentName={selectedLocation} activeSubCafe={null} />
+        </div>
+      )}
+      {getParentName?.(selectedLocation) && (
+        <div style={{ marginBottom: 16 }}>
+          <SubCafeBar parentName={getParentName(selectedLocation)} activeSubCafe={selectedLocation} />
+        </div>
+      )}
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 24 }}>
         <div style={{ background: totalShrinkageValue > 500 ? '#fef2f2' : '#f0fdf4', borderRadius: 10, padding: '14px 18px' }}>
           <div style={{ fontSize: 11, fontWeight: 600, color: totalShrinkageValue > 500 ? '#dc2626' : '#059669', textTransform: 'uppercase', marginBottom: 4 }}>Total shrinkage</div>

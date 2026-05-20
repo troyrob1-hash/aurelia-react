@@ -7,7 +7,7 @@ import { readPeriodClose, getPriorKey } from '@/lib/pnl'
 import { db } from '@/lib/firebase'
 import { useInventory, fmt$, sanitizeDocId } from '@/hooks/useInventory'
 import { getTopVarianceIssues, calcParStatus } from '@/lib/variance'
-import { Search, Download, RefreshCw, Eye, EyeOff, TrendingUp, TrendingDown, Minus, AlertTriangle } from 'lucide-react'
+import { Search, Download, RefreshCw, Eye, EyeOff, TrendingUp, TrendingDown, Minus, AlertTriangle , Upload } from 'lucide-react'
 import { useToast } from '@/components/ui/Toast'
 import AllLocationsGrid from '@/components/AllLocationsGrid'
 import styles from './Inventory.module.css'
@@ -57,6 +57,161 @@ export default function Inventory() {
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
   }, [])
+
+  // Upload Excel inventory sheet — creates location-specific catalog
+  async function uploadCatalog(file) {
+    if (!file || !location) return
+    const locKey = sanitizeDocId(location)
+
+    try {
+      const XLSX = (await import('xlsx')).default || await import('xlsx')
+      const data = await file.arrayBuffer()
+      const workbook = XLSX.read(data)
+      const ws = workbook.Sheets[workbook.SheetNames[0]]
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' })
+
+      if (rows.length === 0) { toast.error('No data found in file'); return }
+
+      // Fuzzy column finder — matches partial, case-insensitive
+      const headers = Object.keys(rows[0])
+      function findCol(row, aliases) {
+        for (const alias of aliases) {
+          const match = headers.find(h => h.toLowerCase().trim() === alias.toLowerCase().trim())
+          if (match && row[match] !== undefined && row[match] !== '') return row[match]
+        }
+        // Partial match fallback
+        for (const alias of aliases) {
+          const match = headers.find(h => h.toLowerCase().trim().includes(alias.toLowerCase().trim()))
+          if (match && row[match] !== undefined && row[match] !== '') return row[match]
+        }
+        return null
+      }
+
+      function parsePrice(val) {
+        if (val == null || val === '') return 0
+        const s = String(val).replace(/[\$,\s]/g, '').trim()
+        return parseFloat(s) || 0
+      }
+
+      function parseGlCode(val) {
+        if (!val) return ''
+        const s = String(val).trim()
+        // Extract numeric GL code from "12000 - Inventory - Cafeteria"
+        const match = s.match(/^(\d+)/)
+        return match ? match[1] : s
+      }
+
+      function inferCategory(glCode, itemType, itemName) {
+        const gl = String(glCode).toLowerCase()
+        const t = String(itemType || '').toLowerCase()
+        const n = String(itemName || '').toLowerCase()
+
+        // 1. GL code is the strongest signal
+        if (gl.includes('12002')) return 'Barista'
+
+        // 2. Explicit item type from Excel (handle typos)
+        if (t.includes('barista')) return 'Barista'
+        if (t.includes('beverage') || t.includes('bev')) return 'Beverages'
+        if (t.includes('snack') || t.includes('snac')) return 'Snacks'
+        if (t.includes('condiment') || t.includes('cond')) return 'Condiments'
+
+        // 3. Infer from item name — beverages
+        const bevWords = ['juice', 'water', 'soda', 'kombucha', 'tea', 'lemonade', 'coffee', 'frappuccino', 'cola', 'coke', 'sprite', 'gatorade', 'celsius', 'red bull', 'rockstar', 'yerba', 'milk ', 'almond milk', 'oat milk', 'soy milk', 'coconut milk', 'half & half', 'cream', 'protein shake', 'naked ', 'illy ', 'tractor beverage', 'aura bora', 'boylan', "virgil's", "joe's", 'joe tea', 'eclipse water', 'boxed water', 'smart water', 'topochico', 'perrier', 'pelegrino']
+        if (bevWords.some(w => n.includes(w))) return 'Beverages'
+
+        // 4. Infer from name — barista
+        const barWords = ['cafe moto', 'espresso', 'chai', 'syrup 1883', 'syrup ', 'ghirardelli', 'david rio', 'matcha', 'teavana', 'starbucks cold brew', 'starbucks veranda', 'starbucks pike', 'starbucks verona', 'starbucks decaf', 'starbucks holiday', 'cream charger', 'agave', 'caramel sauce', 'chocolate sauce', 'white chocolate sauce', 'pumpkin spice', 'caramel brulee', 'freeze dried', 'dragonfruit', 'strawberry acai', 'mango dragonfruit', 'ground cinnamon', 'heavy cream']
+        if (barWords.some(w => n.includes(w))) return 'Barista'
+
+        // 5. Infer from name — condiments/supplies
+        const condWords = ['sauce', 'hot sauce', 'sriracha', 'cholula', 'tapatio', 'tabasco', 'ketchup', 'mustard', 'mayonnaise', 'soy sauce', 'salt packet', 'pepper packet', 'sugar ', 'sweetener', 'packet']
+        if (condWords.some(w => n.includes(w))) return 'Condiments'
+
+        // 6. Infer from name — snacks/food
+        const snackWords = ['bar ', 'chip', 'cookie', 'candy', 'chocolate', 'gummy', 'jerky', 'pretzel', 'popcorn', 'cracker', 'nut ', 'nuts', 'almond', 'cashew', 'granola', 'oatmeal', 'yogurt', 'cheese', 'salami', 'hummus', 'guacamole', 'pickle', 'olive', 'seaweed', 'mints', 'gum', 'fruit', 'wafel', 'uncrustable', 'pop tart', 'oreo', 'ice cream', 'frozen', 'soup', 'cheesecake', 'brownie', 'blondie', 'marshmallow', 'rice crisp']
+        if (snackWords.some(w => n.includes(w))) return 'Snacks'
+
+        // 7. Fallback by GL
+        if (gl.includes('12000')) return 'Snacks'
+        return 'Other'
+      }
+
+      const { writeBatch, doc: fbDoc } = await import('firebase/firestore')
+
+      // Firestore batch limit is 500 — split into chunks
+      let count = 0
+      let batch = writeBatch(db)
+      let batchCount = 0
+
+      for (const row of rows) {
+        const name = findCol(row, ['Description', 'Item', 'Item Name', 'Name', 'Product'])
+        if (!name || String(name).trim() === '') continue
+
+        const sku = findCol(row, ['SKU', 'UPC', 'Barcode'])
+        const packSize = findCol(row, ['Pack Size', 'Pack', 'Case Size', 'Unit Size']) || ''
+        const qtyPerPack = parseInt(findCol(row, ['Qty Per Pack', 'Qty', 'Case Qty', 'Pack Qty'])) || 1
+        const packPrice = parsePrice(findCol(row, ['Pack Price', 'Case Price', 'Case Cost']))
+        const unitCost = parsePrice(findCol(row, ['Cost Per Unit', 'Unit Cost', 'Cost', 'Each Cost']))
+        const vendor = findCol(row, ['Vendor', 'Supplier', 'Distributor', 'Purveyor']) || ''
+        const rawGl = findCol(row, ['GL Code', 'GL', 'Account', 'GL Account']) || ''
+        const glCode = parseGlCode(rawGl)
+        const sellingPrice = parsePrice(findCol(row, ['Selling Price', 'Retail Price', 'Price', 'Sell Price']))
+        const cogsRatio = findCol(row, ['COGS', 'COGS %', 'Food Cost'])
+        const itemType = findCol(row, ['Item Type', 'Type', 'Category', 'Dept']) || ''
+        const category = inferCategory(rawGl, itemType, name)
+
+        const itemId = String(name).trim()
+          .replace(/[^a-zA-Z0-9\s]/g, '')
+          .replace(/\s+/g, '_')
+          .toLowerCase()
+          .slice(0, 80)
+
+        if (!itemId) continue
+
+        const ref = fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', itemId)
+
+        batch.set(ref, {
+          name: String(name).trim(),
+          sku: sku ? String(sku).trim() : '',
+          packSize: String(packSize).trim(),
+          qtyPerPack: qtyPerPack,
+          packPrice: packPrice,
+          unitCost: unitCost,
+          vendor: String(vendor).trim(),
+          glCode: glCode,
+          glCodeFull: String(rawGl).trim(),
+          sellingPrice: sellingPrice,
+          cogsRatio: parsePrice(String(cogsRatio).replace('%', '')) / 100 || 0,
+          itemType: String(itemType).trim(),
+          category: category,
+          isCatalogItem: true,
+          qty: null,
+          active: true,
+          importedAt: new Date().toISOString(),
+          importedBy: user?.name || user?.email || '',
+        }, { merge: true })
+
+        count++
+        batchCount++
+
+        if (batchCount >= 490) {
+          await batch.commit()
+          batch = writeBatch(db)
+          batchCount = 0
+        }
+      }
+
+      if (batchCount > 0) await batch.commit()
+
+      toast.success('Imported ' + count + ' items to ' + cleanLocName(location) + "'s catalog")
+      if (typeof reload === 'function') reload()
+
+    } catch (err) {
+      console.error('Catalog upload error:', err)
+      toast.error('Failed to import: ' + (err.message || 'unknown error'))
+    }
+  }
+
   const { periodKey } = usePeriod()
 
   // ─── Local UI State ────────────────────────────────────────────────────────
@@ -551,11 +706,18 @@ export default function Inventory() {
   return (
     <div className={styles.pageWrap}>
 
-      {(isParentLocation?.(selectedLocation) || getParentName?.(selectedLocation)) && (
-        <SubCafeBar
-          parentName={isParentLocation?.(selectedLocation) ? selectedLocation : getParentName?.(selectedLocation)}
-          activeSubCafe={isParentLocation?.(selectedLocation) ? null : selectedLocation}
-        />
+
+
+      {/* ── Sub-cafe selector ── */}
+      {isParentLocation?.(selectedLocation) && (
+        <div style={{ marginBottom: 16 }}>
+          <SubCafeBar parentName={selectedLocation} activeSubCafe={null} />
+        </div>
+      )}
+      {getParentName?.(selectedLocation) && (
+        <div style={{ marginBottom: 16 }}>
+          <SubCafeBar parentName={getParentName(selectedLocation)} activeSubCafe={selectedLocation} />
+        </div>
       )}
 
       {/* Category Chips */}
@@ -601,6 +763,16 @@ export default function Inventory() {
           )
         })}
       </div>
+
+      {/* Upload catalog */}
+      <input
+        type="file"
+        accept=".xlsx,.xls,.csv"
+        style={{ display: 'none' }}
+        id="catalog-upload"
+        onChange={e => { if (e.target.files[0]) { uploadCatalog(e.target.files[0]); e.target.value = '' } }}
+      />
+
 
       <div className={styles.invContent}>
         {/* Header */}
@@ -661,6 +833,9 @@ export default function Inventory() {
               </button>
             )}
             
+            <label htmlFor="catalog-upload" className={styles.btnIcon} style={{ cursor: 'pointer' }} title="Upload inventory sheet">
+              <Upload size={15} />
+            </label>
             <button className={styles.btnIcon} onClick={() => exportInventory('csv')} title="Export CSV">
               <Download size={15} />
             </button>
@@ -907,13 +1082,14 @@ export default function Inventory() {
               <table className={styles.table}>
                 <thead>
                   <tr className={styles.thead}>
-                    {!isMobile && <th className={styles.thNum}>#</th>}
                     <th className={styles.th}>Item</th>
+                    {!isMobile && <th className={styles.th}>Vendor</th>}
                     {!isMobile && <th className={styles.thCenter}>Pack</th>}
-                    {!isMobile && <th className={styles.thRight}>Unit Cost</th>}
-                    {!isMobile && !blindMode && showVariance && <th className={styles.thCenter}>Prior</th>}
-                    <th className={styles.thCenter} style={{ width: isMobile ? 120 : 160 }}>Count</th>
-                    {!isMobile && showVariance && !blindMode && <th className={styles.thCenter}>△ Variance</th>}
+                    {!isMobile && <th className={styles.thCenter}>Qty/pk</th>}
+                    {!isMobile && <th className={styles.thRight}>Pack $</th>}
+                    {!isMobile && <th className={styles.thCenter}>Prior</th>}
+                    <th className={styles.thCenter} style={{ width: isMobile ? 100 : 130 }}>Count</th>
+                    {!isMobile && <th className={styles.thCenter}>Variance</th>}
                     {!isMobile && <th className={styles.thRight}>Value</th>}
                   </tr>
                 </thead>
@@ -934,7 +1110,7 @@ export default function Inventory() {
                           setWhyItem(item)
                         }}
                         style={{ cursor: 'pointer' }}>
-                        {!isMobile && <td className={styles.tdNum}>{idx + 1}</td>}
+
                         <td className={styles.tdName}>
                           <div className={styles.nameRow} style={isMobile ? {gap:0} : {}}>
                             {!isMobile && <button
@@ -992,19 +1168,22 @@ export default function Inventory() {
                                 {item.name}
                                 {item._belowPar && <span className={styles.parFlag}>↓ Par</span>}
                               </div>
-                              {item.vendor && <div className={styles.vendor}>{item.vendor}{item.glCode ? ' · ' + item.glCode : ''}</div>}
+
                             </div>
                           </div>
                         </td>
+                        {!isMobile && <td className={styles.td} style={{ color: '#64748b', fontSize: 12 }}>{item.vendor || ''}</td>}
                         {!isMobile && <td className={styles.tdCenter}>
                           {item.packSize && <span className={styles.badge}>{item.packSize}</span>}
                         </td>}
-                        {!isMobile && <td className={styles.tdRight}>${(item.unitCost || 0).toFixed(2)}</td>}
-                        {!isMobile && !blindMode && showVariance && (
-                          <td className={styles.tdCenter} style={{ color: '#bbb', fontSize: 12 }}>
-                            {(item._priorQty || 0) > 0 ? item._priorQty : '—'}
-                          </td>
-                        )}
+                        {!isMobile && <td className={styles.tdCenter} style={{ fontSize: 12 }}>{item.qtyPerPack || ''}</td>}
+                        {!isMobile && <td className={styles.tdRight}>
+                          {item.packPrice ? ('$' + item.packPrice.toFixed(2)) : (item.unitCost ? ('$' + item.unitCost.toFixed(2) + '/ea') : '--')}
+                        </td>}
+
+                        {!isMobile && <td className={styles.tdCenter} style={{ color: '#94a3b8', fontSize: 12 }}>
+                          {(item._priorQty || 0) > 0 ? item._priorQty : '—'}
+                        </td>}
                         <td className={styles.tdCount}>
                           <div className={styles.countRow}>
                             <button className={styles.adjBtn} onClick={() => adjust(item.id, -1)}>−</button>
@@ -1022,23 +1201,34 @@ export default function Inventory() {
                             <button className={styles.adjBtn} onClick={() => adjust(item.id, 1)}>+</button>
                           </div>
                         </td>
-                        {!isMobile && showVariance && !blindMode && (
-                          <td className={styles.tdCenter}>
-                            {isCounted && (item._priorQty || 0) > 0 ? (
-                              <span className={`${styles.varBadge} ${styles['var_' + varDir]}`}>
-                                {varDir === 'up' ? <TrendingUp size={10} /> : varDir === 'down' ? <TrendingDown size={10} /> : <Minus size={10} />}
-                                {(item._variance || 0) > 0 ? '+' : ''}{(item._variance || 0).toFixed(1)}
-                              </span>
-                            ) : <span style={{ color: '#ddd' }}>—</span>}
-                          </td>
-                        )}
-                        {!isMobile && <td className={styles.tdRight} style={{ fontWeight: 700, color: (item._value || 0) > 0 ? '#059669' : '#bbb' }}>
+
+                                                {!isMobile && <td className={styles.tdCenter}>
+                          {isCounted && (item._priorQty || 0) > 0 ? (
+                            <span className={`${styles.varBadge} ${styles['var_' + varDir]}`}>
+                              {varDir === 'up' ? <TrendingUp size={10} /> : varDir === 'down' ? <TrendingDown size={10} /> : <Minus size={10} />}
+                              {(item._variance || 0) > 0 ? '+' : ''}{(item._variance || 0).toFixed(1)}
+                            </span>
+                          ) : <span style={{ color: '#ddd' }}>—</span>}
+                        </td>}
+{!isMobile && <td className={styles.tdRight} style={{ fontWeight: 700, color: (item._value || 0) > 0 ? '#059669' : '#bbb' }}>
                           {(item._value || 0) > 0 ? fmt$(item._value) : '—'}
                         </td>}
                       </tr>
                     )
                   })}
                 </tbody>
+                <tfoot>
+                  <tr style={{ background: '#f8fafc', borderTop: '0.5px solid #e2e8f0' }}>
+                    <td colSpan={isMobile ? 1 : 6} style={{ padding: '8px 12px' }}></td>
+                    <td style={{ padding: '8px 12px', textAlign: 'right', fontSize: 12, color: '#64748b' }}>
+                      {cat.items.filter(i => i.qty != null && i.qty > 0).length}/{cat.items.length}
+                    </td>
+                    <td style={{ padding: '8px 12px' }}></td>
+                    {!isMobile && <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 600, fontSize: 12 }}>
+                      {fmt$(cat.items.reduce((s, i) => s + (i._value || 0), 0))}
+                    </td>}
+                  </tr>
+                </tfoot>
               </table>
             )}
           </div>

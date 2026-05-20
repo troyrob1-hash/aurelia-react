@@ -2131,14 +2131,16 @@ export default function WeeklySales() {
         </div>
       )}
 
+
+
       {/* ── Sub-cafe selector ── */}
       {isParentLocation?.(selectedLocation) && (
-        <div style={{ marginBottom: 12 }}>
+        <div style={{ marginBottom: 16 }}>
           <SubCafeBar parentName={selectedLocation} activeSubCafe={null} />
         </div>
       )}
       {getParentName?.(selectedLocation) && (
-        <div style={{ marginBottom: 12 }}>
+        <div style={{ marginBottom: 16 }}>
           <SubCafeBar parentName={getParentName(selectedLocation)} activeSubCafe={selectedLocation} />
         </div>
       )}

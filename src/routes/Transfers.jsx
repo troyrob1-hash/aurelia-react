@@ -517,12 +517,7 @@ export default function Transfers() {
     <div className={styles.page}>
 
 
-      {(isParentLocation?.(selectedLocation) || getParentName?.(selectedLocation)) && (
-        <SubCafeBar
-          parentName={isParentLocation?.(selectedLocation) ? selectedLocation : getParentName?.(selectedLocation)}
-          activeSubCafe={isParentLocation?.(selectedLocation) ? null : selectedLocation}
-        />
-      )}
+
 
       {/* ── Header ── */}
       <div className={styles.header}>
@@ -592,6 +587,18 @@ export default function Transfers() {
           )}
         </div>
       </div>
+
+      {/* ── Sub-cafe selector ── */}
+      {isParentLocation?.(selectedLocation) && (
+        <div style={{ marginBottom: 16 }}>
+          <SubCafeBar parentName={selectedLocation} activeSubCafe={null} />
+        </div>
+      )}
+      {getParentName?.(selectedLocation) && (
+        <div style={{ marginBottom: 16 }}>
+          <SubCafeBar parentName={getParentName(selectedLocation)} activeSubCafe={selectedLocation} />
+        </div>
+      )}
 
       {/* ── Tab toggle ── */}
       <div style={{

@@ -482,11 +482,18 @@ export default function LaborPlanner() {
   return (
     <div className={styles.page}>
 
-      {(isParentLocation?.(selectedLocation) || getParentName?.(selectedLocation)) && (
-        <SubCafeBar
-          parentName={isParentLocation?.(selectedLocation) ? selectedLocation : getParentName?.(selectedLocation)}
-          activeSubCafe={isParentLocation?.(selectedLocation) ? null : selectedLocation}
-        />
+
+
+      {/* ── Sub-cafe selector ── */}
+      {isParentLocation?.(selectedLocation) && (
+        <div style={{ marginBottom: 16 }}>
+          <SubCafeBar parentName={selectedLocation} activeSubCafe={null} />
+        </div>
+      )}
+      {getParentName?.(selectedLocation) && (
+        <div style={{ marginBottom: 16 }}>
+          <SubCafeBar parentName={getParentName(selectedLocation)} activeSubCafe={selectedLocation} />
+        </div>
       )}
 
       {laborPct > laborAlertThreshold && gfsTotal > 0 && (

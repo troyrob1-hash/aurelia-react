@@ -1,3 +1,4 @@
+import SubCafeBar from '@/components/ui/SubCafePrompt'
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
@@ -349,7 +350,7 @@ export default function Dashboard() {
   const { user } = useAuthStore()
   const isDirector = /^(admin|director)$/i.test(user?.role || '')
   const orgId    = user?.tenantId
-  const { selectedLocation, visibleLocations, getSubCafes, isParentLocation } = useLocations()
+  const { selectedLocation, visibleLocations, getSubCafes, isParentLocation, getParentName } = useLocations()
   const { periodKey } = usePeriod()
 
   const [locationData, setLocationData] = useState([]) // for ranking table
@@ -943,6 +944,20 @@ export default function Dashboard() {
           })}
         </div>
       </div>
+
+
+
+      {/* ── Sub-cafe selector ── */}
+      {isParentLocation?.(selectedLocation) && (
+        <div style={{ marginBottom: 16 }}>
+          <SubCafeBar parentName={selectedLocation} activeSubCafe={null} />
+        </div>
+      )}
+      {getParentName?.(selectedLocation) && (
+        <div style={{ marginBottom: 16 }}>
+          <SubCafeBar parentName={getParentName(selectedLocation)} activeSubCafe={selectedLocation} />
+        </div>
+      )}
 
       {/* ── KPI Strip (Pattern 3, 5 columns) ── */}
       {(() => {
