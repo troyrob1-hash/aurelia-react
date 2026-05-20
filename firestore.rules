@@ -292,6 +292,12 @@ service cloud.firestore {
       }
 
       // Ramp sync audit trail
+      // Waste log entries
+      match /wasteLog/{entryId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isManager();
+      }
+
       match /rampSync/{syncId} {
         allow read:  if ownsTenant(tenantId);
         allow write: if ownsTenant(tenantId) && isManager();
