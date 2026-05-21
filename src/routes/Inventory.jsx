@@ -1,3 +1,4 @@
+import BarcodeScanner from '@/components/BarcodeScanner'
 import SubCafeBar from '@/components/ui/SubCafePrompt'
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useAuthStore } from '@/store/authStore'
@@ -52,11 +53,26 @@ export default function Inventory() {
   
   const { selectedLocation, setSelectedLocation , isParentLocation , getParentName } = useLocations()
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
+  const [showScanner, setShowScanner] = useState(false)
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768)
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
   }, [])
+
+  // Barcode scan handler — scrolls to item and focuses count input
+  function handleBarcodeMatch(item) {
+    // Find the element by item id and scroll to it
+    const el = document.getElementById('inv-row-' + item.id)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      el.style.background = '#fef3c7'
+      setTimeout(() => { el.style.background = ''; }, 2000)
+      // Focus the count input
+      const input = el.querySelector('input[type="number"]')
+      if (input) setTimeout(() => input.focus(), 300)
+    }
+  }
 
   // Upload Excel inventory sheet — creates location-specific catalog
   async function uploadCatalog(file) {
@@ -833,6 +849,13 @@ export default function Inventory() {
               </button>
             )}
             
+            <button onClick={() => setShowScanner(true)} style={{
+              padding: '8px 14px', fontSize: 12, fontWeight: 600,
+              background: '#F15D3B18', color: '#F15D3B', borderRadius: 8,
+              border: '1px solid #F15D3B40', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
+            }}>
+              <Search size={14} /> Scan &amp; count
+            </button>
             <label htmlFor="catalog-upload" className={styles.btnIcon} style={{ cursor: 'pointer' }} title="Upload inventory sheet">
               <Upload size={15} />
             </label>
@@ -1101,6 +1124,7 @@ export default function Inventory() {
                     return (
                       <tr
                         key={item.id}
+                        id={'inv-row-' + item.id}
                         className={`${styles.row} ${idx % 2 === 0 ? '' : styles.rowAlt}`}
                         onClick={(e) => {
                           // Don't open the panel if the click was inside an input,
@@ -1479,6 +1503,15 @@ export default function Inventory() {
             </>
           )
         })()}
+
+        {/* ── Barcode Scanner ── */}
+        {showScanner && (
+          <BarcodeScanner
+            items={items}
+            onScan={handleBarcodeMatch}
+            onClose={() => setShowScanner(false)}
+          />
+        )}
 
         {/* ── Manage items drawer ── */}
         {showManage && (
