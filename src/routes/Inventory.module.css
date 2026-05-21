@@ -333,7 +333,7 @@
 .heat_good { background: #10b981; }
 .heat_warn { background: #f59e0b; }
 .heat_alert { background: #ef4444; }
-.heat_neutral { background: #9ca3af; }
+.heat_neutral { background: #10b981; }
 
 .name { font-weight: 600; color: #1f2937; }
 .parFlag {
@@ -384,10 +384,10 @@
 .countInput:focus { border-color: #3b82f6; }
 .countInput::placeholder { color: #ccc; font-weight: 400; }
 
-.counted_good { background: #d1fae5; border-color: #10b981; }
-.counted_warn { background: #fef3c7; border-color: #f59e0b; }
-.counted_alert { background: #fee2e2; border-color: #ef4444; }
-.counted_neutral { background: #f3f4f6; border-color: #9ca3af; }
+.counted_good { background: rgba(16, 185, 129, 0.12); border-color: rgba(16, 185, 129, 0.5); }
+.counted_warn { background: rgba(245, 158, 11, 0.12); border-color: rgba(245, 158, 11, 0.5); }
+.counted_alert { background: rgba(239, 68, 68, 0.12); border-color: rgba(239, 68, 68, 0.5); }
+.counted_neutral { background: rgba(16, 185, 129, 0.12); border-color: rgba(16, 185, 129, 0.5); }
 
 /* ─── Variance Badge ──────────────────────────────────────────────────────── */
 .varBadge {
