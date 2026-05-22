@@ -201,8 +201,8 @@ exports.inviteUser = onCall(async (request) => {
   const callerRoles = Array.isArray(caller.roles) && caller.roles.length > 0
     ? caller.roles
     : (caller.role ? [caller.role] : []);
-  if (!callerRoles.includes("admin")) {
-    throw new HttpsError("permission-denied", "Only admins can invite users.");
+  if (!callerRoles.includes("admin") && !callerRoles.includes("director")) {
+    throw new HttpsError("permission-denied", "Only admins and directors can invite users.");
   }
 
   // No duplicate emails
