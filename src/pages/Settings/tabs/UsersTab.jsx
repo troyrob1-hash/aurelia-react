@@ -72,9 +72,9 @@ export default function UsersTab() {
   const fetchAccessReqs = useCallback(async () => {
     try {
       const snap = await getDocs(
-        query(collection(db, "tenants", orgId, "accessRequests"), where("status", "==", "pending"), orderBy("createdAt", "desc"))
+        collection(db, "tenants", orgId, "accessRequests")
       );
-      setAccessReqs(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setAccessReqs(snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(r => r.status === "pending" || r.status === "approved").sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)));
     } catch (e) { console.error("Failed to load access requests:", e); }
   }, [orgId]);
 
