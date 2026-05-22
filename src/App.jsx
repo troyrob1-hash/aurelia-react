@@ -57,7 +57,14 @@ function PublicRoute({ children }) {
   if (user) return <Navigate to="/" replace />
   return children
 }
-export default function App() {
+export default 
+function AdminOnly({ children }) {
+  const { user } = useAuthStore()
+  if (/^(admin)$/i.test(user?.role || '')) return children
+  return <Navigate to="/" replace />
+}
+
+function App() {
   const init = useAuthStore(s => s.init)
   useEffect(() => { init() }, [init])
   return (
