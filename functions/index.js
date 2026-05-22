@@ -168,7 +168,7 @@ exports.auditApiKeyWrite = onDocumentWritten("orgs/{orgId}/apiKeys/{keyId}", asy
 // ============================================================
 // CALLABLE: inviteUser
 // ============================================================
-exports.inviteUser = onCall({ cors: true }, async (request) => {
+exports.inviteUser = onCall(async (request) => {
   if (!request.auth) throw new HttpsError("unauthenticated", "Must be signed in.");
 
   const {
