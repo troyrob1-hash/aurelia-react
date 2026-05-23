@@ -81,6 +81,11 @@ export default function InviteModal({ orgId, onClose, onSuccess, prefillEmail, p
       });
       onSuccess();
     } catch (e) {
+      if (e.message && e.message.includes("already-exists")) {
+        // User already has a Cognito account — treat as success
+        onSuccess();
+        return;
+      }
       setError(e.message || "Failed to send invitation.");
     } finally {
       setLoading(false);
