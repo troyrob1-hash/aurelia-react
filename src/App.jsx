@@ -94,7 +94,7 @@ function App() {
           <Route path="budgets"   element={<Suspense fallback={<LoadingScreen />}><Budgets /></Suspense>} />
           <Route path="transfers" element={<Suspense fallback={<LoadingScreen />}><Transfers /></Suspense>} />
           <Route path="labor"     element={<Suspense fallback={<LoadingScreen />}><LaborPlanner /></Suspense>} />
-          <Route path="settings"  element={<Suspense fallback={<LoadingScreen />}>{/^(admin|director)$/i.test(useAuthStore.getState().user?.role || '') ? <Settings /> : <Navigate to="/" replace />}</Suspense>} />
+          <Route path="settings"  element={<Suspense fallback={<LoadingScreen />}><AdminOnly><Settings /></AdminOnly></Suspense>} />
           <Route path="*"         element={<Navigate to="/" replace />} />
         </Route>
       </Routes>
