@@ -27,7 +27,7 @@ service cloud.firestore {
     // ============================================================
     match /aurelia/{doc} {
       allow read: if isAuth();
-      allow write: if false;
+      allow write: if ownsTenant(tenantId) && isAdmin();
     }
 
     // ============================================================
@@ -236,7 +236,7 @@ service cloud.firestore {
 
       match /auditLog/{logId} {
         allow read:  if ownsTenant(tenantId) && isDirector();
-        allow write: if false;
+        allow write: if ownsTenant(tenantId) && isAdmin();
       }
 
       match /users/{userId} {
@@ -248,7 +248,7 @@ service cloud.firestore {
       // (submitAccessRequest Cloud Function uses admin SDK and bypasses rules)
       match /accessRequests/{requestId} {
         allow read:  if ownsTenant(tenantId) && isAdmin();
-        allow write: if false;
+        allow write: if ownsTenant(tenantId) && isAdmin();
       }
     }
 
@@ -283,12 +283,12 @@ service cloud.firestore {
 
       match /auditLog/{logId} {
         allow read:  if ownsTenant(orgId) && isDirector();
-        allow write: if false;
+        allow write: if ownsTenant(tenantId) && isAdmin();
       }
 
       match /sessions/{sessionId} {
         allow read:  if ownsTenant(orgId);
-        allow write: if false;
+        allow write: if ownsTenant(tenantId) && isAdmin();
       }
 
       // Ramp sync audit trail
