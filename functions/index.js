@@ -192,17 +192,10 @@ exports.inviteUser = onCall(async (request) => {
     throw new HttpsError("invalid-argument", `Invalid role: ${invalid}`);
   }
 
-  // Caller must be admin (check roles array with legacy fallback)
-  const callerSnap = await db.collection("orgs").doc(orgId).collection("users").doc(callerUid).get();
-  if (!callerSnap.exists || !callerSnap.data().active) {
-    throw new HttpsError("permission-denied", "Caller not found or inactive.");
-  }
-  const caller = callerSnap.data();
-  const callerRoles = Array.isArray(caller.roles) && caller.roles.length > 0
-    ? caller.roles
-    : (caller.role ? [caller.role] : []);
-  if (!callerRoles.includes("admin") && !callerRoles.includes("director")) {
-    throw new HttpsError("permission-denied", "Only admins and directors can invite users.");
+  // Check caller role from auth token (set by Cognito via mintFirebaseToken)
+  const callerRole = request.auth.token["custom:role"] || "";
+  if (callerRole !== "admin" && callerRole !== "director") {
+    throw new HttpsError("permission-denied", "Only admins can invite users. Your role: " + callerRole);
   }
 
   // No duplicate emails
