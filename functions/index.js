@@ -219,7 +219,7 @@ exports.inviteUser = onCall(async (request) => {
         { Name: "email",          Value: email },
         { Name: "email_verified", Value: "true" },
         { Name: "name",           Value: displayName },
-        { Name: "custom:orgId",   Value: orgId },
+        { Name: "custom:tenantId", Value: orgId },
         { Name: "custom:role",    Value: primaryRole },
       ],
     }).promise();
