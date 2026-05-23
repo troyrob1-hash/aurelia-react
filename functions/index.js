@@ -247,7 +247,7 @@ exports.inviteUser = onCall(async (request) => {
     });
 
     await writeAuditLog(orgId,
-      { uid: callerUid, email: caller.email, displayName: caller.displayName, ip: request.rawRequest?.ip ?? null, userAgent: null },
+      { uid: callerUid, email: request.auth.token.email || "", displayName: request.auth.token["custom:name"] || "", ip: request.rawRequest?.ip ?? null, userAgent: null },
       "user.invited", { type: "user", id: newUid },
       null, { email, roles, managedRegionIds, assignedLocations }
     );
@@ -291,7 +291,7 @@ exports.deactivateUser = onCall(async (request) => {
 
   const caller = callerSnap.data();
   await writeAuditLog(orgId,
-    { uid: callerUid, email: caller.email, displayName: caller.displayName, ip: null, userAgent: null },
+    { uid: callerUid, email: request.auth.token.email || "", displayName: request.auth.token["custom:name"] || "", ip: null, userAgent: null },
     "user.deactivated", { type: "user", id: targetUid },
     null, { deactivatedBy: callerUid }
   );
@@ -486,7 +486,7 @@ exports.createAPIKey = onCall(async (request) => {
 
   const caller = callerSnap.data();
   await writeAuditLog(orgId,
-    { uid: callerUid, email: caller.email, displayName: caller.displayName, ip: null, userAgent: null },
+    { uid: callerUid, email: request.auth.token.email || "", displayName: request.auth.token["custom:name"] || "", ip: null, userAgent: null },
     "apikey.created", { type: "apiKey", id: keyId },
     null, { label: label.trim(), service: service || "other", locationId: locationId || null }
   );
@@ -530,7 +530,7 @@ exports.getAPIKeyValue = onCall(async (request) => {
 
     const caller = callerSnap.data();
     await writeAuditLog(orgId,
-      { uid: callerUid, email: caller.email, displayName: caller.displayName, ip: null, userAgent: null },
+      { uid: callerUid, email: request.auth.token.email || "", displayName: request.auth.token["custom:name"] || "", ip: null, userAgent: null },
       "apiKey.accessed", { type: "apiKey", id: keyId },
       null, null
     );
@@ -593,7 +593,7 @@ exports.revokeAPIKey = onCall(async (request) => {
 
   const caller = callerSnap.data();
   await writeAuditLog(orgId,
-    { uid: callerUid, email: caller.email, displayName: caller.displayName, ip: null, userAgent: null },
+    { uid: callerUid, email: request.auth.token.email || "", displayName: request.auth.token["custom:name"] || "", ip: null, userAgent: null },
     "apikey.revoked", { type: "apiKey", id: keyId },
     { label: keyData.label, active: true }, { active: false, revokedBy: callerUid }
   );
@@ -733,7 +733,7 @@ exports.updateUserRoles = onCall(async (request) => {
   };
   await writeAuditLog(
     orgId,
-    { uid: callerUid, email: caller.email, displayName: caller.displayName, ip: null, userAgent: null },
+    { uid: callerUid, email: request.auth.token.email || "", displayName: request.auth.token["custom:name"] || "", ip: null, userAgent: null },
     "user.roles.updated",
     { type: "user", id: targetUid },
     before,
@@ -784,7 +784,7 @@ exports.updateRegion = onCall(async (request) => {
 
   const regionsRef = db.collection("tenants").doc(orgId).collection("regions");
   const now = admin.firestore.FieldValue.serverTimestamp();
-  const actor = { uid: callerUid, email: caller.email, displayName: caller.displayName, ip: null, userAgent: null };
+  const actor = { uid: callerUid, email: request.auth.token.email || "", displayName: request.auth.token["custom:name"] || "", ip: null, userAgent: null };
 
   if (action === "create") {
     if (!name || typeof name !== "string" || !name.trim()) {
