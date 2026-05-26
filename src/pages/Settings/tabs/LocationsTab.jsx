@@ -305,6 +305,7 @@ function LocationRow({ location: l, isAdmin, inactive, onEdit, onDeactivate, onR
             {!inactive ? (
               <>
                 <button className="action-btn" onClick={onEdit}>Edit</button>
+                <button className="action-btn danger" onClick={onDeactivate} style={{ marginLeft: 6, color: '#dc2626', borderColor: '#fca5a5' }}>Deactivate</button>
               </>
             ) : (
               <button className="action-btn" onClick={onReactivate}>Reactivate</button>
