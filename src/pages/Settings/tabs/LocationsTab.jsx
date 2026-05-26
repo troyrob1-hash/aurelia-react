@@ -197,7 +197,7 @@ export default function LocationsTab() {
           <table className="data-table" style={{ minWidth: 1100 }}>
             <thead>
               <tr>
-                <th>Name</th><th>Code</th><th>Type</th><th>City</th><th>Timezone</th><th>Status</th>
+                <th style={{width:'25%'}}>Name</th><th style={{width:60}}>Code</th><th style={{width:70}}>Type</th><th style={{width:100}}>City</th><th style={{width:120}}>Timezone</th><th style={{width:60}}>Status</th>
                 {isAdmin && <th></th>}
               </tr>
             </thead>
