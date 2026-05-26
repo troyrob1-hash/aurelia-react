@@ -193,7 +193,8 @@ export default function LocationsTab() {
         />
       ) : (
         <>
-          <table className="data-table">
+          <div style={{ overflowX: "auto" }}>
+          <table className="data-table" style={{ minWidth: 800 }}>
             <thead>
               <tr>
                 <th>Name</th><th>Code</th><th>Type</th><th>City</th><th>Timezone</th><th>Status</th>
@@ -215,13 +216,15 @@ export default function LocationsTab() {
               ))}
             </tbody>
           </table>
+          </div>
 
           {inactive.length > 0 && (
             <>
               <div style={{ fontSize: 11, fontWeight: 500, textTransform: "uppercase", letterSpacing: ".06em", color: "var(--color-text-tertiary)", margin: "1.5rem 0 .6rem" }}>
                 Inactive
               </div>
-              <table className="data-table">
+              <div style={{ overflowX: "auto" }}>
+          <table className="data-table">
                 <tbody>
                   {inactive.map(l => (
                     <LocationRow key={l.locationId} location={l} isAdmin={isAdmin} inactive
@@ -229,6 +232,7 @@ export default function LocationsTab() {
                   ))}
                 </tbody>
               </table>
+          </div>
             </>
           )}
         </>
