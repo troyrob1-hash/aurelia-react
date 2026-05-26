@@ -194,7 +194,7 @@ export default function LocationsTab() {
       ) : (
         <>
           <div style={{ overflowX: "auto" }}>
-          <table className="data-table" style={{ minWidth: 800 }}>
+          <table className="data-table" style={{ minWidth: 1100 }}>
             <thead>
               <tr>
                 <th>Name</th><th>Code</th><th>Type</th><th>City</th><th>Timezone</th><th>Status</th>
