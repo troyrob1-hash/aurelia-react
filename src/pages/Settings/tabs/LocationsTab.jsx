@@ -11,6 +11,7 @@ import { v4 as uuid } from "uuid";
 import Spinner      from "@/components/ui/Spinner";
 import EmptyState   from "@/components/ui/EmptyState";
 import { canAdministerSystem } from "@/lib/permissions";
+import { useLocations } from "@/store/LocationContext";
 
 const TIMEZONES = [
   "America/New_York",
@@ -74,11 +75,27 @@ export default function LocationsTab() {
         country: formData.country,
       },
       active:     true,
+      regionId:   formData.regionId || null,
       openedDate: formData.openedDate ? new Date(formData.openedDate) : null,
       ...(isNew ? { createdAt: now, createdBy: user.uid } : {}),
       updatedAt: now,
     };
     await setDoc(doc(db, "orgs", orgId, "locations", id), payload, { merge: true });
+    // If assigned to a region, add location to that region's list
+    if (formData.regionId) {
+      try {
+        const regionRef = doc(db, "tenants", orgId, "regions", formData.regionId);
+        const regionSnap = await getDoc(regionRef);
+        if (regionSnap.exists()) {
+          const regionData = regionSnap.data();
+          const locations = regionData.locations || [];
+          const locName = formData.name.trim();
+          if (!locations.includes(locName)) {
+            await updateDoc(regionRef, { locations: [...locations, locName] });
+          }
+        }
+      } catch (e) { console.error("Failed to update region:", e); }
+    }
     setModal(null);
     fetchLocations();
   };
@@ -217,7 +234,7 @@ export default function LocationsTab() {
       )}
 
       {modal && (
-        <LocationModal mode={modal.mode} location={modal.location}
+        <LocationModal mode={modal.mode} location={modal.location} regionsList={regionsList}
           onClose={() => setModal(null)} onSave={handleSave} />
       )}
 
@@ -300,7 +317,7 @@ function LocationRow({ location: l, isAdmin, inactive, onEdit, onDeactivate, onR
   );
 }
 
-function LocationModal({ mode, location, onClose, onSave }) {
+function LocationModal({ mode, location, onClose, onSave, regionsList = [] }) {
   const isEdit = mode === "edit";
   const [form, setForm] = useState(
     isEdit ? {
@@ -308,7 +325,8 @@ function LocationModal({ mode, location, onClose, onSave }) {
       street: location.address?.street ?? "", city: location.address?.city ?? "",
       state: location.address?.state ?? "", zip: location.address?.zip ?? "",
       country: location.address?.country ?? "US", openedDate: "",
-    } : { ...EMPTY_FORM }
+      regionId: location.regionId || "",
+    } : { ...EMPTY_FORM, regionId: "" }
   );
   const [saving, setSaving] = useState(false);
   const [error,  setError]  = useState(null);
@@ -381,6 +399,11 @@ function LocationModal({ mode, location, onClose, onSave }) {
               <input type="text" placeholder="70130" value={form.zip} onChange={set("zip")} />
             </div>
           </div>
+          <label>Region</label>
+          <select value={form.regionId} onChange={set("regionId")}>
+            <option value="">— No region —</option>
+            {regionsList.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+          </select>
           {!isEdit && (
             <>
               <label>Opened date <span style={{ fontWeight: 400, color: "var(--color-text-tertiary)" }}>(optional)</span></label>
