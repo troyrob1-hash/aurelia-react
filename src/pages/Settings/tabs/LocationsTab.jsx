@@ -78,7 +78,7 @@ export default function LocationsTab() {
       active:     true,
       regionId:   formData.regionId || null,
       openedDate: formData.openedDate ? new Date(formData.openedDate) : null,
-      ...(isNew ? { createdAt: now, createdBy: user.uid } : {}),
+      ...(isNew ? { createdAt: now, createdBy: user?.email || "unknown" } : {}),
       updatedAt: now,
     };
     await setDoc(doc(db, "orgs", orgId, "locations", id), payload, { merge: true });
