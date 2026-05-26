@@ -30,6 +30,7 @@ const EMPTY_FORM = {
 
 export default function LocationsTab() {
   const { orgId, user } = useAuth();
+  const { regionsList } = useLocations();
   const isAdmin = canAdministerSystem(user);
   const isDirector = isAdmin || user?.role === 'director' || user?.role === 'Director';
 
