@@ -1655,12 +1655,8 @@ export default function Inventory() {
                           (i.vendor || '').toLowerCase().includes(ms)
                         )
                       : items
-                    if (!ms) {
-                      return (
-                        <div style={{ fontSize: 11, color: '#94a3b8', fontStyle: 'italic', padding: '8px 0' }}>
-                          Start typing to find items to remove from this location.
-                        </div>
-                      )
+                    if (false) {
+                      // removed — show all items by default
                     }
                     if (filtered.length === 0) {
                       return (

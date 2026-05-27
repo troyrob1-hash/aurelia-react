@@ -52,7 +52,6 @@ export default function UserRow({
         </div>
       </td>
 
-      <td className="text-secondary">{user.email}</td>
 
       {/* Roles — chip strip */}
       <td>
@@ -90,11 +89,7 @@ export default function UserRow({
 
       <td><span className={`badge ${statusCfg.cls}`}>{statusCfg.label}</span></td>
 
-      <td className="text-secondary">
-        {user.lastLoginAt
-          ? formatDistanceToNow(user.lastLoginAt.toDate(), { addSuffix: true })
-          : "Never"}
-      </td>
+
 
       {isAdmin && (
         <td>

@@ -302,7 +302,6 @@ function LocationRow({ location: l, isAdmin, inactive, onEdit, onDeactivate, onR
           {!l.type && <span style={{ fontSize: 11, color: 'var(--color-text-tertiary)' }}>Standalone</span>}
         </td>
         <td className="text-secondary">{l.address?.city}{l.address?.state ? `, ${l.address.state}` : ""}</td>
-        <td className="text-secondary" style={{ fontSize: 12 }}>{l.timezone}</td>
         <td><span className={`badge ${inactive ? "badge-gray" : "badge-green"}`}>{inactive ? "Inactive" : "Active"}</span></td>
         {isAdmin && (
           <td style={{ textAlign: "right", whiteSpace: 'nowrap' }}>

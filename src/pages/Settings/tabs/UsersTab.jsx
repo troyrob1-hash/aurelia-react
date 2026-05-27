@@ -272,11 +272,9 @@ export default function UsersTab() {
             <thead>
               <tr>
                 <th className="sortable-th" onClick={() => handleSort("displayName")}>Name{sortIndicator("displayName")}</th>
-                <th className="sortable-th" onClick={() => handleSort("email")}>Email{sortIndicator("email")}</th>
                 <th className="sortable-th" onClick={() => handleSort("role")}>Role{sortIndicator("role")}</th>
                 <th>Locations</th>
                 <th>Status</th>
-                <th className="sortable-th" onClick={() => handleSort("lastLoginAt")}>Last login{sortIndicator("lastLoginAt")}</th>
                 {isAdmin && <th></th>}
               </tr>
             </thead>
