@@ -637,17 +637,10 @@ exports.updateUserRoles = onCall(async (request) => {
     throw new HttpsError("invalid-argument", `Invalid role: ${invalid}`);
   }
 
-  // Verify caller is admin
-  const callerSnap = await db.collection("orgs").doc(orgId).collection("users").doc(callerUid).get();
-  if (!callerSnap.exists) {
-    throw new HttpsError("permission-denied", "Caller not found in tenant.");
-  }
-  const caller = callerSnap.data();
-  const callerRoles = Array.isArray(caller.roles) && caller.roles.length > 0
-    ? caller.roles
-    : (caller.role ? [caller.role] : []);
-  if (!callerRoles.includes("admin")) {
-    throw new HttpsError("permission-denied", "Only admins can update user roles.");
+  // Verify caller is admin (from auth token)
+  const callerRole = request.auth.token["custom:role"] || "";
+  if (callerRole !== "admin") {
+    throw new HttpsError("permission-denied", "Only admins can update user roles. Your role: " + callerRole);
   }
 
   // Fetch target
@@ -659,7 +652,7 @@ exports.updateUserRoles = onCall(async (request) => {
 
   // Guardrail: cannot remove yourself as admin if you're the last admin
   if (callerUid === targetUid) {
-    const wasAdmin = callerRoles.includes("admin");
+    const wasAdmin = callerRole === "admin";
     const willBeAdmin = roles.includes("admin");
     if (wasAdmin && !willBeAdmin) {
       // Count other admins in tenant
