@@ -45,11 +45,9 @@ export default function UserRow({
 
   return (
     <tr className={!user.active ? "row-inactive" : ""}>
-      <td>
-        <div className="user-cell">
-          <div className="avatar">{user.displayName?.[0]?.toUpperCase() ?? "?"}</div>
-          <span>{user.displayName}{isSelf && <span className="you-badge">you</span>}</span>
-        </div>
+      <td style={{ fontWeight: 500 }}>
+        {user.displayName}{isSelf && <span className="you-badge"> (you)</span>}
+        <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 1 }}>{user.email}</div>
       </td>
 
 
@@ -93,40 +91,10 @@ export default function UserRow({
 
       {isAdmin && (
         <td>
-          <div style={{ display: "flex", gap: 6 }}>
-            <button
-              className="action-btn"
-              onClick={onEdit}
-              style={{
-                padding: "5px 10px",
-                background: "#f8fafc",
-                color: "#475569",
-                border: "1px solid #e2e8f0",
-                borderRadius: 6,
-                cursor: "pointer",
-                fontSize: 11,
-                fontWeight: 500,
-              }}
-            >
-              Edit access
-            </button>
+          <div style={{ display: "flex", gap: 4, whiteSpace: "nowrap" }}>
+            <button onClick={onEdit} style={{ padding: "4px 8px", background: "#f8fafc", color: "#475569", border: "1px solid #e2e8f0", borderRadius: 5, cursor: "pointer", fontSize: 11, fontWeight: 500 }}>Edit</button>
             {user.active && !isSelf && (
-              <button
-                className="action-btn danger"
-                onClick={() => onDeactivate(user.uid)}
-                style={{
-                  padding: "5px 10px",
-                  background: "#fff",
-                  color: "#dc2626",
-                  border: "1px solid #fca5a5",
-                  borderRadius: 6,
-                  cursor: "pointer",
-                  fontSize: 11,
-                  fontWeight: 500,
-                }}
-              >
-                Deactivate
-              </button>
+              <button onClick={() => onDeactivate(user.uid)} style={{ padding: "4px 8px", background: "#fff", color: "#dc2626", border: "1px solid #fca5a5", borderRadius: 5, cursor: "pointer", fontSize: 11, fontWeight: 500 }}>Deactivate</button>
             )}
           </div>
         </td>

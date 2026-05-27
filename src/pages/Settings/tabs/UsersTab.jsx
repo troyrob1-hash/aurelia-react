@@ -268,7 +268,7 @@ export default function UsersTab() {
       ) : (
         <>
           <div style={{ overflowX: 'auto' }}>
-          <table className="data-table" style={{ minWidth: 1100 }}>
+          <table className="data-table">
             <thead>
               <tr>
                 <th className="sortable-th" onClick={() => handleSort("displayName")}>Name{sortIndicator("displayName")}</th>

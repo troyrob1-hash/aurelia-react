@@ -194,10 +194,10 @@ export default function LocationsTab() {
       ) : (
         <>
           <div style={{ overflowX: "auto" }}>
-          <table className="data-table" style={{ minWidth: 1100 }}>
+          <table className="data-table" >
             <thead>
               <tr>
-                <th style={{width:'25%'}}>Name</th><th style={{width:60}}>Code</th><th style={{width:70}}>Type</th><th style={{width:100}}>City</th><th style={{width:120}}>Timezone</th><th style={{width:60}}>Status</th>
+                <th>Name</th><th>Type</th><th>City</th><th>Status</th>
                 {isAdmin && <th></th>}
               </tr>
             </thead>
@@ -295,7 +295,7 @@ function LocationRow({ location: l, isAdmin, inactive, onEdit, onDeactivate, onR
           {isSub && <span style={{ color: 'var(--color-text-tertiary)', marginRight: 6 }}>↳</span>}
           {l.name}
         </td>
-        <td><span style={{ fontFamily: "var(--font-mono)", fontSize: 12, background: "var(--color-background-secondary)", padding: "2px 8px", borderRadius: 6 }}>{l.shortCode}</span></td>
+
         <td>
           {l.type === 'parent' && <span className="badge badge-blue" style={{ fontSize: 10 }}>Parent</span>}
           {l.type === 'sub-cafe' && <span className="badge badge-gray" style={{ fontSize: 10 }}>Sub-cafe</span>}
@@ -307,8 +307,8 @@ function LocationRow({ location: l, isAdmin, inactive, onEdit, onDeactivate, onR
           <td style={{ textAlign: "right", whiteSpace: 'nowrap' }}>
             {!inactive ? (
               <>
-                <button className="action-btn" onClick={onEdit}>Edit</button>
-                <button className="action-btn danger" onClick={onDeactivate} style={{ marginLeft: 6, color: '#dc2626', borderColor: '#fca5a5' }}>Deactivate</button>
+                <button onClick={onEdit} style={{ padding: "4px 8px", background: "#f8fafc", color: "#475569", border: "1px solid #e2e8f0", borderRadius: 5, cursor: "pointer", fontSize: 11, fontWeight: 500 }}>Edit</button>
+                <button onClick={onDeactivate} style={{ padding: "4px 8px", background: "#fff", color: "#dc2626", border: "1px solid #fca5a5", borderRadius: 5, cursor: "pointer", fontSize: 11, fontWeight: 500, marginLeft: 4 }}>Deactivate</button>
               </>
             ) : (
               <button className="action-btn" onClick={onReactivate}>Reactivate</button>
