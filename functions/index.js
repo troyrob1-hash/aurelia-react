@@ -240,7 +240,7 @@ exports.inviteUser = onCall(async (request) => {
       },
       active: true, mfaEnabled: false, ssoOnly: false,
       lastLoginAt: null, lastLoginIp: null,
-      inviteStatus: "pending",
+      inviteStatus: "active",
       invitedBy: callerUid, invitedAt: now,
       deactivatedAt: null, deactivatedBy: null,
       createdAt: now, updatedAt: now,

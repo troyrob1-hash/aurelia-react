@@ -310,6 +310,18 @@ export default function UsersTab() {
         </>
       )}
 
+      {editingUser && (
+        <EditAccessModal
+          user={editingUser}
+          orgId={orgId}
+          currentUser={user}
+          allLocations={allLocations}
+          regionsList={regionsList}
+          onClose={() => setEditingUser(null)}
+          onSaved={() => { setEditingUser(null); fetchUsers(); toast.success("Access updated"); }}
+        />
+      )}
+
       {showInvite && (
         <InviteModal
           prefillEmail={approveReq?.email || ''}
