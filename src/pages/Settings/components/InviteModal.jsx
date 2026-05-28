@@ -81,7 +81,7 @@ export default function InviteModal({ orgId, onClose, onSuccess, prefillEmail, p
       });
       onSuccess();
     } catch (e) {
-      if (e.message && e.message.includes("already-exists")) {
+      if (e.message && (e.message.includes("already-exists") || e.message.includes("already exists"))) {
         // User already has a Cognito account — treat as success
         onSuccess();
         return;

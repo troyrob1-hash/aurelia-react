@@ -255,6 +255,9 @@ exports.inviteUser = onCall(async (request) => {
     return { success: true, uid: newUid };
   } catch (err) {
     console.error("inviteUser error:", err);
+    if (err.code === "UsernameExistsException" || (err.message && err.message.includes("already exists"))) {
+      throw new HttpsError("already-exists", "A user with this email already exists in Cognito.");
+    }
     throw new HttpsError("internal", err.message);
   }
 });
