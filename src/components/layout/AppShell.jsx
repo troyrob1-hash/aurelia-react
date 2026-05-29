@@ -229,7 +229,7 @@ export default function AppShell() {
                     {notifications.length === 0 ? (
                       <div style={{ padding: '20px 16px', textAlign: 'center', fontSize: 13, color: '#94a3b8' }}>No new notifications</div>
                     ) : notifications.map(n => (
-                      <div key={n.id} onClick={() => { markRead(n.id); setShowNotifs(false); }} style={{ padding: '10px 16px', borderBottom: '1px solid #f8fafc', cursor: 'pointer', background: '#fffbeb' }}>
+                      <div key={n.id} onClick={() => { markRead(n.id); setShowNotifs(false); navigate('/settings'); }} style={{ padding: '10px 16px', borderBottom: '1px solid #f8fafc', cursor: 'pointer', background: '#fffbeb' }}>
                         <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>{n.title}</div>
                         <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{n.message}</div>
                       </div>
