@@ -37,6 +37,20 @@ export default function UsersTab() {
   const [sortCol,     setSortCol]     = useState("createdAt");
   const [sortDir,     setSortDir]     = useState("desc");
   const [editingUser, setEditingUser] = useState(null);
+
+  // ESC key closes panels
+  useEffect(() => {
+    function handleEsc(e) {
+      if (e.key === 'Escape') {
+        setDetailUser(null)
+        setEditingUser(null)
+        setShowInvite(false)
+        setApproveReq(null)
+      }
+    }
+    window.addEventListener('keydown', handleEsc)
+    return () => window.removeEventListener('keydown', handleEsc)
+  }, [])
   const [detailUser, setDetailUser] = useState(null);
   const toast = useToast();
 

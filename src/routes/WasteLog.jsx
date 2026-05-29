@@ -33,6 +33,13 @@ export default function WasteLog() {
   const [mode, setMode] = useState('shrinkage') // 'shrinkage' | 'wastelog'
   const [wasteEntries, setWasteEntries] = useState([])
   const [showWasteModal, setShowWasteModal] = useState(false)
+
+  // ESC key closes modal
+  useEffect(() => {
+    function handleEsc(e) { if (e.key === 'Escape') setShowWasteModal(false) }
+    window.addEventListener('keydown', handleEsc)
+    return () => window.removeEventListener('keydown', handleEsc)
+  }, [])
   const [wasteForm, setWasteForm] = useState({ item: '', category: 'landfill', qty: 0, unit: 'oz', reason: '', notes: '' })
   const [wasteLoading, setWasteLoading] = useState(false)
 

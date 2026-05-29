@@ -36,6 +36,19 @@ export default function AppShell() {
   // Notification bell
   const [notifications, setNotifications] = useState([])
   const [showNotifs, setShowNotifs] = useState(false)
+
+  // ESC key closes dropdowns and modals
+  useEffect(() => {
+    function handleEsc(e) {
+      if (e.key === 'Escape') {
+        setShowNotifs(false)
+        setShowChangePw(false)
+        setMenuOpen(false)
+      }
+    }
+    window.addEventListener('keydown', handleEsc)
+    return () => window.removeEventListener('keydown', handleEsc)
+  }, [])
   const [showChangePw, setShowChangePw] = useState(false)
   const [pwForm, setPwForm] = useState({ current: '', newPw: '', confirm: '' })
   const [pwSaving, setPwSaving] = useState(false)

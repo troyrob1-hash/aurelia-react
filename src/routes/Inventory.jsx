@@ -87,10 +87,59 @@ export default function Inventory() {
       const XLSX = (await import('xlsx')).default || await import('xlsx')
       const data = await file.arrayBuffer()
       const workbook = XLSX.read(data)
-      const ws = workbook.Sheets[workbook.SheetNames[0]]
-      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' })
+      console.log('Sheet names:', JSON.stringify(workbook.SheetNames))
 
+      // Target the right sheet — priority order for Fooda inventory templates
+      const sheetPriority = ['Items', 'Inv_By_Item', 'Inventory_UPC', 'Items_UPC']
+      let bestSheet = null
+      for (const target of sheetPriority) {
+        if (workbook.SheetNames.includes(target)) {
+          bestSheet = target
+          break
+        }
+      }
+      // Fallback: find any sheet with "item" in the name
+      if (!bestSheet) {
+        bestSheet = workbook.SheetNames.find(s => s.toLowerCase().includes('item')) || workbook.SheetNames[0]
+      }
+
+      const ws = workbook.Sheets[bestSheet]
+      console.log('Using sheet:', bestSheet)
+
+      // Get all rows as arrays to find the header row
+      const allRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+
+      // Find the header row — look for a row with "Description" or a row right before data starts
+      let headerRowIdx = 0
+      for (let i = 0; i < Math.min(allRows.length, 20); i++) {
+        const vals = allRows[i].map(v => String(v || '').toLowerCase().trim())
+        // Exact match on key column names
+        if (vals.some(v => v === 'description' || v === 'item name') &&
+            vals.some(v => v.includes('vendor') || v.includes('cost') || v.includes('price') || v.includes('gl'))) {
+          headerRowIdx = i
+          console.log('Header row at', i, ':', allRows[i].filter(v => v))
+          break
+        }
+      }
+
+      // If no header found, look for the first row with a dollar value — header is one row before
+      if (headerRowIdx === 0) {
+        for (let i = 0; i < Math.min(allRows.length, 30); i++) {
+          const hasPrice = allRows[i].some(v => String(v || '').includes('$'))
+          if (hasPrice) {
+            headerRowIdx = Math.max(0, i - 1)
+            console.log('Inferred header at row', headerRowIdx, 'from data at row', i)
+            break
+          }
+        }
+      }
+
+      const rows = XLSX.utils.sheet_to_json(ws, { range: headerRowIdx, defval: '' })
       if (rows.length === 0) { toast.error('No data found in file'); return }
+
+      console.log('Headers:', Object.keys(rows[0]))
+      console.log('First row:', JSON.stringify(rows[0]).slice(0, 300))
+      console.log('Total rows:', rows.length)
 
       // Fuzzy column finder — matches partial, case-insensitive
       const headers = Object.keys(rows[0])
@@ -184,12 +233,40 @@ export default function Inventory() {
       for (const row of rows) {
         const name = findCol(row, ['Description', 'Item', 'Item Name', 'Name', 'Product'])
         if (!name || String(name).trim() === '') continue
+        // Skip instruction/header rows — real items are short names with costs or SKUs
+        const nameStr = String(name).trim()
+        if (nameStr.length > 80) continue
+        if (nameStr.toLowerCase().startsWith('step ')) continue
+        if (nameStr.toLowerCase().startsWith('complete ')) continue
+        if (nameStr.toLowerCase().startsWith('enter ')) continue
+        if (nameStr.toLowerCase().startsWith('review ')) continue
+        if (nameStr.toLowerCase().startsWith('this report')) continue
+        if (nameStr.includes('12000 -') || nameStr.includes('12002 -')) continue
+        if (nameStr.includes('Inventory -')) continue
+        if (nameStr.toLowerCase().includes('grand total')) continue
+        if (nameStr.toLowerCase().includes('total ending')) continue
+        if (nameStr.toLowerCase().includes('beginning inventory')) continue
+        if (nameStr.toLowerCase().includes('ending inventory')) continue
+        if (nameStr.toLowerCase().includes('cost of goods')) continue
+        if (nameStr.toLowerCase().includes('monthly purchases')) continue
+        if (nameStr.toLowerCase().includes('transfer log')) continue
+        if (nameStr.toLowerCase().includes('waste log')) continue
+        if (nameStr.toLowerCase().includes('return to dashboard')) continue
+        if (nameStr.toLowerCase().includes('cogs')) continue
+        if (nameStr.toLowerCase().includes('inventory count performed')) continue
+        if (nameStr.toLowerCase().includes('café pos')) continue
+
+        // Skip rows with no cost data — section headers like "Beverages", "Barista" etc.
+        const rowPackPrice = parsePrice(findCol(row, ['Pack Price', 'Pack Cost', 'Case Price', 'Case Cost']))
+        const rowUnitCost = parsePrice(findCol(row, ['Cost Per Unit', 'Unit Cost', 'Cost', 'Each Cost']))
+        if (rowPackPrice === 0 && rowUnitCost === 0) continue
 
         const sku = findCol(row, ['SKU', 'UPC', 'Barcode'])
-        const packSize = findCol(row, ['Pack Size', 'Pack', 'Case Size', 'Unit Size']) || ''
-        const qtyPerPack = parseInt(findCol(row, ['Qty Per Pack', 'Qty', 'Case Qty', 'Pack Qty'])) || 1
-        const packPrice = parsePrice(findCol(row, ['Pack Price', 'Case Price', 'Case Cost']))
+        const packSize = findCol(row, ['Pack Size', 'Case Size', 'Unit Size']) || 'case'
+        const packPrice = parsePrice(findCol(row, ['Pack Price', 'Pack Cost', 'Case Price', 'Case Cost']))
         const unitCost = parsePrice(findCol(row, ['Cost Per Unit', 'Unit Cost', 'Cost', 'Each Cost']))
+        const rawQtyPerPack = parseInt(findCol(row, ['Qty Per Pack', 'Qty/Pack', 'Case Qty', 'Pack Qty', 'Qty']))
+        const qtyPerPack = rawQtyPerPack > 0 ? rawQtyPerPack : (packPrice > 0 && unitCost > 0 ? Math.round(packPrice / unitCost) : 1)
         const vendor = findCol(row, ['Vendor', 'Supplier', 'Distributor', 'Purveyor']) || ''
         const rawGl = findCol(row, ['GL Code', 'GL', 'Account', 'GL Account']) || ''
         const glCode = parseGlCode(rawGl)
@@ -241,9 +318,9 @@ export default function Inventory() {
 
       if (batchCount > 0) await batch.commit()
 
-      toast.success('Imported ' + count + ' items to ' + cleanLocName(location) + "'s catalog")
-      // Force full reload to pick up new catalog
-      setTimeout(() => window.location.reload(), 500)
+      console.log('Upload complete:', count, 'items written to tenants/' + orgId + '/inventory/' + locKey + '/items')
+      toast.success('Imported ' + count + ' items')
+      if (typeof load === 'function') { console.log('Calling load()...'); await load(); console.log('load() done') }
 
     } catch (err) {
       console.error('Catalog upload error:', err)
@@ -254,6 +331,19 @@ export default function Inventory() {
   const { periodKey } = usePeriod()
 
   // ─── Local UI State ────────────────────────────────────────────────────────
+  // ESC key closes any open panel
+  useEffect(() => {
+    function handleEsc(e) {
+      if (e.key === 'Escape') {
+        setWhyItem(null)
+        setShowManage(false)
+        setShowScanner(false)
+      }
+    }
+    window.addEventListener('keydown', handleEsc)
+    return () => window.removeEventListener('keydown', handleEsc)
+  }, [])
+
   const [search, setSearch] = useState('')
   const [activeCat, setActiveCat] = useState('all')
   const [collapsed, setCollapsed] = useState({})
