@@ -53,6 +53,7 @@ export default function Inventory() {
   
   const { selectedLocation, setSelectedLocation , isParentLocation , getParentName } = useLocations()
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
+  const [dragging, setDragging] = useState(false)
   const [showScanner, setShowScanner] = useState(false)
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768)
@@ -721,7 +722,39 @@ export default function Inventory() {
 
   // ─── Render ────────────────────────────────────────────────────────────────
   return (
-    <div className={styles.pageWrap}>
+    <div className={styles.pageWrap}
+      onDragOver={e => { e.preventDefault(); setDragging(true) }}
+      onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setDragging(false) }}
+      onDrop={e => {
+        e.preventDefault(); setDragging(false)
+        const file = e.dataTransfer.files[0]
+        if (file && (file.name.endsWith('.xlsx') || file.name.endsWith('.xls') || file.name.endsWith('.csv'))) {
+          uploadCatalog(file)
+        } else if (file) {
+          toast.error('Please drop an Excel (.xlsx, .xls) or CSV file')
+        }
+      }}>
+
+      {/* Drag overlay */}
+      {dragging && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 2000,
+          background: 'rgba(241, 93, 59, 0.08)',
+          border: '3px dashed #F15D3B',
+          borderRadius: 16,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          pointerEvents: 'none',
+        }}>
+          <div style={{
+            background: '#fff', borderRadius: 16, padding: '40px 60px',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.1)', textAlign: 'center',
+          }}>
+            <div style={{ fontSize: 40, marginBottom: 8 }}>📋</div>
+            <div style={{ fontSize: 18, fontWeight: 600, color: '#0f172a' }}>Drop your inventory sheet</div>
+            <div style={{ fontSize: 13, color: '#64748b', marginTop: 4 }}>Excel (.xlsx) or CSV</div>
+          </div>
+        </div>
+      )}
 
 
 
