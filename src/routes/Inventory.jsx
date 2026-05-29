@@ -54,7 +54,6 @@ export default function Inventory() {
   const { selectedLocation, setSelectedLocation , isParentLocation , getParentName } = useLocations()
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
   const [dragging, setDragging] = useState(false)
-  const [dragging, setDragging] = useState(false)
   const [showScanner, setShowScanner] = useState(false)
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768)
