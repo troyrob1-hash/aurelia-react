@@ -154,9 +154,27 @@ export default function Inventory() {
         return 'Other'
       }
 
-      const { writeBatch, doc: fbDoc } = await import('firebase/firestore')
+      const { writeBatch, doc: fbDoc, getDocs, collection: col, deleteDoc } = await import('firebase/firestore')
 
-      // Firestore batch limit is 500 — split into chunks
+      // Step 1: Delete all existing items for this location
+      const existingSnap = await getDocs(col(db, 'tenants', orgId, 'inventory', locKey, 'items'))
+      if (!existingSnap.empty) {
+        let delBatch = writeBatch(db)
+        let delCount = 0
+        for (const d of existingSnap.docs) {
+          delBatch.delete(d.ref)
+          delCount++
+          if (delCount >= 490) {
+            await delBatch.commit()
+            delBatch = writeBatch(db)
+            delCount = 0
+          }
+        }
+        if (delCount > 0) await delBatch.commit()
+        console.log('Cleared', existingSnap.size, 'existing items')
+      }
+
+      // Step 2: Write new items from Excel
       let count = 0
       let batch = writeBatch(db)
       let batchCount = 0
