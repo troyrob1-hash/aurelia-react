@@ -44,17 +44,17 @@ export default function UsersTab() {
     cursor ? setLoadingMore(true) : setLoading(true);
     setError(null);
     try {
-      let q = query(
-        collection(db, "orgs", orgId, "users"),
-        orderBy("createdAt", "desc"),
-        limit(PAGE_SIZE)
-      );
-      if (filter !== "all") q = query(q, where("inviteStatus", "==", filter));
-      if (cursor) q = query(q, startAfter(cursor));
+      let q;
+      if (filter !== "all") {
+        q = query(collection(db, "orgs", orgId, "users"), where("inviteStatus", "==", filter));
+      } else {
+        q = collection(db, "orgs", orgId, "users");
+      }
 
       const snap = await getDocs(q);
       const docs = snap.docs.map(d => d.data());
 
+      docs.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
       setUsers(prev => cursor ? [...prev, ...docs] : docs);
       setLastDoc(snap.docs[snap.docs.length - 1] ?? null);
       setHasMore(snap.docs.length === PAGE_SIZE);
