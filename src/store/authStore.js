@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { loadSession, clearSession, getUser, refreshSession, signOut as authSignOut } from '@/lib/auth'
-import { signInWithCognito } from '@/lib/firebase'
+import { signInWithCognito, db, auth } from '@/lib/firebase'
+import { doc, getDoc } from 'firebase/firestore'
 
 export const useAuthStore = create((set, get) => ({
   user:    null,
@@ -19,7 +20,9 @@ export const useAuthStore = create((set, get) => ({
       try {
         const newSession = await refreshSession(session.refreshToken)
         const attrs = await getUser(newSession.accessToken)
-        set({ session: newSession, user: mapUser(attrs), loading: false })
+        const baseUser = mapUser(attrs)
+        set({ session: newSession, user: baseUser, loading: false })
+        loadProfile(baseUser).then(enriched => set({ user: enriched }))
         return
       } catch {
         clearSession()
@@ -31,7 +34,9 @@ export const useAuthStore = create((set, get) => ({
     try {
       const attrs = await getUser(session.accessToken)
       await signInWithCognito(session.idToken)
-      set({ session, user: mapUser(attrs), loading: false })
+      const baseUser = mapUser(attrs)
+      set({ session, user: baseUser, loading: false })
+      loadProfile(baseUser).then(enriched => set({ user: enriched }))
     } catch {
       clearSession()
       set({ loading: false })
@@ -40,7 +45,9 @@ export const useAuthStore = create((set, get) => ({
 
   clearAuth: () => set({ user: null, session: null }),
     setAuth: (session, attrs) => {
-    set({ session, user: mapUser(attrs), error: null })
+    const baseUser = mapUser(attrs)
+    set({ session, user: baseUser, error: null })
+    loadProfile(baseUser).then(enriched => set({ user: enriched }))
   },
 
   signOut: async () => {
@@ -50,6 +57,29 @@ export const useAuthStore = create((set, get) => ({
 
   setError: (error) => set({ error }),
 }))
+
+async function loadProfile(user) {
+  if (!user?.tenantId) return user
+  try {
+    const uid = auth.currentUser?.uid
+    if (!uid) return user
+    const snap = await getDoc(doc(db, 'orgs', user.tenantId, 'users', uid))
+    if (snap.exists()) {
+      const profile = snap.data()
+      return {
+        ...user,
+        uid,
+        managedRegionIds: profile.managedRegionIds || [],
+        assignedLocations: profile.assignedLocations || [],
+        roles: profile.roles || [user.role],
+        displayName: profile.displayName || user.name,
+      }
+    }
+  } catch (err) {
+    console.error('Failed to load user profile:', err)
+  }
+  return user
+}
 
 function mapUser(attrs) {
   return {

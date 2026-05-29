@@ -198,91 +198,120 @@ exports.inviteUser = onCall(async (request) => {
     throw new HttpsError("permission-denied", "Only admins can invite users. Your role: " + callerRole);
   }
 
-  // No duplicate emails
-  const existing = await db.collection("orgs").doc(orgId).collection("users")
-    .where("email", "==", email).limit(1).get();
-  if (!existing.empty) throw new HttpsError("already-exists", "A user with this email already exists.");
+  // Duplicate check removed — Cognito handles existence check below
 
+  const AWS     = require("aws-sdk");
+  const cognito = new AWS.CognitoIdentityServiceProvider({ region: "us-east-2" });
+  const TIER_ORDER = ["admin", "vp", "director", "manager"];
+  const primaryRole = TIER_ORDER.find(r => roles.includes(r)) || roles[0];
+  const tempPassword = "Welcome2026!";
+
+  let uid = null;
+  let isNew = false;
+
+  // Step 1: Check if user already exists in Cognito
   try {
-    const AWS     = require("aws-sdk");
-    const cognito = new AWS.CognitoIdentityServiceProvider({ region: "us-east-2" });
-
-    // Determine the primary (highest-tier) role for Cognito custom:role claim
-    const TIER_ORDER = ["admin", "vp", "director", "manager"];
-    const primaryRole = TIER_ORDER.find(r => roles.includes(r)) || roles[0];
-
-    const tempPassword = "Welcome2026!";
-    const cognitoRes = await cognito.adminCreateUser({
-      UserPoolId:        POOL_ID,
-      Username:          email,
-      MessageAction:     "SUPPRESS",
-      TemporaryPassword: tempPassword,
+    const existing = await cognito.adminGetUser({ UserPoolId: POOL_ID, Username: email }).promise();
+    uid = existing.Username;
+    console.log("inviteUser: existing Cognito user found:", uid);
+    // Update their attributes
+    await cognito.adminUpdateUserAttributes({
+      UserPoolId: POOL_ID,
+      Username: email,
       UserAttributes: [
-        { Name: "email",          Value: email },
-        { Name: "email_verified", Value: "true" },
-        { Name: "name",           Value: displayName },
         { Name: "custom:tenantId", Value: orgId },
-        { Name: "custom:role",    Value: primaryRole },
+        { Name: "custom:role", Value: primaryRole },
+        { Name: "name", Value: displayName },
       ],
     }).promise();
+    // Reset their password so they can log in with the temp password
+    await cognito.adminSetUserPassword({
+      UserPoolId: POOL_ID,
+      Username: email,
+      Password: tempPassword,
+      Permanent: true,
+    }).promise();
+    console.log("inviteUser: password set (permanent) for existing user:", email);
+  } catch (lookupErr) {
+    if (lookupErr.code === "UserNotFoundException") {
+      // Step 2: User doesn't exist — create them
+      try {
+        const created = await cognito.adminCreateUser({
+          UserPoolId: POOL_ID,
+          Username: email,
+          MessageAction: "SUPPRESS",
+          TemporaryPassword: tempPassword,
+          UserAttributes: [
+            { Name: "email", Value: email },
+            { Name: "email_verified", Value: "true" },
+            { Name: "name", Value: displayName },
+            { Name: "custom:tenantId", Value: orgId },
+            { Name: "custom:role", Value: primaryRole },
+          ],
+        }).promise();
+        uid = created.User.Username;
+        isNew = true;
+        console.log("inviteUser: new Cognito user created:", uid);
+        // Set password as permanent so they can log in immediately
+        await cognito.adminSetUserPassword({
+          UserPoolId: POOL_ID,
+          Username: email,
+          Password: tempPassword,
+          Permanent: true,
+        }).promise();
+      } catch (createErr) {
+        console.error("inviteUser: create failed:", createErr);
+        throw new HttpsError("internal", "Failed to create account: " + createErr.message);
+      }
+    } else {
+      console.error("inviteUser: lookup failed:", lookupErr);
+      throw new HttpsError("internal", "Failed to check account: " + lookupErr.message);
+    }
+  }
 
-    const newUid = cognitoRes.User.Username;
-    const now    = admin.firestore.FieldValue.serverTimestamp();
-
-    await db.collection("orgs").doc(orgId).collection("users").doc(newUid).set({
-      uid: newUid, orgId, email, displayName,
+  // Step 3: Create or update Firestore user doc
+  try {
+    const now = admin.firestore.FieldValue.serverTimestamp();
+    await db.collection("orgs").doc(orgId).collection("users").doc(uid).set({
+      uid, orgId, email, displayName,
       roles,
-      role: primaryRole,  // legacy mirror for backwards compat with code still reading .role
+      role: primaryRole,
       managedRegionIds,
       assignedLocations,
-      permissionOverrides: {
-        canExportData: null, canApproveOrders: null, canViewFinancials: null,
-        canManageUsers: null, canManageLocations: null, canManageAPIKeys: null,
-        approvalLimitUSD: null,
-      },
-      active: true, mfaEnabled: false, ssoOnly: false,
-      lastLoginAt: null, lastLoginIp: null,
+      active: true,
       inviteStatus: "active",
-      invitedBy: callerUid, invitedAt: now,
-      deactivatedAt: null, deactivatedBy: null,
-      createdAt: now, updatedAt: now,
-    });
+      ...(isNew ? {
+        permissionOverrides: {
+          canExportData: null, canApproveOrders: null, canViewFinancials: null,
+          canManageUsers: null, canManageLocations: null, canManageAPIKeys: null,
+          approvalLimitUSD: null,
+        },
+        mfaEnabled: false, ssoOnly: false,
+        lastLoginAt: null, lastLoginIp: null,
+        invitedBy: callerUid, invitedAt: now,
+        deactivatedAt: null, deactivatedBy: null,
+        createdAt: now,
+      } : {}),
+      updatedAt: now,
+    }, { merge: true });
+    console.log("inviteUser: Firestore doc written for", uid);
+  } catch (dbErr) {
+    console.error("inviteUser: Firestore write failed:", dbErr);
+    throw new HttpsError("internal", "Account created but failed to save settings: " + dbErr.message);
+  }
 
+  // Step 4: Audit log
+  try {
     await writeAuditLog(orgId,
       { uid: callerUid, email: request.auth.token.email || "", displayName: request.auth.token["custom:name"] || "", ip: request.rawRequest?.ip ?? null, userAgent: null },
-      "user.invited", { type: "user", id: newUid },
+      isNew ? "user.invited" : "user.updated", { type: "user", id: uid },
       null, { email, roles, managedRegionIds, assignedLocations }
     );
-
-    return { success: true, uid: newUid, tempPassword };
-  } catch (err) {
-    console.error("inviteUser error:", err);
-    if (err.code === "UsernameExistsException" || (err.message && err.message.includes("already exists"))) {
-      // User exists in Cognito — still create/update the Firestore doc
-      try {
-        const AWS = require("aws-sdk");
-        const cognito = new AWS.CognitoIdentityServiceProvider({ region: "us-east-2" });
-        const lookup = await cognito.adminGetUser({ UserPoolId: POOL_ID, Username: email }).promise();
-        const existingUid = lookup.Username;
-        const now = admin.firestore.FieldValue.serverTimestamp();
-        await db.collection("orgs").doc(orgId).collection("users").doc(existingUid).set({
-          uid: existingUid, orgId, email, displayName,
-          roles,
-          role: roles[0] || "manager",
-          managedRegionIds,
-          assignedLocations,
-          active: true,
-          inviteStatus: "active",
-          createdAt: now, updatedAt: now,
-        }, { merge: true });
-        return { success: true, uid: existingUid };
-      } catch (lookupErr) {
-        console.error("Lookup failed:", lookupErr);
-        throw new HttpsError("already-exists", "User exists but could not update: " + lookupErr.message);
-      }
-    }
-    throw new HttpsError("internal", err.message);
+  } catch (auditErr) {
+    console.error("inviteUser: audit log failed (non-fatal):", auditErr);
   }
+
+  return { success: true, uid, tempPassword, isNew };
 });
 
 

@@ -137,7 +137,7 @@ export default function Home() {
       </div>
 
       <div className={styles.grid}>
-        {MODULES.map(mod => {
+        {MODULES.filter(mod => mod.section !== 'Admin' || user?.role === 'admin').map(mod => {
           const Icon = mod.icon
           return (
             <button

@@ -83,11 +83,6 @@ export default function InviteModal({ orgId, onClose, onSuccess, prefillEmail, p
       window.alert("Account created for " + displayName.trim() + "\n\nEmail: " + email.trim() + "\nTemp password: " + pw + "\n\nShare this with them — they\'ll set a new password on first login.");
       onSuccess();
     } catch (e) {
-      if (e.message && (e.message.includes("already-exists") || e.message.includes("already exists"))) {
-        // User already has a Cognito account — treat as success
-        onSuccess();
-        return;
-      }
       setError(e.message || "Failed to send invitation.");
     } finally {
       setLoading(false);
