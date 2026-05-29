@@ -223,7 +223,8 @@ export default function Inventory() {
       if (batchCount > 0) await batch.commit()
 
       toast.success('Imported ' + count + ' items to ' + cleanLocName(location) + "'s catalog")
-      if (typeof load === 'function') load()
+      // Force full reload to pick up new catalog
+      setTimeout(() => window.location.reload(), 500)
 
     } catch (err) {
       console.error('Catalog upload error:', err)
