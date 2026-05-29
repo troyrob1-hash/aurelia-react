@@ -76,7 +76,8 @@ export default function Inventory() {
 
   // Upload Excel inventory sheet — creates location-specific catalog
   async function uploadCatalog(file) {
-    if (!file || !location) return
+    if (!file) return
+    if (!location) { toast.error('Select a location first'); return }
     const locKey = sanitizeDocId(location)
 
     try {
