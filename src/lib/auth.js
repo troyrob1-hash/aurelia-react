@@ -88,6 +88,14 @@ export async function getUser(accessToken) {
   return attrs
 }
 
+export async function changePassword(accessToken, oldPassword, newPassword) {
+  await cognitoPost('ChangePassword', {
+    AccessToken: accessToken,
+    PreviousPassword: oldPassword,
+    ProposedPassword: newPassword,
+  })
+}
+
 export async function refreshSession(refreshToken) {
   const data = await cognitoPost('InitiateAuth', {
     AuthFlow: 'REFRESH_TOKEN_AUTH',

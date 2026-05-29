@@ -1,6 +1,7 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import React, { useState, useEffect } from 'react'
 import { useAuthStore } from '@/store/authStore'
+import { changePassword } from '@/lib/auth'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { usePeriod, getWeekLabel } from '@/store/PeriodContext'
 import { readPeriodClose, writePeriodClose } from '@/lib/pnl'
@@ -35,6 +36,11 @@ export default function AppShell() {
   // Notification bell
   const [notifications, setNotifications] = useState([])
   const [showNotifs, setShowNotifs] = useState(false)
+  const [showChangePw, setShowChangePw] = useState(false)
+  const [pwForm, setPwForm] = useState({ current: '', newPw: '', confirm: '' })
+  const [pwSaving, setPwSaving] = useState(false)
+  const [pwError, setPwError] = useState(null)
+  const [pwSuccess, setPwSuccess] = useState(false)
   const orgId = user?.tenantId || 'fooda'
 
   useEffect(() => {
@@ -109,6 +115,21 @@ export default function AppShell() {
   }
 
   function handleSignOut() { signOut(); navigate('/login') }
+
+  async function handleChangePassword() {
+    if (!pwForm.newPw || !pwForm.current) { setPwError('Enter current and new password'); return }
+    if (pwForm.newPw !== pwForm.confirm) { setPwError('Passwords do not match'); return }
+    if (pwForm.newPw.length < 8) { setPwError('Password must be at least 8 characters'); return }
+    setPwSaving(true); setPwError(null)
+    try {
+      const session = useAuthStore.getState().session
+      await changePassword(session.accessToken, pwForm.current, pwForm.newPw)
+      setPwSuccess(true)
+      setTimeout(() => { setShowChangePw(false); setPwSuccess(false); setPwForm({ current: '', newPw: '', confirm: '' }) }, 2000)
+    } catch (err) {
+      setPwError(err.message || 'Failed to change password')
+    } finally { setPwSaving(false) }
+  }
   function handleNavClick() { setSidebarOpen(false) }
 
   return (
@@ -250,13 +271,13 @@ export default function AppShell() {
                 <div className={styles.userMenuRole}>{formatRole(user?.role)}</div>
               </div>
               <div className={styles.userMenuDivider}/>
-              {(user?.role === 'admin' || user?.role === 'director') && (
+              {user?.role === 'admin' && (
                 <button className={styles.userMenuItem} onClick={() => { navigate('/settings'); setMenuOpen(false) }}>
-                  <Users size={14}/> Manage Users
+                  <Settings size={14}/> Admin Settings
                 </button>
               )}
-              <button className={styles.userMenuItem} onClick={() => { navigate('/settings'); setMenuOpen(false) }}>
-                <Settings size={14}/> Settings
+              <button className={styles.userMenuItem} onClick={() => { setShowChangePw(true); setMenuOpen(false) }}>
+                <Settings size={14}/> Change Password
               </button>
               <div className={styles.userMenuDivider}/>
               <button className={`${styles.userMenuItem} ${styles.danger}`} onClick={handleSignOut}>
@@ -265,6 +286,48 @@ export default function AppShell() {
             </div>
           )}
         </div>
+      {/* Change Password Modal */}
+      {showChangePw && (
+        <>
+          <div onClick={() => setShowChangePw(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.4)', zIndex: 2900 }} />
+          <div style={{
+            position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+            background: '#fff', borderRadius: 16, width: 400, maxWidth: '94vw', zIndex: 3000,
+            boxShadow: '0 20px 60px rgba(15,23,42,0.15)',
+          }}>
+            <div style={{ padding: '24px 28px' }}>
+              <h2 style={{ fontSize: 18, fontWeight: 600, margin: '0 0 4px' }}>Change password</h2>
+              <p style={{ fontSize: 13, color: '#64748b', margin: '0 0 20px' }}>Enter your current password and choose a new one.</p>
+
+              {pwError && <div style={{ padding: '10px 12px', background: '#fee2e2', color: '#991b1b', borderRadius: 8, marginBottom: 14, fontSize: 12 }}>{pwError}</div>}
+              {pwSuccess && <div style={{ padding: '10px 12px', background: '#dcfce7', color: '#166534', borderRadius: 8, marginBottom: 14, fontSize: 12 }}>Password changed successfully!</div>}
+
+              <label style={{ fontSize: 11, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Current password</label>
+              <input type="password" value={pwForm.current} onChange={e => setPwForm(f => ({ ...f, current: e.target.value }))}
+                style={{ width: '100%', padding: '10px 12px', fontSize: 14, border: '1px solid #e2e8f0', borderRadius: 8, marginBottom: 14 }} />
+
+              <label style={{ fontSize: 11, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>New password</label>
+              <input type="password" value={pwForm.newPw} onChange={e => setPwForm(f => ({ ...f, newPw: e.target.value }))}
+                style={{ width: '100%', padding: '10px 12px', fontSize: 14, border: '1px solid #e2e8f0', borderRadius: 8, marginBottom: 14 }} />
+
+              <label style={{ fontSize: 11, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: 6 }}>Confirm new password</label>
+              <input type="password" value={pwForm.confirm} onChange={e => setPwForm(f => ({ ...f, confirm: e.target.value }))}
+                onKeyDown={e => { if (e.key === 'Enter') handleChangePassword() }}
+                style={{ width: '100%', padding: '10px 12px', fontSize: 14, border: '1px solid #e2e8f0', borderRadius: 8, marginBottom: 20 }} />
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+                <button onClick={() => { setShowChangePw(false); setPwError(null); setPwForm({ current: '', newPw: '', confirm: '' }) }}
+                  style={{ padding: '9px 18px', fontSize: 13, fontWeight: 500, border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff', cursor: 'pointer', color: '#64748b' }}>Cancel</button>
+                <button onClick={handleChangePassword} disabled={pwSaving}
+                  style={{ padding: '9px 24px', fontSize: 13, fontWeight: 600, border: 'none', borderRadius: 8, background: '#F15D3B', color: '#fff', cursor: 'pointer' }}>
+                  {pwSaving ? 'Saving...' : 'Change password'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
       </header>
 
       {/* Mobile sidebar overlay */}
