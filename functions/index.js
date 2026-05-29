@@ -211,10 +211,12 @@ exports.inviteUser = onCall(async (request) => {
     const TIER_ORDER = ["admin", "vp", "director", "manager"];
     const primaryRole = TIER_ORDER.find(r => roles.includes(r)) || roles[0];
 
+    const tempPassword = "Welcome2026!";
     const cognitoRes = await cognito.adminCreateUser({
       UserPoolId:        POOL_ID,
       Username:          email,
-      // MessageAction: "SUPPRESS",  // removed — Cognito sends welcome email with temp password
+      MessageAction:     "SUPPRESS",
+      TemporaryPassword: tempPassword,
       UserAttributes: [
         { Name: "email",          Value: email },
         { Name: "email_verified", Value: "true" },
@@ -252,11 +254,32 @@ exports.inviteUser = onCall(async (request) => {
       null, { email, roles, managedRegionIds, assignedLocations }
     );
 
-    return { success: true, uid: newUid };
+    return { success: true, uid: newUid, tempPassword };
   } catch (err) {
     console.error("inviteUser error:", err);
     if (err.code === "UsernameExistsException" || (err.message && err.message.includes("already exists"))) {
-      throw new HttpsError("already-exists", "A user with this email already exists in Cognito.");
+      // User exists in Cognito — still create/update the Firestore doc
+      try {
+        const AWS = require("aws-sdk");
+        const cognito = new AWS.CognitoIdentityServiceProvider({ region: "us-east-2" });
+        const lookup = await cognito.adminGetUser({ UserPoolId: POOL_ID, Username: email }).promise();
+        const existingUid = lookup.Username;
+        const now = admin.firestore.FieldValue.serverTimestamp();
+        await db.collection("orgs").doc(orgId).collection("users").doc(existingUid).set({
+          uid: existingUid, orgId, email, displayName,
+          roles,
+          role: roles[0] || "manager",
+          managedRegionIds,
+          assignedLocations,
+          active: true,
+          inviteStatus: "active",
+          createdAt: now, updatedAt: now,
+        }, { merge: true });
+        return { success: true, uid: existingUid };
+      } catch (lookupErr) {
+        console.error("Lookup failed:", lookupErr);
+        throw new HttpsError("already-exists", "User exists but could not update: " + lookupErr.message);
+      }
     }
     throw new HttpsError("internal", err.message);
   }

@@ -33,6 +33,7 @@ export default function UserRow({
   currentUid,
   onDeactivate,
   onEdit,
+  onClick,
   regionsById = {},
   allLocations = [],
 }) {
@@ -44,7 +45,7 @@ export default function UserRow({
   const accessSummary = summarizeUserAccess(user, allLocations, regionsById);
 
   return (
-    <tr className={!user.active ? "row-inactive" : ""}>
+    <tr className={!user.active ? "row-inactive" : ""} onClick={onClick} style={{ cursor: 'pointer' }}>
       <td style={{ fontWeight: 500 }}>
         {user.displayName}{isSelf && <span className="you-badge"> (you)</span>}
         <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 1 }}>{user.email}</div>
@@ -92,9 +93,9 @@ export default function UserRow({
       {isAdmin && (
         <td>
           <div style={{ display: "flex", gap: 4, whiteSpace: "nowrap" }}>
-            <button onClick={onEdit} style={{ padding: "4px 8px", background: "#f8fafc", color: "#475569", border: "1px solid #e2e8f0", borderRadius: 5, cursor: "pointer", fontSize: 11, fontWeight: 500 }}>Edit</button>
+            <button onClick={(e) => { e.stopPropagation(); onEdit(); }} style={{ padding: "4px 8px", background: "#f8fafc", color: "#475569", border: "1px solid #e2e8f0", borderRadius: 5, cursor: "pointer", fontSize: 11, fontWeight: 500 }}>Edit</button>
             {user.active && !isSelf && (
-              <button onClick={() => onDeactivate(user.uid)} style={{ padding: "4px 8px", background: "#fff", color: "#dc2626", border: "1px solid #fca5a5", borderRadius: 5, cursor: "pointer", fontSize: 11, fontWeight: 500 }}>Deactivate</button>
+              <button onClick={(e) => { e.stopPropagation(); onDeactivate(user.uid); }} style={{ padding: "4px 8px", background: "#fff", color: "#dc2626", border: "1px solid #fca5a5", borderRadius: 5, cursor: "pointer", fontSize: 11, fontWeight: 500 }}>Deactivate</button>
             )}
           </div>
         </td>

@@ -71,7 +71,7 @@ export default function InviteModal({ orgId, onClose, onSuccess, prefillEmail, p
     setError(null);
     try {
       const invite = httpsCallable(functions, "inviteUser");
-      await invite({
+      const result = await invite({
         orgId,
         email: email.trim(),
         displayName: displayName.trim(),
@@ -79,6 +79,8 @@ export default function InviteModal({ orgId, onClose, onSuccess, prefillEmail, p
         managedRegionIds: seesAll ? [] : managedRegionIds,
         assignedLocations: seesAll ? [] : assignedLocations,
       });
+      const pw = result?.data?.tempPassword || "Welcome2026!";
+      window.alert("Account created for " + displayName.trim() + "\n\nEmail: " + email.trim() + "\nTemp password: " + pw + "\n\nShare this with them — they\'ll set a new password on first login.");
       onSuccess();
     } catch (e) {
       if (e.message && (e.message.includes("already-exists") || e.message.includes("already exists"))) {

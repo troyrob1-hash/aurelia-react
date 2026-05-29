@@ -37,6 +37,7 @@ export default function UsersTab() {
   const [sortCol,     setSortCol]     = useState("createdAt");
   const [sortDir,     setSortDir]     = useState("desc");
   const [editingUser, setEditingUser] = useState(null);
+  const [detailUser, setDetailUser] = useState(null);
   const toast = useToast();
 
   const fetchUsers = useCallback(async (cursor = null) => {
@@ -288,6 +289,7 @@ export default function UsersTab() {
                   currentUid={user.uid}
                   onDeactivate={handleDeactivate}
                   onEdit={() => setEditingUser(u)}
+                  onClick={() => setDetailUser(u)}
                   regionsById={regionsById}
                   allLocations={allLocations}
                 />
@@ -305,6 +307,145 @@ export default function UsersTab() {
               {loadingMore ? "Loading..." : "Load more"}
             </button>
           )}
+        </>
+      )}
+
+      {/* User Detail Panel */}
+      {detailUser && (
+        <>
+          <div onClick={() => setDetailUser(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.3)', zIndex: 2900 }} />
+          <aside style={{
+            position: 'fixed', top: 0, right: 0, bottom: 0, width: 440, maxWidth: '90vw',
+            background: '#fff', borderLeft: '0.5px solid #e5e7eb',
+            boxShadow: '-20px 0 60px rgba(15,23,42,0.1)', zIndex: 3000,
+            display: 'flex', flexDirection: 'column', overflowY: 'auto',
+          }}>
+            <div style={{ padding: '20px 24px', borderBottom: '0.5px solid #e5e7eb', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 600, color: '#0f172a' }}>{detailUser.displayName}</div>
+                <div style={{ fontSize: 13, color: '#64748b', marginTop: 2 }}>{detailUser.email}</div>
+              </div>
+              <button onClick={() => setDetailUser(null)} style={{ background: 'none', border: 'none', fontSize: 22, color: '#94a3b8', cursor: 'pointer', padding: 0, lineHeight: 1 }}>×</button>
+            </div>
+
+            <div style={{ padding: '20px 24px', flex: 1 }}>
+              {/* Status */}
+              <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
+                <span style={{ padding: '4px 10px', borderRadius: 20, fontSize: 11, fontWeight: 600, background: detailUser.active ? '#dcfce7' : '#fee2e2', color: detailUser.active ? '#166534' : '#991b1b' }}>
+                  {detailUser.active ? 'Active' : 'Inactive'}
+                </span>
+                {(detailUser.roles || [detailUser.role]).filter(Boolean).map(r => (
+                  <span key={r} style={{ padding: '4px 10px', borderRadius: 20, fontSize: 11, fontWeight: 600, background: '#f1f5f9', color: '#475569', textTransform: 'uppercase' }}>{r}</span>
+                ))}
+              </div>
+
+              {/* Details grid */}
+              <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500, marginBottom: 10 }}>Account details</div>
+              {[
+                { label: 'Last login', value: detailUser.lastLoginAt ? new Date(detailUser.lastLoginAt.seconds * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'Never' },
+                { label: 'Invited', value: detailUser.invitedAt ? new Date(detailUser.invitedAt.seconds * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—' },
+                { label: 'Account created', value: detailUser.createdAt ? new Date(detailUser.createdAt.seconds * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—' },
+              ].map(f => (
+                <div key={f.label} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '0.5px solid #f1f5f9' }}>
+                  <span style={{ fontSize: 13, color: '#64748b' }}>{f.label}</span>
+                  <span style={{ fontSize: 13, color: '#0f172a', fontWeight: 500 }}>{f.value}</span>
+                </div>
+              ))}
+
+              {/* Regions */}
+              {detailUser.managedRegionIds && detailUser.managedRegionIds.length > 0 && (
+                <div style={{ marginTop: 20 }}>
+                  <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500, marginBottom: 10 }}>Managed regions</div>
+                  {detailUser.managedRegionIds.map(rid => {
+                    const region = regionsById[rid];
+                    return (
+                      <div key={rid} style={{ padding: '8px 12px', background: '#f8fafc', borderRadius: 8, marginBottom: 6 }}>
+                        <div style={{ fontSize: 13, fontWeight: 500, color: '#0f172a' }}>{region?.name || rid}</div>
+                        <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>{(region?.locations || []).length} locations</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* All accessible locations */}
+              {(() => {
+                // Gather all locations this user can access
+                const locs = new Set();
+                (detailUser.assignedLocations || []).forEach(l => locs.add(l));
+                (detailUser.managedRegionIds || []).forEach(rid => {
+                  const region = regionsById[rid];
+                  (region?.locations || []).forEach(l => locs.add(l));
+                });
+                const locArray = [...locs].sort();
+                if (locArray.length === 0) return null;
+
+                // Count users per location from all users
+                const usersPerLoc = {};
+                filteredAndSorted.forEach(u => {
+                  const uLocs = new Set();
+                  (u.assignedLocations || []).forEach(l => uLocs.add(l));
+                  (u.managedRegionIds || []).forEach(rid => {
+                    const region = regionsById[rid];
+                    (region?.locations || []).forEach(l => uLocs.add(l));
+                  });
+                  uLocs.forEach(l => { usersPerLoc[l] = (usersPerLoc[l] || 0) + 1; });
+                });
+
+                return (
+                  <div style={{ marginTop: 20 }}>
+                    <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500, marginBottom: 10 }}>
+                      Locations ({locArray.length})
+                    </div>
+                    {locArray.map(loc => {
+                      const usersAtLoc = filteredAndSorted.filter(u => {
+                        const uLocs = new Set();
+                        (u.assignedLocations || []).forEach(l => uLocs.add(l));
+                        (u.managedRegionIds || []).forEach(rid => {
+                          const region = regionsById[rid];
+                          (region?.locations || []).forEach(l => uLocs.add(l));
+                        });
+                        return uLocs.has(loc);
+                      });
+                      return (
+                        <div key={loc} style={{ padding: '8px 0', borderBottom: '0.5px solid #f1f5f9' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: 13, color: '#0f172a', fontWeight: 500 }}>{loc}</span>
+                            <span style={{ fontSize: 11, color: '#94a3b8' }}>{usersAtLoc.length}</span>
+                          </div>
+                          {usersAtLoc.length > 0 && (
+                            <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                              {usersAtLoc.map(u => (
+                                <span key={u.uid || u.email} style={{
+                                  fontSize: 11, padding: '2px 8px', borderRadius: 10,
+                                  background: u.uid === detailUser.uid ? '#dbeafe' : '#f8fafc',
+                                  color: u.uid === detailUser.uid ? '#1e40af' : '#64748b',
+                                }}>{u.displayName?.split(' ')[0] || u.email}</span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+
+              {/* Actions */}
+              <div style={{ marginTop: 24, display: 'flex', gap: 8 }}>
+                <button onClick={() => { setDetailUser(null); setEditingUser(detailUser); }} style={{
+                  flex: 1, padding: '10px', fontSize: 13, fontWeight: 500, background: '#f8fafc', color: '#475569',
+                  border: '1px solid #e2e8f0', borderRadius: 8, cursor: 'pointer',
+                }}>Edit access</button>
+                {detailUser.active && detailUser.uid !== user?.uid && (
+                  <button onClick={() => { handleDeactivate(detailUser.uid); setDetailUser(null); }} style={{
+                    padding: '10px 16px', fontSize: 13, fontWeight: 500, background: '#fff', color: '#dc2626',
+                    border: '1px solid #fca5a5', borderRadius: 8, cursor: 'pointer',
+                  }}>Deactivate</button>
+                )}
+              </div>
+            </div>
+          </aside>
         </>
       )}
 
