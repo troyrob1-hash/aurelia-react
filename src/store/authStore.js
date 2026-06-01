@@ -63,9 +63,15 @@ async function loadProfile(user) {
   try {
     const uid = auth.currentUser?.uid
     if (!uid) return user
-    const snap = await getDoc(doc(db, 'orgs', user.tenantId, 'users', uid))
+    const userRef = doc(db, 'orgs', user.tenantId, 'users', uid)
+    const snap = await getDoc(userRef)
     if (snap.exists()) {
       const profile = snap.data()
+      // Update last login timestamp
+      try {
+        const { updateDoc, serverTimestamp } = await import('firebase/firestore')
+        await updateDoc(userRef, { lastLoginAt: serverTimestamp(), lastLoginIp: null })
+      } catch (e) { /* non-fatal */ }
       return {
         ...user,
         uid,
