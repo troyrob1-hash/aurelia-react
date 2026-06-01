@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { loadSession, clearSession, getUser, refreshSession, signOut as authSignOut } from '@/lib/auth'
 import { signInWithCognito, db, auth } from '@/lib/firebase'
-import { doc, getDoc, updateDoc, serverTimestamp } from 'firebase/firestore'
+import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore'
 
 export const useAuthStore = create((set, get) => ({
   user:    null,
@@ -60,30 +60,19 @@ export const useAuthStore = create((set, get) => ({
 
 async function loadProfile(user) {
   if (!user?.tenantId) return user
+  let uid = auth.currentUser?.uid
+  if (!uid) { await new Promise(r => setTimeout(r, 500)); uid = auth.currentUser?.uid }
+  if (!uid) return user
+  const userRef = doc(db, 'orgs', user.tenantId, 'users', uid)
+  try { await setDoc(userRef, { lastLoginAt: serverTimestamp() }, { merge: true }) } catch(e) {}
   try {
-    const uid = auth.currentUser?.uid
-    if (!uid) return user
-    const userRef = doc(db, 'orgs', user.tenantId, 'users', uid)
     const snap = await getDoc(userRef)
     if (snap.exists()) {
       const profile = snap.data()
-      // Update last login timestamp
-      try {
-        await updateDoc(userRef, { lastLoginAt: serverTimestamp(), lastLoginIp: null })
-      } catch (e) { console.error('lastLoginAt update failed:', e) }
-      return {
-        ...user,
-        uid,
-        managedRegionIds: profile.managedRegionIds || [],
-        assignedLocations: profile.assignedLocations || [],
-        roles: profile.roles || [user.role],
-        displayName: profile.displayName || user.name,
-      }
+      return { ...user, uid, managedRegionIds: profile.managedRegionIds || [], assignedLocations: profile.assignedLocations || [], roles: profile.roles || [user.role], displayName: profile.displayName || user.name }
     }
-  } catch (err) {
-    console.error('Failed to load user profile:', err)
-  }
-  return user
+  } catch(e) {}
+  return { ...user, uid }
 }
 
 function mapUser(attrs) {
