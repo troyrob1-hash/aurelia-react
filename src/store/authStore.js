@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { loadSession, clearSession, getUser, refreshSession, signOut as authSignOut } from '@/lib/auth'
 import { signInWithCognito, db, auth } from '@/lib/firebase'
-import { doc, getDoc } from 'firebase/firestore'
+import { doc, getDoc, updateDoc, serverTimestamp } from 'firebase/firestore'
 
 export const useAuthStore = create((set, get) => ({
   user:    null,
@@ -69,9 +69,8 @@ async function loadProfile(user) {
       const profile = snap.data()
       // Update last login timestamp
       try {
-        const { updateDoc, serverTimestamp } = await import('firebase/firestore')
         await updateDoc(userRef, { lastLoginAt: serverTimestamp(), lastLoginIp: null })
-      } catch (e) { /* non-fatal */ }
+      } catch (e) { console.error('lastLoginAt update failed:', e) }
       return {
         ...user,
         uid,
