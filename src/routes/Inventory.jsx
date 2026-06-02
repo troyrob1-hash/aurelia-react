@@ -556,7 +556,7 @@ export default function Inventory() {
 
 
   // Export inventory count
-  async function exportInventory(format) {
+  const exportInventory = async (format) => {
     if (!items || items.length === 0) { toast.error('No inventory data to export'); return }
     
     const locName = cleanLocName(location).replace(/[^a-zA-Z0-9]/g, '_')
