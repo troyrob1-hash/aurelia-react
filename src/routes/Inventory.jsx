@@ -545,8 +545,6 @@ export default function Inventory() {
     setCollapsed(prev => ({ ...prev, [key]: !prev[key] }))
   }, [])
 
-  const handleExport = useCallback(async () => {
-  
   // Low stock detection
   const lowStockItems = items.filter(item => {
     const qty = item.qty || 0
@@ -716,68 +714,7 @@ export default function Inventory() {
     }
   }
 
-  if (!location) {
-      toast.error('Please select a location first')
-      return
-    }
-    
-    try {
-      const XLSX = await import('xlsx')
-      const wb = XLSX.utils.book_new()
 
-      // Summary sheet
-      const summaryRows = [
-        ['Aurelia FMS — Inventory Count Report'],
-        ['Location:', cleanLocName(location) || 'Unknown'],
-        ['Period:', periodKey || 'N/A'],
-        ['Date:', new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })],
-        [],
-        ['COGS CALCULATION'],
-        ['Opening Inventory', (totals.openingValue || 0).toFixed(2)],
-        ['+ Purchases', (totals.purchases || 0).toFixed(2)],
-        ['- Closing Inventory', (totals.closingValue || 0).toFixed(2)],
-        ['= COGS (Inventory Usage)', (totals.liveCOGS || 0).toFixed(2)],
-        [],
-        ['SUMMARY'],
-        ['Total Items', items.length],
-        ['Items Counted', totals.counted || 0],
-        ['Inventory Value', (totals.closingValue || 0).toFixed(2)],
-        ['Progress', (totals.progress || 0) + '%'],
-      ]
-      const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows)
-      XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary')
-
-      // Detail sheet
-      const header = ['#', 'Item', 'Vendor', 'Category', 'Pack Size', 'Unit Cost', 'Count', 'Prior Count', 'Variance', 'Total Value', 'Par Level', 'Days On Hand']
-      const detailRows = items.map((item, idx) => [
-        idx + 1, 
-        item.name || '', 
-        item.vendor || '',
-        categories.find(c => c.key === item._cat)?.label || 'General',
-        item.packSize || '', 
-        item.unitCost || 0, 
-        item.qty || 0,
-        item._priorQty || 0, 
-        item._variance || 0, 
-        +((item.qty || 0) * (item.unitCost || 0)).toFixed(2),
-        item.parLevel || '', 
-        item._daysOnHand || ''
-      ])
-      const wsDetail = XLSX.utils.aoa_to_sheet([header, ...detailRows])
-      wsDetail['!cols'] = [
-        { wch: 4 }, { wch: 40 }, { wch: 15 }, { wch: 18 }, { wch: 10 }, 
-        { wch: 10 }, { wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 12 }, 
-        { wch: 10 }, { wch: 12 }
-      ]
-      XLSX.utils.book_append_sheet(wb, wsDetail, 'All Items')
-
-      XLSX.writeFile(wb, `inventory-${sanitizeDocId(location)}-${periodKey}.xlsx`)
-      toast.success('Exported to Excel')
-    } catch (err) {
-      console.error('Export failed:', err)
-      toast.error('Export failed: ' + err.message)
-    }
-  }, [items, categories, totals, location, periodKey, toast])
 
   const handleRefresh = useCallback(() => {
     load()
