@@ -308,9 +308,9 @@ export default function WeeklySales() {
   // Drag-and-drop file upload (shared hook handles enter/leave counting,
   // escape-to-dismiss, and drag-end cleanup)
   const { isDragging, dragHandlers, dismiss: dismissDropZone } = useDragDropUpload({
-    acceptedExtensions: ['.xlsx', '.xls', '.csv'],
+    acceptedExtensions: ['.xlsx', '.xls', '.xlsm', '.csv'],
     onFile: async (file) => { await processSalesFile(file) },
-    onInvalidFile: () => toast.error('Please drop a .xlsx, .xls, or .csv file'),
+    onInvalidFile: () => toast.error('Please drop a .xlsx, .xlsm, .xls, or .csv file'),
   })
 
   const location = selectedLocation === 'all' ? null : selectedLocation
@@ -1057,7 +1057,83 @@ export default function WeeklySales() {
     e.target.value = ''
   }
 
+  function parseCateringRows(rows) {
+    const newEntries = {}
+    const weekDates = new Set(week?.days.map(d => d.key))
+    const currentSite = location || ''
+
+    let lastDate = null
+    let lastSite = null
+
+    rows.forEach(row => {
+      // Carry forward date and site for continuation rows
+      const rawDate = row['Event date'] || row['Event Date'] || row['Event date'] || ''
+      const rawSite = (row['Event accounting site'] || row['Site'] || '').trim()
+      if (rawDate) lastDate = rawDate
+      if (rawSite) lastSite = rawSite
+
+      const dateVal = rawDate || lastDate
+      const site = rawSite || lastSite || ''
+
+      // Match site to selected location
+      if (currentSite && site && site !== currentSite) return
+
+      if (!dateVal) return
+      const d = new Date(dateVal)
+      if (isNaN(d)) return
+      const yyyy = d.getFullYear()
+      const mm = String(d.getMonth() + 1).padStart(2, '0')
+      const dd = String(d.getDate()).padStart(2, '0')
+      const key = yyyy + '-' + mm + '-' + dd
+      if (!weekDates.has(key)) return
+
+      // Skip delivery fees and services
+      const subType = (row['Sub-Type'] || '').toLowerCase()
+      const type = (row['Type'] || '').toLowerCase()
+      if (subType.includes('delivery fee') || type === 'services') return
+
+      // Parse total price — handle both line-item and summary formats
+      const rawPrice = row['Total Price'] || row['Gross Food Sales'] || row['Food Sales'] || 0
+      const price = parseFloat(String(rawPrice).replace(/[\$,]/g, '')) || 0
+      if (price <= 0) return
+
+      if (!newEntries[key]) newEntries[key] = {}
+      newEntries[key]['catering'] = ((parseFloat(newEntries[key]['catering']) || 0) + price)
+    })
+
+    const total = Object.values(newEntries).reduce((s, d) => s + Object.values(d).reduce((ss, v) => ss + (v || 0), 0), 0)
+    if (total === 0) {
+      toast.error('No matching catering data found. Check location and dates.')
+      return
+    }
+
+    setEntries(prev => {
+      const merged = { ...prev }
+      Object.entries(newEntries).forEach(([dateKey, cats]) => {
+        merged[dateKey] = { ...(prev[dateKey] || {}), ...cats }
+      })
+      return merged
+    })
+
+    toast.success('Imported catering sales: $' + total.toFixed(2))
+    setDirty(true)
+  }
+
   function parseSalesRows(rows) {
+    if (!rows || rows.length === 0) return
+
+    // Auto-detect file type from columns
+    const headers = Object.keys(rows[0])
+    const headersLower = headers.map(h => h.toLowerCase())
+    // Format 1: line-item catering (has "Event accounting site" + "Total Price")
+    const isCateringLineItem = headersLower.some(h => h.includes('event accounting site'))
+    // Format 2: summary catering (has "Commission %" or "Order Method" — unique to catering exports)
+    const isCateringSummary = headersLower.some(h => h.includes('commission %') || h.includes('order method'))
+    
+    if (isCateringLineItem || isCateringSummary) {
+      return parseCateringRows(rows)
+    }
+
     const newEntries = {}
     const weekDates  = new Set(week?.days.map(d => d.key))
     const currentSite = location || ''
@@ -1401,7 +1477,7 @@ export default function WeeklySales() {
       {isDragging && (
         <DropZoneOverlay
           title="Drop sales file here"
-          subtitle="Accepts .xlsx, .xls, or .csv"
+          subtitle="Accepts .xlsx, .xlsm, .xls, or .csv"
           onClose={dismissDropZone}
         />
       )}
@@ -1566,7 +1642,7 @@ export default function WeeklySales() {
           <button className={styles.btnIcon} onClick={exportCSV} title="Export CSV"><Download size={15} /></button>
           <label className={styles.btnImport}>
             <Upload size={13} /> Import
-            <input type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }} onChange={handleImport} />
+            <input type="file" accept=".xlsx,.xls,.xlsm,.csv" style={{ display: 'none' }} onChange={handleImport} />
           </label>
           <label style={{
             display: 'inline-flex', alignItems: 'center', gap: 6,
@@ -1576,7 +1652,7 @@ export default function WeeklySales() {
             cursor: 'pointer',
           }}>
             <Upload size={13} /> Import Events
-            <input type="file" accept=".xlsx,.xls" multiple style={{ display: 'none' }}
+            <input type="file" accept=".xlsx,.xls,.xlsm" multiple style={{ display: 'none' }}
               onChange={(e) => handleEventFiles(Array.from(e.target.files))} />
           </label>
         </div>
