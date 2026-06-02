@@ -190,19 +190,22 @@ export async function writeSalesPnL(location, period, salesData) {
     await writePnL(location, period, filtered)
   } else {
     // Legacy manual entry — { retail, catering, popup }
+    // Only write non-zero values to avoid overwriting data from other uploads
     const { retail = 0, catering = 0, popup = 0 } = salesData
-    const gfs = retail + catering + popup
-    const commission = gfs * 0.18
-    const revenue = gfs - commission
-    await writePnL(location, period, {
-      gfs_retail:   retail,
-      gfs_catering: catering,
-      gfs_popup:    popup,
-      gfs_total:    gfs,
-      revenue_commission: commission,
-      revenue_total: revenue,
-      revenue_pct_gfs: gfs > 0 ? revenue / gfs : 0,
-    })
+    const pnlData = {}
+    if (retail > 0) pnlData.gfs_retail = retail
+    if (catering > 0) pnlData.gfs_catering = catering
+    if (popup > 0) pnlData.gfs_popup = popup
+    const gfs = (pnlData.gfs_retail || 0) + (pnlData.gfs_catering || 0) + (pnlData.gfs_popup || 0)
+    if (gfs > 0) {
+      pnlData.gfs_total = gfs
+      pnlData.revenue_commission = gfs * 0.18
+      pnlData.revenue_total = gfs - pnlData.revenue_commission
+      pnlData.revenue_pct_gfs = pnlData.revenue_total / gfs
+    }
+    if (Object.keys(pnlData).length > 0) {
+      await writePnL(location, period, pnlData)
+    }
   }
 }
 
