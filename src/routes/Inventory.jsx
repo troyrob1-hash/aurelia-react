@@ -1642,6 +1642,21 @@ export default function Inventory() {
                     ))}
                   </div>
 
+                  {/* Remove from count sheet */}
+                  <div style={{ borderTop: '0.5px solid #e2e8f0', paddingTop: 16 }}>
+                    <button
+                      onClick={() => {
+                        if (window.confirm('Remove "' + item.name + '" from this location\'s count sheet?')) {
+                          removeItem(item.id)
+                          setWhyItem(null)
+                        }
+                      }}
+                      style={{ width: '100%', padding: '10px', fontSize: 13, fontWeight: 500, background: '#fff', color: '#dc2626', border: '1px solid #fca5a5', borderRadius: 8, cursor: 'pointer' }}
+                    >
+                      Remove from count sheet
+                    </button>
+                  </div>
+
                   </div>
                 </div>
               </aside>
@@ -1812,7 +1827,7 @@ export default function Inventory() {
                     }
                     return (
                       <div style={{ maxHeight: 280, overflowY: 'auto', border: '0.5px solid #f1f5f9', borderRadius: 6 }}>
-                        {filtered.slice(0, 50).map(it => (
+                        {filtered.map(it => (
                           <div key={it.id} style={{
                             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                             padding: '8px 10px',
