@@ -1062,13 +1062,19 @@ export default function WeeklySales() {
     const weekDates  = new Set(week?.days.map(d => d.key))
     const currentSite = location || ''
 
+    let lastDate = null
+    let lastSite = null
     rows.forEach(row => {
-      if (currentSite) {
-        const site = (row['Site Name'] || row['site_name'] || '').trim()
-        if (site && site !== currentSite) return
-      }
-      const dateVal = row['Event Date'] || row['event_date'] || row['Date'] || row['date']
+      // Carry forward date and site for continuation rows
+      const rawSite = (row['Site Name'] || row['site_name'] || '').trim()
+      const site = rawSite || lastSite || ''
+      if (rawSite) lastSite = rawSite
+
+      if (currentSite && site && site !== currentSite) return
+
+      const dateVal = row['Event Date'] || row['event_date'] || row['Date'] || row['date'] || lastDate
       if (!dateVal) return
+      if (row['Event Date'] || row['event_date'] || row['Date'] || row['date']) lastDate = dateVal
       const d = new Date(dateVal)
       if (isNaN(d)) return
       // Build the date key from LOCAL components, not UTC.
@@ -1081,11 +1087,12 @@ export default function WeeklySales() {
       if (!weekDates.has(key)) return
 
       const locName = (row['Location Name'] || '').toLowerCase()
-      let cat = 'retail'
-      if (/cater/i.test(locName))        cat = 'catering'
-      else if (/pop.?up|popup/i.test(locName)) cat = 'popup'
+      const restaurantName = (row['Restaurant Internal Name'] || row['Partner Internal Name'] || '').toLowerCase()
+      let cat = 'popup'
+      if (/11 dining/i.test(restaurantName) || /retail/i.test(locName)) cat = 'retail'
 
-      const gross = parseFloat(row['Gross Food Sales'] || row['Gross Food Sale (before min sales adjustments)'] || row['Amount'] || 0)
+      const rawGross = row['Gross Food Sales'] || row['Gross Food Sale (before min sales adjustments)'] || row['Amount'] || 0
+      const gross = parseFloat(String(rawGross).replace(/[\$,]/g, '')) || 0
       if (!gross) return
       if (!newEntries[key]) newEntries[key] = {}
       newEntries[key][cat] = ((parseFloat(newEntries[key][cat]) || 0) + gross)
