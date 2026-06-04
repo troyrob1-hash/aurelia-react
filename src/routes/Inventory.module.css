@@ -382,6 +382,9 @@
   transition: all 0.15s;
 }
 .countInput:focus { border-color: #3b82f6; }
+.tdCount { height: 60px; vertical-align: middle; }
+.tdCenter { height: 60px; vertical-align: middle; }
+.tdRight { height: 60px; vertical-align: middle; }
 .countInput::placeholder { color: #ccc; font-weight: 400; }
 
 .counted_good { background: rgba(16, 185, 129, 0.12); border-color: rgba(16, 185, 129, 0.5); }

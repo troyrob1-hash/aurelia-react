@@ -1292,7 +1292,7 @@ export default function Inventory() {
                         {!isMobile && <td className={styles.tdCenter} style={{ color: '#94a3b8', fontSize: 12 }}>
                           {(item._priorQty || 0) > 0 ? item._priorQty : '—'}
                         </td>}
-                        <td className={styles.tdCount}>
+                        <td className={styles.tdCount} style={{ height: 60, verticalAlign: 'middle' }}>
                           <div className={styles.countRow}>
                             <button className={styles.adjBtn} onClick={() => adjust(item.id, -1)}>−</button>
                             <input 
@@ -1308,18 +1308,19 @@ export default function Inventory() {
                             />
                             <button className={styles.adjBtn} onClick={() => adjust(item.id, 1)}>+</button>
                           </div>
-                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3, marginTop: 2 }}>
+                          <div className={styles.countRow} style={{ marginTop: 2 }}>
+                            <button className={styles.adjBtn} onClick={() => adjustEaches(item.id, -1)}>−</button>
                             <input
                               type="number"
                               min="0"
                               step="1"
                               value={item.eaches || ''}
                               onChange={e => setEaches(item.id, e.target.value)}
-                              placeholder="0"
-                              style={{ width: 32, height: 20, textAlign: 'center', fontSize: 11, borderRadius: 3, border: '0.5px solid #e2e8f0', background: '#f8fafc', color: '#64748b', padding: 0 }}
+                              placeholder="ea"
+                              className={styles.countInput}
                               title="Eaches - loose units from open case"
                             />
-                            <span style={{ fontSize: 10, color: '#94a3b8' }}>ea</span>
+                            <button className={styles.adjBtn} onClick={() => adjustEaches(item.id, 1)}>+</button>
                           </div>
                         </td>
 

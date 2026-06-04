@@ -536,8 +536,10 @@ export function useInventory(orgId, locationId, periodKey, user) {
       await Promise.all(batch)
 
       const closingValue = items.reduce((sum, item) => {
-        const packVal = (item.qty || 0) * (item.packPrice || ((item.qtyPerPack || 1) * (item.unitCost || 0)))
-        const eachVal = (item.eaches || 0) * (item.unitCost || 0)
+        const pp = item.packPrice || ((item.qtyPerPack || 1) * (item.unitCost || 0))
+        const packVal = (item.qty || 0) * pp
+        const eachPrice = (item.qtyPerPack || 1) > 0 ? pp / (item.qtyPerPack || 1) : (item.unitCost || 0)
+        const eachVal = (item.eaches || 0) * eachPrice
         return sum + packVal + eachVal
       }, 0)
 
@@ -627,7 +629,11 @@ export function useInventory(orgId, locationId, periodKey, user) {
         _daysOnHand: daysOnHand,
         _belowPar: belowPar,
         _atReorder: atReorder,
-        _value: (item.qty || 0) * (item.packPrice || ((item.qtyPerPack || 1) * (item.unitCost || 0)))
+        _value: (() => {
+          const pp = item.packPrice || ((item.qtyPerPack || 1) * (item.unitCost || 0))
+          const ep = (item.qtyPerPack || 1) > 0 ? pp / (item.qtyPerPack || 1) : (item.unitCost || 0)
+          return ((item.qty || 0) * pp) + ((item.eaches || 0) * ep)
+        })()
       }
     })
   }, [items, priorItems, categories])
