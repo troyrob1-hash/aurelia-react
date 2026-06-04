@@ -257,7 +257,7 @@ export default function Inventory() {
         if (nameStr.toLowerCase().includes('café pos')) continue
 
         // Skip rows with no cost data — section headers like "Beverages", "Barista" etc.
-        const rowPackPrice = parsePrice(findCol(row, ['Pack Price', 'Pack Cost', 'Case Price', 'Case Cost']))
+        const rowPackPrice = parsePrice(findCol(row, ['Pack Price', 'Pack Cost', 'Case Price', 'Case Cost', 'Price']))
         const rowUnitCost = parsePrice(findCol(row, ['Cost Per Unit', 'Unit Cost', 'Cost', 'Each Cost']))
         if (rowPackPrice === 0 && rowUnitCost === 0) continue
 
