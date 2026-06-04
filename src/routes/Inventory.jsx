@@ -1292,7 +1292,7 @@ export default function Inventory() {
                         {!isMobile && <td className={styles.tdCenter} style={{ color: '#94a3b8', fontSize: 12 }}>
                           {(item._priorQty || 0) > 0 ? item._priorQty : '—'}
                         </td>}
-                        <td className={styles.tdCount} style={{ height: 60, verticalAlign: 'middle' }}>
+                        <td className={styles.tdCount} >
                           <div className={styles.countRow}>
                             <button className={styles.adjBtn} onClick={() => adjust(item.id, -1)}>−</button>
                             <input 
