@@ -146,6 +146,8 @@ export function useInventory(orgId, locationId, periodKey, user) {
               sellingPrice: item.sellingPrice,
               itemType: item.itemType,
               qty: item.qty ?? null,
+              eaches: item.eaches ?? 0,
+              eaches: item.eaches ?? 0,
               parLevel: item.parLevel,
               reorderPoint: item.reorderPoint,
               avgDailyUsage: item.avgDailyUsage,
@@ -305,6 +307,24 @@ export function useInventory(orgId, locationId, periodKey, user) {
     }))
     setDirty(true)
   }, [user, buddyMode, buddyNames])
+
+  const adjustEaches = useCallback((itemId, delta) => {
+    setItems(prev => prev.map(item => {
+      if (item.id !== itemId) return item
+      const next = Math.max(0, parseFloat(((item.eaches || 0) + delta).toFixed(2)))
+      return { ...item, eaches: next, lastCountedAt: new Date().toISOString(), lastCountedBy: user?.email || 'unknown' }
+    }))
+    setDirty(true)
+  }, [user])
+
+  const setEaches = useCallback((itemId, value) => {
+    setItems(prev => prev.map(item => {
+      if (item.id !== itemId) return item
+      const eaches = value === '' ? 0 : Math.max(0, parseFloat(value) || 0)
+      return { ...item, eaches, lastCountedAt: new Date().toISOString(), lastCountedBy: user?.email || 'unknown' }
+    }))
+    setDirty(true)
+  }, [user])
 
   const setQty = useCallback((itemId, value) => {
     setItems(prev => prev.map(item => {
@@ -499,6 +519,7 @@ export function useInventory(orgId, locationId, periodKey, user) {
               doc(db, 'tenants', orgId, 'inventory', locId, 'items', item.id),
               {
                 qty: item.qty,
+                eaches: item.eaches || 0,
                 parLevel: item.parLevel || null,
                 reorderPoint: item.reorderPoint || null,
                 avgDailyUsage: item.avgDailyUsage || null,
@@ -515,7 +536,9 @@ export function useInventory(orgId, locationId, periodKey, user) {
       await Promise.all(batch)
 
       const closingValue = items.reduce((sum, item) => {
-        return sum + ((item.qty || 0) * (item.packPrice || ((item.qtyPerPack || 1) * (item.unitCost || 0))))
+        const packVal = (item.qty || 0) * (item.packPrice || ((item.qtyPerPack || 1) * (item.unitCost || 0)))
+        const eachVal = (item.eaches || 0) * (item.unitCost || 0)
+        return sum + packVal + eachVal
       }, 0)
 
       const cogs = Math.max(0, openingValue + purchases - closingValue)
@@ -670,6 +693,8 @@ export function useInventory(orgId, locationId, periodKey, user) {
     error,
     load,
     adjust,
+    adjustEaches,
+    setEaches,
     setQty,
     copyPrior,
     toggleKey,

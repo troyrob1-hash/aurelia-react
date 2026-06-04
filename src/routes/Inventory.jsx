@@ -419,6 +419,8 @@ export default function Inventory() {
     error,
     load,
     adjust,
+    adjustEaches,
+    setEaches,
     setQty,
     copyPrior,
     toggleKey,
@@ -1305,6 +1307,19 @@ export default function Inventory() {
                               title="Double-click to copy prior count"
                             />
                             <button className={styles.adjBtn} onClick={() => adjust(item.id, 1)}>+</button>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3, marginTop: 2 }}>
+                            <input
+                              type="number"
+                              min="0"
+                              step="1"
+                              value={item.eaches || ''}
+                              onChange={e => setEaches(item.id, e.target.value)}
+                              placeholder="0"
+                              style={{ width: 32, height: 20, textAlign: 'center', fontSize: 11, borderRadius: 3, border: '0.5px solid #e2e8f0', background: '#f8fafc', color: '#64748b', padding: 0 }}
+                              title="Eaches - loose units from open case"
+                            />
+                            <span style={{ fontSize: 10, color: '#94a3b8' }}>ea</span>
                           </div>
                         </td>
 
