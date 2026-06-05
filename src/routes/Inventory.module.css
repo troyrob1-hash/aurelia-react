@@ -16,7 +16,7 @@
   max-width: 1400px;
   margin: 0 auto;
   width: 100%;
-}
+ overflow-anchor: none;}
 
 /* ─── Empty State ─────────────────────────────────────────────────────────── */
 .empty {
@@ -359,7 +359,7 @@
 }
 
 /* ─── Count Input ─────────────────────────────────────────────────────────── */
-.invRow { min-height: 64px; contain: layout; }
+.invRow { min-height: 64px; contain: layout; overflow-anchor: auto; }
 .countRow { display: flex; align-items: center; justify-content: center; gap: 4px; }
 .adjBtn {
   width: 28px; height: 28px;
