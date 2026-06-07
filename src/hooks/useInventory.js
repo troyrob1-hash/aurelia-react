@@ -67,10 +67,7 @@ export function useInventory(orgId, locationId, periodKey, user) {
   const priorKey = getPriorKey(periodKey)
   const locId = sanitizeDocId(locationId)
 
-  const loadIdRef = useRef(0)
   const load = useCallback(async () => {
-    const id = ++loadIdRef.current
-    console.trace('load() called #' + id, { orgId, locationId, locId, periodKey, priorKey })
     if (!locationId || !periodKey || !orgId) {
       setItems([])
       setPriorItems([])

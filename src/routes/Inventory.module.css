@@ -408,7 +408,8 @@
 
 /* ─── Sticky COGS Footer ──────────────────────────────────────────────────── */
 .cogsFooter {
-  /* position: sticky; bottom: 0; */
+  position: sticky;
+  bottom: 0;
   background: #1a1a2e;
   border-radius: 12px;
   padding: 12px 20px;
