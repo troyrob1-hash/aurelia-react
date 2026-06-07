@@ -1,6 +1,6 @@
 import BarcodeScanner from '@/components/BarcodeScanner'
 import SubCafeBar from '@/components/ui/SubCafePrompt'
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { usePeriod } from '@/store/PeriodContext'
@@ -343,6 +343,18 @@ export default function Inventory() {
     window.addEventListener('keydown', handleEsc)
     return () => window.removeEventListener('keydown', handleEsc)
   }, [])
+
+  const mainRef = useRef(null)
+  if (!mainRef.current) {
+    const m = document.querySelector('[class*="main"]')
+    if (m && m.scrollHeight > m.clientHeight) mainRef.current = m
+  }
+  const scrollFix = (fn) => () => {
+    const el = mainRef.current || document.querySelector('[class*="main"]')
+    const st = el?.scrollTop || 0
+    fn()
+    setTimeout(() => { if (el) el.scrollTop = st }, 0)
+  }
 
   const [search, setSearch] = useState('')
   const [activeCat, setActiveCat] = useState('all')
@@ -1294,11 +1306,10 @@ export default function Inventory() {
                         </td>}
                         <td className={styles.tdCount} >
                           <div className={styles.countRow}>
-                            <button className={styles.adjBtn} onClick={() => adjust(item.id, -1)}>−</button>
+                            <button className={styles.adjBtn} onClick={() => { const st = window.scrollY; adjust(item.id, -1); requestAnimationFrame(() => window.scrollTo(0, st)) }}>−</button>
                             <input 
-                              type="number" 
-                              min="0" 
-                              step="0.5"
+                              type="text" 
+                              inputMode="decimal"
                               value={item.qty ?? ''}
                               onChange={e => setQty(item.id, e.target.value)}
                               onDoubleClick={() => !blindMode && copyPrior(item.id)}
@@ -1306,21 +1317,20 @@ export default function Inventory() {
                               placeholder={blindMode ? '0' : (item._priorQty || 0) > 0 ? String(item._priorQty) : '0'}
                               title="Double-click to copy prior count"
                             />
-                            <button className={styles.adjBtn} onClick={() => adjust(item.id, 1)}>+</button>
+                            <button className={styles.adjBtn} onClick={() => { const st = window.scrollY; adjust(item.id, 1); requestAnimationFrame(() => window.scrollTo(0, st)) }}>+</button>
                           </div>
                           <div className={styles.countRow} style={{ marginTop: 2 }}>
-                            <button className={styles.adjBtn} onClick={() => adjustEaches(item.id, -1)}>−</button>
+                            <button className={styles.adjBtn} onClick={() => { const st = window.scrollY; adjustEaches(item.id, -1); requestAnimationFrame(() => window.scrollTo(0, st)) }}>−</button>
                             <input
-                              type="number"
-                              min="0"
-                              step="1"
+                              type="text"
+                              inputMode="numeric"
                               value={item.eaches || ''}
                               onChange={e => setEaches(item.id, e.target.value)}
                               placeholder="ea"
                               className={styles.countInput}
                               title="Eaches - loose units from open case"
                             />
-                            <button className={styles.adjBtn} onClick={() => adjustEaches(item.id, 1)}>+</button>
+                            <button className={styles.adjBtn} onClick={() => { const st = window.scrollY; adjustEaches(item.id, 1); requestAnimationFrame(() => window.scrollTo(0, st)) }}>+</button>
                           </div>
                         </td>
 

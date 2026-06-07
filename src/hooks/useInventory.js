@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { doc, getDoc, setDoc, collection, getDocs, serverTimestamp } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { getPriorKey as getPriorKeyLib, locId as locIdLib } from '@/lib/pnl'
@@ -67,7 +67,10 @@ export function useInventory(orgId, locationId, periodKey, user) {
   const priorKey = getPriorKey(periodKey)
   const locId = sanitizeDocId(locationId)
 
+  const loadIdRef = useRef(0)
   const load = useCallback(async () => {
+    const id = ++loadIdRef.current
+    console.trace('load() called #' + id, { orgId, locationId, locId, periodKey, priorKey })
     if (!locationId || !periodKey || !orgId) {
       setItems([])
       setPriorItems([])
@@ -284,7 +287,7 @@ export function useInventory(orgId, locationId, periodKey, user) {
     } finally {
       setLoading(false)
     }
-  }, [orgId, locationId, locId, periodKey, priorKey, user])
+  }, [orgId, locationId, locId, periodKey, priorKey])
 
   useEffect(() => {
     load()
