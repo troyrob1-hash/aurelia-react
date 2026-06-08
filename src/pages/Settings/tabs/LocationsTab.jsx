@@ -77,6 +77,9 @@ export default function LocationsTab() {
       },
       active:     true,
       regionId:   formData.regionId || null,
+      operatingDays: Array.isArray(formData.operatingDays) && formData.operatingDays.length
+        ? formData.operatingDays
+        : ["Mon","Tue","Wed","Thu","Fri"],
       openedDate: formData.openedDate ? new Date(formData.openedDate) : null,
       ...(isNew ? { createdAt: now, createdBy: user?.email || "unknown" } : {}),
       updatedAt: now,
@@ -322,6 +325,8 @@ function LocationRow({ location: l, isAdmin, inactive, onEdit, onDeactivate, onR
   );
 }
 
+const OPERATING_DAY_OPTIONS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+
 function LocationModal({ mode, location, onClose, onSave, regionsList = [] }) {
   const isEdit = mode === "edit";
   const [form, setForm] = useState(
@@ -331,11 +336,23 @@ function LocationModal({ mode, location, onClose, onSave, regionsList = [] }) {
       state: location.address?.state ?? "", zip: location.address?.zip ?? "",
       country: location.address?.country ?? "US", openedDate: "",
       regionId: location.regionId || "",
-    } : { ...EMPTY_FORM, regionId: "" }
+      operatingDays: Array.isArray(location.operatingDays) && location.operatingDays.length
+        ? location.operatingDays
+        : ["Mon","Tue","Wed","Thu","Fri"],
+    } : { ...EMPTY_FORM, regionId: "", operatingDays: ["Mon","Tue","Wed","Thu","Fri"] }
   );
   const [saving, setSaving] = useState(false);
   const [error,  setError]  = useState(null);
   const set = f => e => setForm(p => ({ ...p, [f]: e.target.value }));
+
+  const toggleDay = (day) => setForm(p => {
+    const current = Array.isArray(p.operatingDays) ? p.operatingDays : [];
+    const next = current.includes(day)
+      ? current.filter(d => d !== day)
+      : [...current, day];
+    const ordered = OPERATING_DAY_OPTIONS.filter(d => next.includes(d));
+    return { ...p, operatingDays: ordered };
+  });
 
   const handleNameChange = (e) => {
     const name = e.target.value;
@@ -409,6 +426,31 @@ function LocationModal({ mode, location, onClose, onSave, regionsList = [] }) {
             <option value="">— No region —</option>
             {regionsList.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
           </select>
+          <label style={{ marginTop: 4 }}>Operating days</label>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 4 }}>
+            {OPERATING_DAY_OPTIONS.map(day => {
+              const on = Array.isArray(form.operatingDays) && form.operatingDays.includes(day);
+              return (
+                <button
+                  type="button"
+                  key={day}
+                  onClick={() => toggleDay(day)}
+                  style={{
+                    minWidth: 46, padding: "8px 0", borderRadius: 8, cursor: "pointer",
+                    fontSize: 13, fontWeight: 600,
+                    border: on ? "1px solid #F15D3B" : "1px solid var(--color-border)",
+                    background: on ? "#F15D3B" : "var(--color-background-primary)",
+                    color: on ? "#fff" : "var(--color-text-secondary)",
+                  }}
+                >
+                  {day}
+                </button>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginBottom: 8 }}>
+            Days this location operates. Drives which columns appear in Weekly Sales. Defaults to Mon–Fri.
+          </div>
           {!isEdit && (
             <>
               <label>Opened date <span style={{ fontWeight: 400, color: "var(--color-text-tertiary)" }}>(optional)</span></label>

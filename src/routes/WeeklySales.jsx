@@ -330,12 +330,16 @@ export default function WeeklySales() {
         const d = new Date(start)
         d.setDate(start.getDate() + i)
         d.setHours(12, 0, 0, 0)
-        if (d > end) return null
+        // Compare date-only: `end` sits at local midnight, days at noon, so a
+        // raw `d > end` would clip the final day (Sunday) by 12 hours.
+        const endDay = new Date(end); endDay.setHours(23, 59, 59, 999)
+        if (d > endDay) return null
         if (!operatingDays.includes(DAY_ABBR[name])) return null
         return { name, date: d, key: d.toISOString().slice(0, 10) }
       }).filter(Boolean)
     }
   }, [currentWeek, periodKey, period, weekNum, currentLocation])
+
 
   // Derive chart data with the current week's forecast projection layered in,
   // and compare data layered in if compare mode is active.
