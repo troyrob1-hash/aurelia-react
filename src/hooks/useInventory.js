@@ -213,7 +213,61 @@ export function useInventory(orgId, locationId, periodKey, user) {
         }
       })
 
-      setItems([...inventoryItems, ...customItems])
+      // ── Current-week snapshot hydration ───────────────────────────────
+      // The live items collection (inventory/{loc}/items) is period-agnostic
+      // and is cleared (qty: null) when a new week's count begins. The real
+      // entered counts for any week live in that week's Path B snapshot at
+      // locations/{loc}/inventory/{periodKey}. Without reading it back, a
+      // previously-counted week renders blank even though its data is intact.
+      // Overlay the current week's snapshot qty/eaches onto the built rows so
+      // any counted week displays exactly what was entered. Live docs remain
+      // the scratchpad for the active, never-counted week (no snapshot -> noop).
+      let hydratedItems = [...inventoryItems, ...customItems]
+      try {
+        const curSnapRef = doc(db, 'tenants', orgId, 'locations', locId, 'inventory', periodKey)
+        const curSnap = await getDoc(curSnapRef)
+        if (curSnap.exists()) {
+          const curArr = Array.isArray(curSnap.data().items) ? curSnap.data().items : []
+          if (curArr.length) {
+            const byId = new Map(curArr.map(it => [String(it.id), it]))
+            hydratedItems = hydratedItems.map(row => {
+              const snap = byId.get(String(row.id))
+              if (!snap) return row
+              // Only overlay when the live row has no count (qty null/undefined),
+              // so an in-progress edit to the active week is never clobbered.
+              if (row.qty == null && snap.qty != null) {
+                return { ...row, qty: snap.qty, eaches: snap.eaches ?? row.eaches ?? 0 }
+              }
+              return row
+            })
+          }
+        }
+      } catch (e) {
+        console.warn('Current-week snapshot hydration failed:', e)
+      }
+
+      // ── Dedupe by id ──────────────────────────────────────────────────
+      // Custom items stored in a location-specific catalog are picked up twice:
+      // once in inventoryItems (catalog branch maps all location docs) and again
+      // in customItems (data.custom === true). Same id, two entries. The save and
+      // snapshot key documents by id, so duplicates collapse to one document —
+      // quantities on the dropped entry are omitted while closingValue (summed
+      // over the full array) still looks correct. Collapse duplicates here,
+      // preferring the entry that actually has a count.
+      const _seen = new Map()
+      for (const it of hydratedItems) {
+        const key = String(it.id)
+        const existing = _seen.get(key)
+        if (!existing) { _seen.set(key, it); continue }
+        if (existing.qty == null && it.qty != null) _seen.set(key, it)
+        else if (existing.qty != null && it.qty != null) _seen.set(key, it)
+      }
+      const dedupedItems = Array.from(_seen.values())
+      if (dedupedItems.length !== hydratedItems.length) {
+        console.warn('[DEDUPE] collapsed', hydratedItems.length - dedupedItems.length,
+                     'duplicate item id(s) on load')
+      }
+      setItems(dedupedItems)
 
       // Load prior period items from Path B snapshot for variance + copyPrior.
       // Best-effort: if no prior snapshot exists, priorItems stays empty.
