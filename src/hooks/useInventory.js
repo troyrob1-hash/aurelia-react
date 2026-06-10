@@ -86,14 +86,20 @@ export function useInventory(orgId, locationId, periodKey, user) {
         priorPnlSnap,
         currentPnlSnap,
         settingsSnap,
-        sessionSnap
+        sessionSnap,
+        countsSnap
       ] = await Promise.all([
         getDocs(collection(db, 'tenants', orgId, 'inventoryCatalog')),
         getDocs(collection(db, 'tenants', orgId, 'inventory', locId, 'items')),
         priorKey ? getDoc(doc(db, 'tenants', orgId, 'pnl', locId, 'periods', priorKey)) : Promise.resolve(null),
         getDoc(doc(db, 'tenants', orgId, 'pnl', locId, 'periods', periodKey)),
         getDoc(doc(db, 'tenants', orgId, 'settings', 'inventory')),
-        getDoc(doc(db, 'tenants', orgId, 'inventorySessions', `${locId}_${periodKey}`))
+        getDoc(doc(db, 'tenants', orgId, 'inventorySessions', `${locId}_${periodKey}`)),
+        // Per-week counts — the canonical count store. Item DEFINITIONS live on
+        // the shared items docs; COUNTS (qty/eaches) live here, keyed by period,
+        // so a new week starts blank by design and never inherits last week's
+        // numbers.
+        getDoc(doc(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey))
       ])
 
       // Read master items from the per-tenant inventoryCatalog collection.
@@ -222,28 +228,31 @@ export function useInventory(orgId, locationId, periodKey, user) {
       // Overlay the current week's snapshot qty/eaches onto the built rows so
       // any counted week displays exactly what was entered. Live docs remain
       // the scratchpad for the active, never-counted week (no snapshot -> noop).
-      let hydratedItems = [...inventoryItems, ...customItems]
-      try {
-        const curSnapRef = doc(db, 'tenants', orgId, 'locations', locId, 'inventory', periodKey)
-        const curSnap = await getDoc(curSnapRef)
-        if (curSnap.exists()) {
-          const curArr = Array.isArray(curSnap.data().items) ? curSnap.data().items : []
-          if (curArr.length) {
-            const byId = new Map(curArr.map(it => [String(it.id), it]))
-            hydratedItems = hydratedItems.map(row => {
-              const snap = byId.get(String(row.id))
-              if (!snap) return row
-              // Only overlay when the live row has no count (qty null/undefined),
-              // so an in-progress edit to the active week is never clobbered.
-              if (row.qty == null && snap.qty != null) {
-                return { ...row, qty: snap.qty, eaches: snap.eaches ?? row.eaches ?? 0 }
-              }
-              return row
-            })
+      // ── Per-week counts merge ─────────────────────────────────────────
+      // Item DEFINITIONS come from the shared items docs (above). COUNTS for
+      // THIS week come solely from inventory/{loc}/counts/{periodKey}. If that
+      // doc does not exist, the week has not been counted yet and every cell
+      // is blank — no carry-over from prior weeks. This makes counts truly
+      // period-scoped at the source.
+      let hydratedItems = [...inventoryItems, ...customItems].map(row => ({
+        ...row, qty: null, eaches: 0
+      }))
+      const countsArr = countsSnap?.exists() && Array.isArray(countsSnap.data().items)
+        ? countsSnap.data().items
+        : []
+      if (countsArr.length) {
+        const byId = new Map(countsArr.map(c => [String(c.id), c]))
+        hydratedItems = hydratedItems.map(row => {
+          const c = byId.get(String(row.id))
+          if (!c) return row
+          return {
+            ...row,
+            qty: c.qty ?? null,
+            eaches: c.eaches ?? 0,
+            lastCountedAt: c.countedAt ?? row.lastCountedAt ?? null,
+            lastCountedBy: c.countedBy ?? row.lastCountedBy ?? null,
           }
-        }
-      } catch (e) {
-        console.warn('Current-week snapshot hydration failed:', e)
+        })
       }
 
       // ── Dedupe by id ──────────────────────────────────────────────────
@@ -565,6 +574,9 @@ export function useInventory(orgId, locationId, periodKey, user) {
     setError(null)
 
     try {
+      // Item DEFINITION fields only (par/reorder/usage) go to the shared items
+      // docs. COUNTS (qty/eaches) are NOT written here — they go to the
+      // per-week counts doc below, so they stay period-scoped.
       const batch = []
       for (const item of items) {
         if (item.qty != null) {
@@ -572,13 +584,9 @@ export function useInventory(orgId, locationId, periodKey, user) {
             setDoc(
               doc(db, 'tenants', orgId, 'inventory', locId, 'items', item.id),
               {
-                qty: item.qty,
-                eaches: item.eaches || 0,
                 parLevel: item.parLevel || null,
                 reorderPoint: item.reorderPoint || null,
                 avgDailyUsage: item.avgDailyUsage || null,
-                lastCountedAt: item.lastCountedAt || null,
-                lastCountedBy: item.lastCountedBy || null,
                 updatedAt: serverTimestamp(),
                 updatedBy: user?.email
               },
@@ -588,6 +596,27 @@ export function useInventory(orgId, locationId, periodKey, user) {
         }
       }
       await Promise.all(batch)
+
+      // ── Per-week counts doc — canonical count store ───────────────────
+      const countsItems = items
+        .filter(i => i.qty != null)
+        .map(i => ({
+          id: i.id,
+          qty: i.qty,
+          eaches: i.eaches || 0,
+          countedAt: i.lastCountedAt || null,
+          countedBy: i.lastCountedBy || null,
+        }))
+      await setDoc(
+        doc(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey),
+        {
+          items:     countsItems,
+          period:    periodKey,
+          updatedAt: serverTimestamp(),
+          updatedBy: user?.email || 'unknown',
+        },
+        { merge: false }
+      )
 
       const closingValue = items.reduce((sum, item) => {
         const pp = item.packPrice || ((item.qtyPerPack || 1) * (item.unitCost || 0))

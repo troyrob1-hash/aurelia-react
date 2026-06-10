@@ -60,6 +60,12 @@ service cloud.firestore {
         allow write: if ownsTenant(tenantId) && isManager();
       }
 
+      // Per-week inventory counts (qty/eaches keyed by periodKey).
+      match /inventory/{locationId}/counts/{periodKey} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isManager();
+      }
+
       match /inventorySessions/{sessionId} {
         allow read:  if ownsTenant(tenantId);
         allow write: if ownsTenant(tenantId) && isManager();
