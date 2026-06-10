@@ -237,9 +237,28 @@ export function useInventory(orgId, locationId, periodKey, user) {
       let hydratedItems = [...inventoryItems, ...customItems].map(row => ({
         ...row, qty: null, eaches: 0
       }))
-      const countsArr = countsSnap?.exists() && Array.isArray(countsSnap.data().items)
+      let countsArr = countsSnap?.exists() && Array.isArray(countsSnap.data().items)
         ? countsSnap.data().items
         : []
+
+      // ── Legacy snapshot fallback ──────────────────────────────────────
+      // Weeks counted before the per-week counts refactor have no counts doc;
+      // their data lives in the old snapshot at
+      // locations/{loc}/inventory/{periodKey}. If the new counts doc is empty,
+      // fall back to that snapshot so previously-counted weeks still display.
+      // New saves always write the new counts doc, so this only ever serves
+      // pre-refactor weeks.
+      if (!countsArr.length) {
+        try {
+          const legacySnap = await getDoc(doc(db, 'tenants', orgId, 'locations', locId, 'inventory', periodKey))
+          if (legacySnap.exists() && Array.isArray(legacySnap.data().items)) {
+            countsArr = legacySnap.data().items
+          }
+        } catch (e) {
+          console.warn('Legacy snapshot fallback failed:', e)
+        }
+      }
+
       if (countsArr.length) {
         const byId = new Map(countsArr.map(c => [String(c.id), c]))
         hydratedItems = hydratedItems.map(row => {
