@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import UsersTab     from "./tabs/UsersTab";
 import RegionsTab   from "./tabs/RegionsTab";
 import LocationsTab from "./tabs/LocationsTab";
@@ -12,7 +12,7 @@ import { useAuth }  from "@/hooks/useAuth";
 import { canAdministerSystem } from "@/lib/permissions";
 
 const TABS = [
-  { id: "users",     label: "Users & roles",  adminOnly: false },
+  { id: "users",     label: "Users & roles",  adminOnly: true  },
   { id: "regions",   label: "Regions",         adminOnly: true  },
   { id: "locations", label: "Locations",       adminOnly: true  },
   { id: "apikeys",   label: "Integrations",    adminOnly: true  },
@@ -27,6 +27,13 @@ export default function Settings() {
   const [subTab, setSubTab] = useState("map");
   const isAdmin = canAdministerSystem(user);
   const visibleTabs = TABS.filter(t => !t.adminOnly || isAdmin);
+  // If the current tab isn't visible to this user (e.g. a non-admin whose
+  // default landed on an admin-only tab), fall back to the first visible tab.
+  useEffect(() => {
+    if (visibleTabs.length && !visibleTabs.some(t => t.id === activeTab)) {
+      setActiveTab(visibleTabs[0].id);
+    }
+  }, [visibleTabs, activeTab]);
   const activeLabel = TABS.find(t => t.id === activeTab)?.label ?? "";
 
   return (
