@@ -7,6 +7,7 @@ import { db } from '@/lib/firebase'
 import { doc, getDoc, getDocs, setDoc, addDoc, updateDoc, collection, serverTimestamp } from 'firebase/firestore'
 import { Upload, Download, RefreshCw, ChevronDown, ChevronRight, Lock, Unlock, TrendingUp, TrendingDown } from 'lucide-react'
 import { readPnL, writePnL, weeksInPeriod } from '@/lib/pnl'
+import { canApproveSales } from '@/lib/permissions'
 import styles from './Budgets.module.css'
 
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
@@ -235,7 +236,7 @@ export default function Budgets() {
   const { selectedLocation, setSelectedLocation, visibleLocations, groupedLocations , isParentLocation, getSubCafes } = useLocations()
   const { year: ctxYear }    = usePeriod()
   const toast                = useToast()
-  const isDirector           = /^(admin|director)$/i.test(user?.role || '')
+  const isDirector           = canApproveSales(user)  // director/vp/admin per permissions.js
 
   const [year,          setYear]          = useState(String(ctxYear || new Date().getFullYear()))
   const [schema,        setSchema]        = useState([])
@@ -335,17 +336,26 @@ export default function Budgets() {
       }
       setDirty(false)
 
-      // Load actuals — all 12 months
+      // Load actuals — sum ALL weeks of each month (not just W1). A month's
+      // actual is the total across its weeks. monthToPeriodKey returned only
+      // -W1 before, undercounting actuals by ~75%.
       const act = {}
       await Promise.all(MONTHS.map(async (_, i) => {
-        const mo  = i + 1
-        const key = monthToPeriodKey(year, mo)
-        try {
-          const pnl = await readPnL(location, key)
-          if (pnl) Object.entries(pnl).forEach(([k, v]) => {
-            if (typeof v === 'number') { if (!act[k]) act[k] = {}; act[k][mo] = v }
-          })
-        } catch {}
+        const mo = i + 1
+        const numWeeks = weeksInPeriod(year, mo)
+        const basePeriod = `${year}-P${String(mo).padStart(2,'0')}`
+        const weekKeys = Array.from({ length: numWeeks }, (_, w) => `${basePeriod}-W${w+1}`)
+        await Promise.all(weekKeys.map(async key => {
+          try {
+            const pnl = await readPnL(location, key)
+            if (pnl) Object.entries(pnl).forEach(([k, v]) => {
+              if (typeof v === 'number') {
+                if (!act[k]) act[k] = {}
+                act[k][mo] = (act[k][mo] || 0) + v
+              }
+            })
+          } catch {}
+        }))
       }))
       setActuals(act)
     } catch { toast.error('Failed to load budget.') }
@@ -458,12 +468,14 @@ export default function Budgets() {
       const gfsLine = allLines.find(l => l.gfsBase)
       for (let mo = 1; mo <= 12; mo++) {
         const gfs = activeBudget[gfsLine?.key]?.[mo] || 0
-        const labor = allLines.filter(l => l.label && l.label.toLowerCase().includes('labor'))
+        const labor = allLines.filter(l => detectSection(l.label) === 'Labor')
           .reduce((s, l) => s + (activeBudget[l.key]?.[mo] || 0), 0)
-        const revenue = gfs * 0.82
-        const cogs = allLines.filter(l => l.label && (l.label.toLowerCase().includes('cogs') || l.label.toLowerCase().includes('equipment') || l.label.toLowerCase().includes('supplies')))
+        const revenue = allLines.filter(l => detectSection(l.label) === 'Revenue')
           .reduce((s, l) => s + (activeBudget[l.key]?.[mo] || 0), 0)
-        const ebitda = revenue - labor - cogs
+        const cogs = allLines.filter(l => detectSection(l.label) === 'COGS')
+          .reduce((s, l) => s + (activeBudget[l.key]?.[mo] || 0), 0)
+        const ebitdaLine2 = allLines.find(l => l.label.toLowerCase() === 'ebitda')
+        const ebitda = activeBudget[ebitdaLine2?.key]?.[mo] || (revenue - labor - cogs)
         const budgetData = {
           budget_gfs: gfs, budget_revenue: revenue,
           budget_cogs: cogs, budget_labor: labor, budget_ebitda: ebitda,
@@ -980,7 +992,10 @@ export default function Budgets() {
                             const isEditing = editingCell?.key === line.key && editingCell?.mo === mo
 
                             if (view === 'variance') {
-                              const actual   = actuals['gfs_total']?.[mo] != null ? actuals[Object.keys(actuals).find(k=>k===line.key)||'']?.[mo] ?? null : null
+                              // Map the budget line key to its P&L field, then read the
+                              // actual from the summed-by-month actuals.
+                              const pnlKey   = BUDGET_TO_PNL[line.key] || line.key
+                              const actual   = actuals[pnlKey]?.[mo] ?? null
                               const variance = actual !== null && bVal !== null ? actual - bVal : null
                               return (
                                 <td key={mo} className={styles.varCell}>
