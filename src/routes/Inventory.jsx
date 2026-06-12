@@ -1302,7 +1302,10 @@ export default function Inventory() {
                         </td>}
 
                         {!isMobile && <td className={styles.tdCenter} style={{ color: '#94a3b8', fontSize: 12 }}>
-                          {(item._priorQty || 0) > 0 ? item._priorQty : '—'}
+                          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', lineHeight: 1.6 }}>
+                            <span>{(item._priorQty || 0) > 0 ? item._priorQty : '—'}</span>
+                            <span>{(item._priorEaches || 0) > 0 ? item._priorEaches : '—'}</span>
+                          </div>
                         </td>}
                         <td className={styles.tdCount} >
                           <div className={styles.countRow}>

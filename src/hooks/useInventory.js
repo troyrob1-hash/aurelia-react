@@ -301,15 +301,20 @@ export function useInventory(orgId, locationId, periodKey, user) {
       // Best-effort: if no prior snapshot exists, priorItems stays empty.
       try {
         if (priorKey) {
-          const priorSnapRef = doc(db, 'tenants', orgId, 'locations', locId, 'inventory', priorKey)
-          const priorSnap = await getDoc(priorSnapRef)
-          if (priorSnap.exists()) {
-            const priorData = priorSnap.data()
-            const priorArr = Array.isArray(priorData.items) ? priorData.items : []
-            setPriorItems(priorArr)
+          // Prefer the prior week's COUNTS doc (carries qty AND eaches). Fall
+          // back to the legacy snapshot for pre-refactor weeks (qty only).
+          let priorArr = []
+          const priorCountsRef = doc(db, 'tenants', orgId, 'inventory', locId, 'counts', priorKey)
+          const priorCounts = await getDoc(priorCountsRef)
+          if (priorCounts.exists() && Array.isArray(priorCounts.data().items) && priorCounts.data().items.length) {
+            priorArr = priorCounts.data().items
           } else {
-            setPriorItems([])
+            const priorSnap = await getDoc(doc(db, 'tenants', orgId, 'locations', locId, 'inventory', priorKey))
+            if (priorSnap.exists() && Array.isArray(priorSnap.data().items)) {
+              priorArr = priorSnap.data().items
+            }
           }
+          setPriorItems(priorArr)
         } else {
           setPriorItems([])
         }
@@ -715,6 +720,7 @@ export function useInventory(orgId, locationId, periodKey, user) {
     return items.map(item => {
       const prior = priorItems.find(p => p.id === item.id)
       const priorQty = prior?.qty || 0
+      const priorEaches = prior?.eaches || 0
       const variance = (item.qty || 0) - priorQty
       const varClass = getVarianceClass(item.qty, priorQty)
       const cat = assignCategory(item, categories)
@@ -726,6 +732,7 @@ export function useInventory(orgId, locationId, periodKey, user) {
         ...item,
         _cat: cat,
         _priorQty: priorQty,
+        _priorEaches: priorEaches,
         _variance: variance,
         _varClass: varClass,
         _daysOnHand: daysOnHand,
