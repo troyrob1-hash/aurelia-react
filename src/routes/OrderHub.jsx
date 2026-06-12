@@ -3,7 +3,6 @@ import { useState, useMemo, useEffect, Fragment, useCallback, useRef } from 'rea
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { useToast } from '@/components/ui/Toast'
 import { useVendors } from '@/hooks/useVendorsProducts'
-import { APPROVAL_THRESHOLDS } from '@/hooks/useOrders'
 import VendorImportModal from './components/VendorImportModal'
 import OrderItemWhyPanel from './components/OrderItemWhyPanel'
 import ReceivingModal from './components/ReceivingModal'
@@ -1398,48 +1397,6 @@ export default function OrderHub() {
                   rows={2}
                 />
               </div>
-              {/* Approval routing preview — shows the user BEFORE submit what level
-                  of approval this cart will need, not after. */}
-              {cartLines > 0 && (() => {
-                // Highest tier wins if any single vendor sub-total crosses a threshold
-                let needsDirector = false
-                let needsManager = false
-                for (const items of Object.values(cartByVendor)) {
-                  const subtotal = items.reduce((s, i) => s + i.qty * i.unitCost, 0)
-                  if (subtotal > APPROVAL_THRESHOLDS.DIRECTOR_REQUIRED) needsDirector = true
-                  else if (subtotal > APPROVAL_THRESHOLDS.AUTO_APPROVE) needsManager = true
-                }
-                if (needsDirector) {
-                  return (
-                    <div className={styles.approvalPill} style={{
-                      background: '#fef2f2', borderColor: '#fecaca', color: '#991b1b',
-                    }}>
-                      <AlertTriangle size={12}/>
-                      <span><strong>Director approval required.</strong> Any single vendor order over ${APPROVAL_THRESHOLDS.DIRECTOR_REQUIRED.toLocaleString()} needs director sign-off before it submits to the vendor.</span>
-                    </div>
-                  )
-                }
-                if (needsManager) {
-                  return (
-                    <div className={styles.approvalPill} style={{
-                      background: '#fffbeb', borderColor: '#fde68a', color: '#92400e',
-                    }}>
-                      <AlertTriangle size={12}/>
-                      <span><strong>Manager approval required.</strong> Vendor orders over ${APPROVAL_THRESHOLDS.AUTO_APPROVE} route to a manager queue before vendor submission.</span>
-                    </div>
-                  )
-                }
-                return (
-                  <div className={styles.approvalPill} style={{
-                    background: '#f0fdf4', borderColor: '#a7f3d0', color: '#065f46',
-                  }}>
-
-                    <CheckCircle size={12}/>
-                    <span><strong>Auto-approved.</strong> Orders under ${APPROVAL_THRESHOLDS.AUTO_APPROVE} per vendor submit directly.</span>
-                  </div>
-                )
-              })()}
-
               <div className={styles.sumActions}>
                 {cartLines > 0 && (
                   <button className={styles.exportBtn} onClick={exportCSV}>
@@ -1451,20 +1408,11 @@ export default function OrderHub() {
                   onClick={submitOrders} 
                   disabled={submitting || submitted || cartLines === 0}
                 >
-                  {submitted 
-                    ? '✓ Submitted' 
-                    : submitting 
-                      ? 'Submitting...' 
-                      : (() => {
-                          // Dynamic label based on approval requirements
-                          let needsApproval = false
-                          for (const items of Object.values(cartByVendor)) {
-                            const subtotal = items.reduce((s, i) => s + i.qty * i.unitCost, 0)
-                            if (subtotal > APPROVAL_THRESHOLDS.AUTO_APPROVE) { needsApproval = true; break }
-                          }
-                          if (needsApproval) return 'Request Approval'
-                          return vendorCount > 1 ? `Submit ${vendorCount} Orders` : 'Submit Order'
-                        })()
+                  {submitted
+                    ? '✓ Submitted'
+                    : submitting
+                      ? 'Submitting...'
+                      : vendorCount > 1 ? `Submit ${vendorCount} Orders` : 'Submit Order'
                   }
                 </button>
               </div>

@@ -131,8 +131,10 @@ const DEFAULT_SCHEMA = [
                     + (p.rev_delivery_cogs||0)
                     + (p.rev_retail_barista||0) + (p.rev_retail_cafeteria||0) + (p.rev_retail_cogs_tax||0)
                     + (p.rev_client_fees||0)
-          // Fallback to old revenue_total if new sub-lines not populated yet
-          const revenue = rev !== 0 ? rev : (p.revenue_total || (p.gfs_total||0) * 0.82)
+          // Manual entry and import both populate rev_* sub-lines now, so the
+          // primary rev sum is authoritative. revenue_total kept only as a
+          // last-resort fallback for legacy docs written before this contract.
+          const revenue = rev !== 0 ? rev : (p.revenue_total || 0)
           const labor = (p.cogs_labor_salaries||0) + (p.cogs_labor_401k||0) + (p.cogs_labor_benefits||0)
                       + (p.cogs_labor_taxes||0) + (p.cogs_labor_bonus||0)
                       + (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
@@ -182,7 +184,7 @@ const DEFAULT_SCHEMA = [
                     + (p.rev_delivery_cogs||0)
                     + (p.rev_retail_barista||0) + (p.rev_retail_cafeteria||0) + (p.rev_retail_cogs_tax||0)
                     + (p.rev_client_fees||0)
-          const revenue = rev !== 0 ? rev : (p.revenue_total || (p.gfs_total||0) * 0.82)
+          const revenue = rev !== 0 ? rev : (p.revenue_total || 0)
           const labor = (p.cogs_labor_salaries||0) + (p.cogs_labor_401k||0) + (p.cogs_labor_benefits||0)
                       + (p.cogs_labor_taxes||0) + (p.cogs_labor_bonus||0)
                       + (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
@@ -206,7 +208,7 @@ const DEFAULT_SCHEMA = [
                     + (p.rev_delivery_cogs||0)
                     + (p.rev_retail_barista||0) + (p.rev_retail_cafeteria||0) + (p.rev_retail_cogs_tax||0)
                     + (p.rev_client_fees||0)
-          const revenue = rev !== 0 ? rev : (p.revenue_total || (p.gfs_total||0) * 0.82)
+          const revenue = rev !== 0 ? rev : (p.revenue_total || 0)
           const labor = (p.cogs_labor_salaries||0) + (p.cogs_labor_401k||0) + (p.cogs_labor_benefits||0)
                       + (p.cogs_labor_taxes||0) + (p.cogs_labor_bonus||0)
                       + (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
@@ -258,7 +260,7 @@ function formatAgo(date) {
 
 // Compute EBITDA from a raw pnl data object
 function computeEBITDA(p) {
-  const rev     = p.revenue_total || (p.gfs_total||0) * 0.82
+  const rev     = p.revenue_total || 0
   const labor   = (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
   const payproc = (p.gfs_total||0) * 0.018
   const gm      = rev - (labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + payproc)
@@ -266,7 +268,7 @@ function computeEBITDA(p) {
 }
 
 function computePrimeCost(p) {
-  const rev   = p.revenue_total || (p.gfs_total||0) * 0.82
+  const rev   = p.revenue_total || 0
   const labor = (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0) + (p.exp_comp_benefits||0)
   const cogs  = (p.cogs_inventory||0) + (p.cogs_purchases||0)
   return rev > 0 ? (labor + cogs) / rev : null
