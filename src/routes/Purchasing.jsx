@@ -57,6 +57,17 @@ const STATUS_META = {
   Void:     { color: '#6b7280', bg: '#f9fafb', border: '#e5e7eb' },
 }
 
+// GL codes that post to their OWN named line on the Dashboard P&L. Invoices
+// with these codes are already counted via that line, so they must be EXCLUDED
+// from the cogs_purchases rollup or they double-count. Any invoice whose GL is
+// NOT in this set has no dedicated line and rolls up into cogs_purchases.
+const NAMED_GL_LINES = new Set([
+  'cogs_cleaning', 'cogs_equipment', 'cogs_ec_barista', 'cogs_paper',
+  'cogs_supplies', 'cogs_uniforms', 'cogs_maintenance', 'cogs_shrinkage',
+  'cogs_payment_processing', 'cogs_retail_barista', 'cogs_retail_cafeteria',
+  'cogs_retail_managed', 'cogs_onsite_labor', 'cogs_3rd_party',
+])
+
 // Approval thresholds — amounts above these require director approval
 const APPROVAL_THRESHOLD = 500
 
@@ -212,9 +223,11 @@ export default function Purchasing() {
       if (vSnap.exists() && vSnap.data().list?.length) setVendors(vSnap.data().list)
 
       // Load invoices — scoped to location if selected
-      let q = query(collection(db, 'tenants', orgId, 'invoices'), orderBy('invoiceDate', 'desc'))
-      const snap = await getDocs(q)
+      // No orderBy (client-side sort per data rules) — avoids a composite index
+      // requirement and silent query failure.
+      const snap = await getDocs(collection(db, 'tenants', orgId, 'invoices'))
       let all = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+      all.sort((a, b) => (b.invoiceDate || '').localeCompare(a.invoiceDate || ''))
       if (location) all = all.filter(i => i.location === location)
       setInvoices(all)
 
@@ -349,7 +362,11 @@ export default function Purchasing() {
       .filter(i => i.periodKey === targetPeriod && i.status !== 'Void')
       .map(i => i.id === id ? { ...i, status: 'Paid', amountPaid: inv.amount } : i)
 
-    const invoiceTotal = periodInvoices.reduce((s, i) => s + (i.amount || 0), 0)
+    // cogs_purchases is the ROLLUP for invoices with NO dedicated GL line.
+    // Invoices whose glCode is a named Dashboard line are already counted there
+    // (posted on create), so exclude them here to prevent double-counting.
+    const rollupInvoices = periodInvoices.filter(i => !NAMED_GL_LINES.has(i.glCode))
+    const invoiceTotal = rollupInvoices.reduce((s, i) => s + (i.amount || 0), 0)
     const paidTotal    = periodInvoices.filter(i => i.status === 'Paid').reduce((s, i) => s + (i.amount || 0), 0)
     const pendingTotal = periodInvoices.filter(i => i.status === 'Pending' || i.status === 'Approved').reduce((s, i) => s + (i.amount || 0), 0)
 
@@ -431,7 +448,6 @@ export default function Purchasing() {
         } catch (parseErr) {
           console.error('[PDF PARSE] JSON parse failed:', parseErr.message, 'raw:', cleaned.slice(0, 200))
           toast.error('Could not parse invoice — try a clearer PDF')
-          try { e.target.value = '' } catch {}
           return
         }
 
@@ -497,7 +513,6 @@ export default function Purchasing() {
         }
         const glLabel = aiGlCode ? aiGlCode.replace('cogs_', '').replace('exp_', '').replace(/_/g, ' ') : 'unclassified'
         toast.success('Invoice parsed: ' + (parsed.vendor || 'Unknown') + ' — $' + (parsed.total || 0).toLocaleString() + (needsGlReview ? ' (needs GL review)' : ' → ' + glLabel) + (aiGlCode ? ' — posted to P&L' : ''))
-        try { e.target.value = '' } catch {}
         return
       }
 
@@ -507,6 +522,7 @@ export default function Purchasing() {
       const ws   = wb.Sheets[wb.SheetNames[0]]
       const rows = XLSX.utils.sheet_to_json(ws, { raw: false })
       let imported = 0
+      const importedGlTotals = {}
       for (const row of rows) {
         const amount = parseFloat(row['Amount'] || row['amount'] || row['Total'] || 0)
         if (!amount) continue
@@ -537,15 +553,17 @@ export default function Purchasing() {
         }
         const ref = await addDoc(collection(db, 'tenants', orgId, 'invoices'), entry)
         setInvoices(prev => [{ id: ref.id, ...entry }, ...prev])
+        if (entry.glCode && entry.amount) {
+          importedGlTotals[entry.glCode] = (importedGlTotals[entry.glCode] || 0) + entry.amount
+        }
         imported++
       }
-      // Post all imported invoices to P&L
-      const glTotals = {}
-      invoices.filter(i => i.glCode && i.amount).forEach(i => {
-        glTotals[i.glCode] = (glTotals[i.glCode] || 0) + i.amount
-      })
-      if (Object.keys(glTotals).length > 0) {
-        await writePnL(location || selectedLocation, periodKey, glTotals)
+      // Post ONLY the invoices imported in THIS run to P&L. Reading from the
+      // `invoices` state here would re-post pre-existing invoices (stale +
+      // already posted), inflating the GL lines. We accumulate from the rows
+      // actually imported in this loop instead.
+      if (Object.keys(importedGlTotals).length > 0) {
+        await writePnL(location || selectedLocation, periodKey, importedGlTotals)
       }
       toast.success("Imported " + imported + " invoices — posted to P&L")
     } catch { toast.error('Import failed — check file format') }
