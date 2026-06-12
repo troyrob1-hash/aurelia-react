@@ -1241,7 +1241,7 @@ export default function Inventory() {
                     {!isMobile && <th className={styles.thCenter}>Qty/pk</th>}
                     {!isMobile && <th className={styles.thRight}>Pack $</th>}
                     {!isMobile && <th className={styles.thCenter}>Prior</th>}
-                    <th className={styles.thCenter} style={{ width: isMobile ? 100 : 130 }}>Count</th>
+                    <th className={styles.thCenter} style={{ width: isMobile ? 100 : 130 }}>Count<div style={{ fontSize: 9, fontWeight: 400, color: '#94a3b8', textTransform: 'none', letterSpacing: 0 }}>cases · .5 ok</div></th>
                     {!isMobile && <th className={styles.thCenter}>Variance</th>}
                     {!isMobile && <th className={styles.thRight}>Value</th>}
                   </tr>
@@ -1352,7 +1352,7 @@ export default function Inventory() {
                               onDoubleClick={() => !blindMode && copyPrior(item.id)}
                               className={`${styles.countInput} ${isCounted ? styles['counted_' + (item._varClass || 'neutral')] : ''}`}
                               placeholder={blindMode ? '0' : (item._priorQty || 0) > 0 ? String(item._priorQty) : '0'}
-                              title="Double-click to copy prior count"
+                              title="Cases — decimals OK (.5 = half a case). Double-click to copy prior count."
                             />
                             <button className={styles.adjBtn} onClick={() => { const st = window.scrollY; adjust(item.id, 1); requestAnimationFrame(() => window.scrollTo(0, st)) }}>+</button>
                           </div>
