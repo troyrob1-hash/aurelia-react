@@ -446,8 +446,26 @@ export default function Inventory() {
     buddyNames,
     setBuddyNames,
     markSectionComplete,
-    save
+    save,
+    saveCounts
   } = useInventory(orgId, location, periodKey, user)
+
+  // Debounced autosave: counts persist ~2s after the last change so users
+  // never scroll to a Save button. Writes counts doc + live PnL only; does
+  // NOT close the period. 'Save & Close Period' stays the deliberate finalize.
+  const [autoSaveStatus, setAutoSaveStatus] = useState('idle')
+  const autoSaveTimer = useRef(null)
+  useEffect(() => {
+    if (!dirty) return
+    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
+    autoSaveTimer.current = setTimeout(async () => {
+      setAutoSaveStatus('saving')
+      const ok = await saveCounts()
+      setAutoSaveStatus(ok ? 'saved' : 'idle')
+      if (ok) setTimeout(() => setAutoSaveStatus('idle'), 2000)
+    }, 2000)
+    return () => { if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current) }
+  }, [dirty, saveCounts])
 
   // ─── Handlers ──────────────────────────────────────────────────────────────
   async function seedPriorPeriod() {
@@ -1369,21 +1387,30 @@ export default function Inventory() {
           </div>
         ))}
 
-        {/* Sticky COGS Footer */}
-        {dirty && (
-          <div className={styles.cogsFooter}>
-            <div className={styles.cogsFooterLeft}>
-              <span className={styles.cogsLabel}>Live COGS</span>
-              <span className={styles.cogsValue}>{fmt$(totals.liveCOGS)}</span>
-              <span className={styles.cogsBreakdown}>
-                {fmt$(totals.openingValue)} opening + {fmt$(totals.purchases)} purchases − {fmt$(totals.closingValue)} closing
-              </span>
-            </div>
-            <button className={styles.btnSaveFooter} onClick={handleSave} disabled={saving}>
-              {saving ? 'Saving...' : 'Save & Close Period'}
-            </button>
+        {/* Floating save bar — always visible while scrolling. Shows live COGS,
+            autosave status, and the deliberate Close Period action. */}
+        <div style={{
+          position: 'fixed', bottom: 20, right: 20, zIndex: 50,
+          display: 'flex', alignItems: 'center', gap: 16,
+          background: '#0f172a', color: '#fff',
+          padding: '12px 18px', borderRadius: 12,
+          boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
+          maxWidth: 'calc(100vw - 40px)'
+        }}>
+          <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.3 }}>
+            <span style={{ fontSize: 11, opacity: 0.7, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Live COGS</span>
+            <span style={{ fontSize: 18, fontWeight: 700 }}>{fmt$(totals.liveCOGS)}</span>
           </div>
-        )}
+          <span style={{ fontSize: 12, minWidth: 92, color: autoSaveStatus === 'saving' ? '#fbbf24' : autoSaveStatus === 'saved' ? '#34d399' : '#94a3b8' }}>
+            {autoSaveStatus === 'saving' ? 'Saving…'
+              : autoSaveStatus === 'saved' ? 'All changes saved'
+              : dirty ? 'Unsaved changes' : 'All changes saved'}
+          </span>
+          <button className={styles.btnSaveFooter} onClick={handleSave} disabled={saving}
+            style={{ whiteSpace: 'nowrap' }}>
+            {saving ? 'Saving…' : 'Save & Close Period'}
+          </button>
+        </div>
 
         {/* ── Why panel — item-level explanation drawer ── */}
         {whyItem && (() => {

@@ -638,6 +638,47 @@ export function useInventory(orgId, locationId, periodKey, user) {
     }
   }, [session, orgId, locId, periodKey])
 
+  // Lightweight autosave: persist counts (qty/eaches) to the per-week counts
+  // doc and refresh the live PnL closingValue, WITHOUT marking the session
+  // completed or closing the period. Safe to call repeatedly (debounced).
+  const saveCounts = useCallback(async () => {
+    if (!locationId || !periodKey) return false
+    try {
+      const countsItems = items
+        .filter(i => i.qty != null)
+        .map(i => ({
+          id: i.id,
+          qty: i.qty,
+          eaches: i.eaches || 0,
+          countedAt: i.lastCountedAt || null,
+          countedBy: i.lastCountedBy || null,
+        }))
+      await setDoc(
+        doc(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey),
+        { items: countsItems, period: periodKey, updatedAt: serverTimestamp(), updatedBy: user?.email || 'unknown' },
+        { merge: false }
+      )
+      const closingValue = items.reduce((sum, item) => {
+        const pp = item.packPrice || ((item.qtyPerPack || 1) * (item.unitCost || 0))
+        const packVal = (item.qty || 0) * pp
+        const eachPrice = (item.qtyPerPack || 1) > 0 ? pp / (item.qtyPerPack || 1) : (item.unitCost || 0)
+        const eachVal = (item.eaches || 0) * eachPrice
+        return sum + packVal + eachVal
+      }, 0)
+      const cogs = Math.max(0, openingValue + purchases - closingValue)
+      await setDoc(
+        doc(db, 'tenants', orgId, 'pnl', locId, 'periods', periodKey),
+        { closingValue, openingValue, cogs_inventory: cogs, inventoryCountedAt: serverTimestamp(), inventoryCountedBy: user?.email },
+        { merge: true }
+      )
+      setDirty(false)
+      return true
+    } catch (err) {
+      console.error('Autosave (counts) failed:', err)
+      return false
+    }
+  }, [items, locationId, locId, periodKey, orgId, openingValue, purchases, user])
+
   const save = useCallback(async () => {
     if (!locationId || !periodKey) return false
 
@@ -876,7 +917,8 @@ export function useInventory(orgId, locationId, periodKey, user) {
     buddyNames,
     setBuddyNames,
     markSectionComplete,
-    save
+    save,
+    saveCounts
   }
 }
 
