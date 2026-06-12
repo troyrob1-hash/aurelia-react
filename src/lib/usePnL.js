@@ -15,13 +15,30 @@ import { useLocations } from '@/store/LocationContext'
 // Keys that are numeric and get summed in aggregation.
 // Keep this list in sync with what the P&L schema actually reads.
 const NUMERIC_KEYS = [
+  // Revenue / GFS
   'gfs_retail', 'gfs_catering', 'gfs_popup', 'gfs_total',
   'revenue_commission', 'revenue_total',
-  'cogs_onsite_labor', 'cogs_3rd_party', 'cogs_inventory',
-  'cogs_purchases', 'cogs_waste', 'exp_comp_benefits',
-  'budget_gfs', 'budget_revenue', 'budget_cogs', 'budget_labor', 'budget_ebitda',
-  'inv_closing', 'inv_opening', 'inv_purchases',
-  'ap_paid', 'ap_pending', 'labor_total', 'waste_oz',
+  // Revenue sub-lines (manual + import both populate these now)
+  'rev_popup_cogs', 'rev_popup_food_sales', 'rev_popup_tax', 'rev_popup_pp_fee',
+  'rev_catering_cogs', 'rev_catering_revenue', 'rev_catering_pp_fee',
+  'rev_retail_barista', 'rev_retail_cafeteria', 'rev_retail_cogs_tax', 'rev_client_fees',
+  // Labor
+  'cogs_onsite_labor', 'cogs_3rd_party', 'exp_comp_benefits', 'labor_total',
+  'cogs_labor_salaries', 'cogs_labor_401k', 'cogs_labor_benefits', 'cogs_labor_taxes', 'cogs_labor_bonus',
+  // COGS — inventory + purchasing rollup + categorized GL lines
+  'cogs_inventory', 'cogs_purchases', 'cogs_waste', 'closingValue', 'openingValue',
+  'cogs_cleaning', 'cogs_equipment', 'cogs_ec_barista', 'cogs_paper',
+  'cogs_supplies', 'cogs_uniforms', 'cogs_maintenance', 'cogs_shrinkage',
+  'cogs_payment_processing',
+  'cogs_retail_barista', 'cogs_retail_cafeteria', 'cogs_retail_managed',
+  // Expenses
+  'exp_office_supplies', 'exp_mktg_cashier', 'exp_mktg_coupons', 'exp_mktg_marketing',
+  'exp_mktg_other', 'exp_technology', 'exp_travel', 'exp_professional',
+  'exp_facilities', 'exp_licenses', 'exp_other',
+  // Budget lines
+  'budget_gfs', 'budget_revenue', 'budget_cogs', 'budget_labor', 'budget_ebitda', 'budget_expenses',
+  // AP / misc
+  'ap_paid', 'ap_pending', 'waste_oz',
 ]
 
 // Single-location subscription hook.
