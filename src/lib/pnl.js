@@ -9,8 +9,14 @@ import { doc, setDoc, getDoc, onSnapshot, serverTimestamp, collection, query, wh
 
 import { auth } from './firebase'
 
+// Default commission rate. Interim: single constant (was hardcoded 0.18 in
+// multiple files). Future: read per-location commissionRate from the location
+// doc, falling back to this. Change here once to update everywhere.
+export const DEFAULT_COMMISSION_RATE = 0.18
+
 function _getOrgId() {
   const user = auth.currentUser
+  if (!user) console.warn('_getOrgId: no authenticated user; defaulting to fooda tenant')
   return user?.tenantId || 'fooda'
 }
 
@@ -20,6 +26,8 @@ export function locId(name) {
 
 // periodKey is now passed in from PeriodContext (e.g. '2026-P01-W2')
 // These helpers kept for backward compat but PeriodContext is the source of truth
+// DEPRECATED: returns an approximate W1 key and is wrong for any other week.
+// OrderHub still calls this — must be migrated to PeriodContext periodKey.
 export function weekPeriod(offset = 0) {
   const d = new Date()
   d.setDate(d.getDate() + offset * 7)
@@ -91,7 +99,7 @@ export function getTrailingPeriodKeys(currentKey, count = 12) {
 export async function writePnL(location, period, data, options = {}) {
   // Check if period is locked (unless force override)
   if (!options.force) {
-    const lockRef = doc(db, 'tenants', _getOrgId(), 'periodLocks', period)
+    const lockRef = doc(db, 'tenants', _getOrgId(), 'periodLocks', locId(location) + '__' + period)
     const lockSnap = await getDoc(lockRef)
     if (lockSnap.exists() && lockSnap.data().locked) {
       throw new Error('Period ' + period + ' is locked. Unlock it in Settings to make changes.')
@@ -189,19 +197,48 @@ export async function writeSalesPnL(location, period, salesData) {
     }
     await writePnL(location, period, filtered)
   } else {
-    // Legacy manual entry — { retail, catering, popup }
-    // Only write non-zero values to avoid overwriting data from other uploads
+    // Manual / paste entry — { retail, catering, popup } gross figures.
+    // Manual entry has only a gross-per-stream number; it lacks the line-item
+    // detail (food net, tax, pp fee, commission) the event import has. To make
+    // manual entry flow through Dashboard's PRIMARY revenue path (which reads
+    // rev_* sub-lines) rather than a fragile fallback, we populate the SAME
+    // rev_* fields the import writes, using the import's per-stream model:
+    //
+    //   popup/catering: Fooda books the COMMISSION as revenue. The import
+    //     represents this as rev_*_cogs = -(gfs - commission) offset by a
+    //     positive food/revenue line. We mirror that net: cogs contra +
+    //     food/revenue line nets to gfs * rate (the commission).
+    //   retail: managed service — books GROSS (matches import:
+    //     rev_retail_cafeteria += gfs), less the 7.7% tax line the import applies.
+    //
+    // Only non-zero streams are written, so a paste of one stream never
+    // overwrites another stream's data in the same period doc.
     const { retail = 0, catering = 0, popup = 0 } = salesData
+    const rate = DEFAULT_COMMISSION_RATE
     const pnlData = {}
-    if (retail > 0) pnlData.gfs_retail = retail
-    if (catering > 0) pnlData.gfs_catering = catering
-    if (popup > 0) pnlData.gfs_popup = popup
+
+    if (popup > 0) {
+      pnlData.gfs_popup = popup
+      // net contribution = popup * rate (the commission Fooda keeps)
+      pnlData.rev_popup_cogs = -(popup - popup * rate)   // = -popup*(1-rate)
+      pnlData.rev_popup_food_sales = popup               // nets with cogs to popup*rate
+      // tax / pp_fee unknown for manual entry -> left unset (0)
+    }
+    if (catering > 0) {
+      pnlData.gfs_catering = catering
+      pnlData.rev_catering_cogs = -(catering - catering * rate)
+      pnlData.rev_catering_revenue = catering            // nets to catering*rate
+    }
+    if (retail > 0) {
+      pnlData.gfs_retail = retail
+      // retail books gross (managed service), less 7.7% tax line per import
+      pnlData.rev_retail_cafeteria = retail
+      pnlData.rev_retail_cogs_tax = -Math.abs(retail * 0.077)
+    }
+
     const gfs = (pnlData.gfs_retail || 0) + (pnlData.gfs_catering || 0) + (pnlData.gfs_popup || 0)
     if (gfs > 0) {
       pnlData.gfs_total = gfs
-      pnlData.revenue_commission = gfs * 0.18
-      pnlData.revenue_total = gfs - pnlData.revenue_commission
-      pnlData.revenue_pct_gfs = pnlData.revenue_total / gfs
     }
     if (Object.keys(pnlData).length > 0) {
       await writePnL(location, period, pnlData)
@@ -226,18 +263,25 @@ export async function writeLaborPnL(location, period, { onsiteLabor, thirdParty,
     cogs_onsite_labor: onsiteLabor,
     cogs_3rd_party:    thirdParty,
     exp_comp_benefits: compBenefits,
-    labor_total:       onsiteLabor + thirdParty + compBenefits,
+    labor_total:       (onsiteLabor || 0) + (thirdParty || 0) + (compBenefits || 0),
     labor_gl_rows:     glRows || [],
   })
 }
 
 // Purchasing AP → COGS purchases
 export async function writePurchasingPnL(location, period, { invoiceTotal, paidTotal, pendingTotal }) {
-  await writePnL(location, period, {
-    cogs_purchases:    invoiceTotal,
-    ap_paid:           paidTotal,
-    ap_pending:        pendingTotal,
-  })
+  // Only write fields that are provided and meaningful. Because writes merge,
+  // passing 0/undefined for a field would otherwise STOMP an existing value
+  // (e.g. OrderHub writes only ap_pending and must not zero out cogs_purchases
+  // that the Purchasing tab wrote). Purchasing passes a real invoiceTotal to
+  // set cogs_purchases; OrderHub passes only pendingTotal.
+  const data = {}
+  if (invoiceTotal !== undefined && invoiceTotal !== null) data.cogs_purchases = invoiceTotal
+  if (paidTotal    !== undefined && paidTotal    !== null) data.ap_paid        = paidTotal
+  if (pendingTotal !== undefined && pendingTotal !== null) data.ap_pending     = pendingTotal
+  if (Object.keys(data).length > 0) {
+    await writePnL(location, period, data)
+  }
 }
 
 // Waste → COGS shrinkage
@@ -297,7 +341,7 @@ export async function readPeriodClose(location, period) {
 // Period locking
 export async function lockPeriod(location, period, user) {
   const orgId = _getOrgId()
-  const ref = doc(db, 'tenants', orgId, 'periodLocks', period)
+  const ref = doc(db, 'tenants', orgId, 'periodLocks', locId(location) + '__' + period)
   await setDoc(ref, {
     locked: true,
     lockedBy: user?.email || 'unknown',
@@ -306,9 +350,9 @@ export async function lockPeriod(location, period, user) {
   })
 }
 
-export async function unlockPeriod(period, user) {
+export async function unlockPeriod(location, period, user) {
   const orgId = _getOrgId()
-  const ref = doc(db, 'tenants', orgId, 'periodLocks', period)
+  const ref = doc(db, 'tenants', orgId, 'periodLocks', locId(location) + '__' + period)
   await setDoc(ref, {
     locked: false,
     unlockedBy: user?.email || 'unknown',
@@ -316,9 +360,9 @@ export async function unlockPeriod(period, user) {
   }, { merge: true })
 }
 
-export async function isPeriodLocked(period) {
+export async function isPeriodLocked(location, period) {
   const orgId = _getOrgId()
-  const ref = doc(db, 'tenants', orgId, 'periodLocks', period)
+  const ref = doc(db, 'tenants', orgId, 'periodLocks', locId(location) + '__' + period)
   const snap = await getDoc(ref)
   return snap.exists() && snap.data().locked === true
 }

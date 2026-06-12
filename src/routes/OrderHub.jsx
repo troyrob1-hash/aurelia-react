@@ -10,7 +10,8 @@ import ReceivingModal from './components/ReceivingModal'
 import { Search, Download, X, Clock, LayoutGrid, List, TrendingUp, Package, CheckCircle, AlertTriangle, Truck, RefreshCw, Upload } from 'lucide-react'
 import { db, auth } from '@/lib/firebase'
 import { collection, addDoc, getDocs, query, orderBy, limit, serverTimestamp, doc, getDoc, where, writeBatch, setDoc, onSnapshot } from 'firebase/firestore'
-import { writePurchasingPnL, weekPeriod } from '@/lib/pnl'
+import { writePurchasingPnL } from '@/lib/pnl'
+import { usePeriod } from '@/store/PeriodContext'
 import { useAuthStore } from '@/store/authStore'
 import { submitToVendor } from '@/services/vendors'
 import AllLocationsGrid from '@/components/AllLocationsGrid'
@@ -82,6 +83,7 @@ const TOTAL_SPEND_PCT = SPEND_CATEGORIES.reduce((s, c) => s + c.pctGFS, 0) // 4.
 export default function OrderHub() {
   const { selectedLocation, setSelectedLocation , isParentLocation , getParentName } = useLocations()
   const toast = useToast()
+  const { periodKey } = usePeriod()
   const { user } = useAuthStore()
   
   // FIXED: Derive orgId from user consistently
@@ -195,8 +197,7 @@ export default function OrderHub() {
     const loadBudget = async () => {
       try {
         // Read GFS from all 4 weeks of the current period and sum
-        const period = weekPeriod()
-        const basePeriod = period.replace(/-W\d+$/, '')
+        const basePeriod = (periodKey || '').replace(/-W\d+$/, '')
         let combinedData = {}
         for (let w = 1; w <= 4; w++) {
           const wk = `${basePeriod}-W${w}`
@@ -631,11 +632,14 @@ export default function OrderHub() {
         }
       }
 
-      // Write to P&L
+      // Order placement records COMMITTED/PENDING spend only — NOT cogs_purchases.
+      // Cost (cogs_purchases) is booked when the invoice is processed in the
+      // Purchasing tab, which is the single source of truth for that line.
+      // Writing it here too would double-count (OrderHub also auto-creates an
+      // invoice that Purchasing later sums). We write ap_pending for the budget
+      // burndown, and leave invoiceTotal/cogs_purchases to Purchasing.
       if (location) {
-        await writePurchasingPnL(location, weekPeriod(), {
-          invoiceTotal: +cartTotal.toFixed(2),
-          paidTotal: 0,
+        await writePurchasingPnL(location, periodKey, {
           pendingTotal: +cartTotal.toFixed(2),
         })
       }
