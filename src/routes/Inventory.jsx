@@ -1578,7 +1578,7 @@ export default function Inventory() {
                               const { doc: fbDoc, updateDoc } = await import('firebase/firestore')
                               const locKey = sanitizeDocId(location)
                               await updateDoc(fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', item.id), { category: catLabel })
-                              load()
+                              // Do NOT call load() — it would wipe unsaved counts. Category is persisted.
                               toast.success('Category updated')
                             }}
                             style={{ width: 180, padding: '5px 8px', fontSize: 13, borderRadius: 6, border: '0.5px solid #e2e8f0' }}
@@ -1597,7 +1597,9 @@ export default function Inventory() {
                                 const { doc: fbDoc, updateDoc } = await import('firebase/firestore')
                                 const locKey = sanitizeDocId(location)
                                 await updateDoc(fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', item.id), { [f.field]: val })
-                                load()
+                                // Field already persisted to Firestore. Do NOT call load() here —
+                                // load() rebuilds items blank and would wipe unsaved in-progress
+                                // counts. The field value is saved; the UI updates on next natural reload.
                                 toast.success(f.label + ' updated')
                               }}
                               style={{ width: f.type === 'number' ? 100 : 160, padding: '5px 8px', fontSize: 13, borderRadius: 6, border: '0.5px solid #e2e8f0' }}

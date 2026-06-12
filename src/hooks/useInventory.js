@@ -137,7 +137,7 @@ export function useInventory(orgId, locationId, periodKey, user) {
       let inventoryItems
       if (locationHasOwnCatalog) {
         inventoryItems = locationItemsSnap.docs
-          .filter(d => !d.data().removed)
+          .filter(d => !d.data().removed && !d.data().custom)
           .map(d => {
             const item = d.data()
             return {
@@ -153,7 +153,7 @@ export function useInventory(orgId, locationId, periodKey, user) {
               itemType: item.itemType,
               qty: item.qty ?? null,
               eaches: item.eaches ?? 0,
-              eaches: item.eaches ?? 0,
+              qtyPerPack: item.qtyPerPack,
               parLevel: item.parLevel,
               reorderPoint: item.reorderPoint,
               avgDailyUsage: item.avgDailyUsage,
@@ -206,6 +206,8 @@ export function useInventory(orgId, locationId, periodKey, user) {
             name: data.name || 'Untitled item',
             unitCost: data.unitCost || 0,
             packSize: data.packSize || null,
+            qtyPerPack: data.qtyPerPack || 1,
+            packPrice: data.packPrice || (data.unitCost || 0),
             vendor: data.vendor || null,
             qty: data.qty ?? null,
             parLevel: data.parLevel || null,
@@ -435,8 +437,9 @@ export function useInventory(orgId, locationId, periodKey, user) {
     const priorItem = priorItems.find(p => p.id === itemId)
     if (priorItem?.qty != null) {
       setQty(itemId, priorItem.qty)
+      if (priorItem.eaches != null) setEaches(itemId, priorItem.eaches)
     }
-  }, [priorItems, setQty])
+  }, [priorItems, setQty, setEaches])
 
   // Toggle whether an item is marked as "key" — surfaces in Quick count mode.
   // Persists immediately so the flag survives a reload even if the user
@@ -496,6 +499,19 @@ export function useInventory(orgId, locationId, periodKey, user) {
   // Restore a previously removed item.
   const restoreItem = useCallback(async (itemId) => {
     try {
+      // Persist in-progress counts before the reload below, so restoring an
+      // item mid-count never wipes unsaved counts.
+      const countsItems = items
+        .filter(i => i.qty != null)
+        .map(i => ({ id: i.id, qty: i.qty, eaches: i.eaches || 0,
+          countedAt: i.lastCountedAt || null, countedBy: i.lastCountedBy || null }))
+      if (countsItems.length) {
+        await setDoc(
+          doc(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey),
+          { items: countsItems, period: periodKey, updatedAt: serverTimestamp(), updatedBy: user?.email || 'unknown' },
+          { merge: false }
+        )
+      }
       await setDoc(
         doc(db, 'tenants', orgId, 'inventory', locId, 'items', itemId),
         {
@@ -505,12 +521,11 @@ export function useInventory(orgId, locationId, periodKey, user) {
         },
         { merge: true }
       )
-      // Reload to pick up the restored item from master + overrides
       await load()
     } catch (e) {
       console.error('Failed to restore item:', e)
     }
-  }, [orgId, locId, user, load])
+  }, [items, orgId, locId, periodKey, user, load])
 
   // Add a custom item that exists only at this location.
   const addCustomItem = useCallback(async (data) => {
@@ -520,6 +535,8 @@ export function useInventory(orgId, locationId, periodKey, user) {
       name:     data.name,
       unitCost: parseFloat(data.unitCost) || 0,
       packSize: data.packSize || null,
+      qtyPerPack: parseFloat(data.qtyPerPack) || 1,
+      packPrice: parseFloat(data.packPrice) || (parseFloat(data.unitCost) || 0),
       vendor:   data.vendor || null,
       custom:   true,
       removed:  false,
@@ -531,17 +548,47 @@ export function useInventory(orgId, locationId, periodKey, user) {
         doc(db, 'tenants', orgId, 'inventory', locId, 'items', customId),
         newItem
       )
-      // Optimistic local insert
+      // Persist any in-progress counts to the per-week counts doc BEFORE the
+      // optimistic insert, so adding an item can never discard unsaved counts
+      // (a reload would otherwise rebuild items blank and wipe them).
+      try {
+        const countsItems = items
+          .filter(i => i.qty != null)
+          .map(i => ({
+            id: i.id,
+            qty: i.qty,
+            eaches: i.eaches || 0,
+            countedAt: i.lastCountedAt || null,
+            countedBy: i.lastCountedBy || null,
+          }))
+        if (countsItems.length) {
+          await setDoc(
+            doc(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey),
+            {
+              items:     countsItems,
+              period:    periodKey,
+              updatedAt: serverTimestamp(),
+              updatedBy: user?.email || 'unknown',
+            },
+            { merge: false }
+          )
+        }
+      } catch (persistErr) {
+        console.error('Failed to persist counts before adding item:', persistErr)
+      }
+
+      // Optimistic local insert (preserves all current in-progress counts)
       setItems(prev => [...prev, {
         id: customId,
         ...newItem,
         qty: null,
+        eaches: 0,
         isKey: false,
       }])
     } catch (e) {
       console.error('Failed to add custom item:', e)
     }
-  }, [orgId, locId, user])
+  }, [orgId, locId, periodKey, items, user])
 
   // List of removed items for the manage drawer. We need to query the
   // override collection separately because removed items are filtered out
@@ -601,16 +648,19 @@ export function useInventory(orgId, locationId, periodKey, user) {
       // Item DEFINITION fields only (par/reorder/usage) go to the shared items
       // docs. COUNTS (qty/eaches) are NOT written here — they go to the
       // per-week counts doc below, so they stay period-scoped.
+      // Write definition fields (par/reorder/usage) for every item that has
+      // any of them set — NOT just counted items — so par levels on uncounted
+      // items are never silently dropped.
       const batch = []
       for (const item of items) {
-        if (item.qty != null) {
+        if (item.parLevel != null || item.reorderPoint != null || item.avgDailyUsage != null) {
           batch.push(
             setDoc(
               doc(db, 'tenants', orgId, 'inventory', locId, 'items', item.id),
               {
-                parLevel: item.parLevel || null,
-                reorderPoint: item.reorderPoint || null,
-                avgDailyUsage: item.avgDailyUsage || null,
+                parLevel: item.parLevel ?? null,
+                reorderPoint: item.reorderPoint ?? null,
+                avgDailyUsage: item.avgDailyUsage ?? null,
                 updatedAt: serverTimestamp(),
                 updatedBy: user?.email
               },
@@ -675,6 +725,9 @@ export function useInventory(orgId, locationId, periodKey, user) {
           id: i.id,
           name: i.name,
           qty: i.qty,
+          eaches: i.eaches || 0,
+          qtyPerPack: i.qtyPerPack || 1,
+          packPrice: i.packPrice || null,
           unitCost: i.unitCost || 0,
           category: i._cat || null,
           vendor: i.vendor || null,
