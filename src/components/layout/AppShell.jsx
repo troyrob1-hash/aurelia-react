@@ -4,7 +4,7 @@ import { useAuthStore } from '@/store/authStore'
 import { changePassword } from '@/lib/auth'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { usePeriod, getWeekLabel } from '@/store/PeriodContext'
-import { readPeriodClose, writePeriodClose } from '@/lib/pnl'
+import { readPeriodClose, writePeriodClose, lockPeriod, unlockPeriod } from '@/lib/pnl'
 import {
   LayoutDashboard, ShoppingCart, Package, TrendingUp,
   Trash2, FileText, PieChart, ArrowLeftRight,
@@ -106,6 +106,7 @@ export default function AppShell() {
     try {
       const actor = user?.name || user?.email || 'unknown'
       await writePeriodClose(selectedLocation, periodKey, { status: 'closed', actor })
+      await lockPeriod(selectedLocation, periodKey, user)
       setPeriodClosed(true)
       setClosedBy(actor)
     } catch (err) {
@@ -120,6 +121,34 @@ export default function AppShell() {
     try {
       const actor = user?.name || user?.email || 'unknown'
       await writePeriodClose(selectedLocation, periodKey, { status: 'reopened', actor, reason: reason.trim() })
+      await unlockPeriod(selectedLocation, periodKey, user)
+
+      // Also clear the per-tab approval locks (sales + labor submissions).
+      // An 'approved' submission locks its tab independently of periodStatus;
+      // reopening the period must release those too, or the tab stays locked.
+      // No orderBy (client-side only) per data rules.
+      try {
+        const { collection, query, where, getDocs, updateDoc, doc: fbDoc, serverTimestamp } = await import('firebase/firestore')
+        for (const coll of ['salesSubmissions', 'laborSubmissions']) {
+          const qy = query(
+            collection(db, 'tenants', orgId, coll),
+            where('period', '==', periodKey),
+            where('location', '==', selectedLocation),
+            where('status', '==', 'approved')
+          )
+          const snap = await getDocs(qy)
+          for (const d of snap.docs) {
+            await updateDoc(fbDoc(db, 'tenants', orgId, coll, d.id), {
+              status: 'reopened',
+              reopenedBy: actor,
+              reopenedAt: serverTimestamp(),
+            })
+          }
+        }
+      } catch (e) {
+        console.error('Failed to clear approval locks on reopen:', e)
+      }
+
       setPeriodClosed(false)
       setClosedBy(null)
     } catch (err) {

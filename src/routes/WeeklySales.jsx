@@ -89,6 +89,8 @@ export default function WeeklySales() {
   const [loading,      setLoading]      = useState(false)
   const [saving,       setSaving]       = useState(false)
   const [dirty,        setDirty]        = useState(false)
+  const [autoSaveStatus, setAutoSaveStatus] = useState('idle') // idle | saving | saved
+  const autoSaveTimer = useRef(null)
   const [approvalStatus, setApproval]   = useState(null)
 
   const [periodClosed, setPeriodClosed] = useState(false)
@@ -295,6 +297,22 @@ export default function WeeklySales() {
   // if the ID doesn't match by the time an await resolves, bail silently.
   const loadRequestId = useRef(0)
 
+  // Debounced autosave: 2s after the last edit, save the draft (sales doc +
+  // P&L) without submitting for approval or closing the week. Same pattern as
+  // inventory. Skips when the week is approved/locked.
+  useEffect(() => {
+    if (!dirty) return
+    if (approvalStatus === 'approved' || periodClosed) return
+    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
+    autoSaveTimer.current = setTimeout(async () => {
+      setAutoSaveStatus('saving')
+      const ok = await handleSaveDraft()
+      setAutoSaveStatus(ok ? 'saved' : 'idle')
+      if (ok) setTimeout(() => setAutoSaveStatus('idle'), 2000)
+    }, 2000)
+    return () => { if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current) }
+  }, [dirty, approvalStatus, periodClosed])
+
   // Dismiss hover context card when the user scrolls — the card is
   // position: fixed and would otherwise strand at the wrong screen position
   // while the underlying cell scrolls out from under it.
@@ -469,19 +487,25 @@ export default function WeeklySales() {
       if (isStale()) return
       await loadHistoryChart()
 
+      // No orderBy (client-side sort per data rules). Fetch all matching
+      // submissions, then pick the most recent by createdAt locally.
       const q = query(
         collection(db, 'tenants', orgId, 'salesSubmissions'),
         where('period', '==', periodKey),
         where('location', '==', location),
-        where('status', 'in', ['pending', 'approved', 'rejected']),
-        orderBy('createdAt', 'desc'),
-        limit(1)
+        where('status', 'in', ['pending', 'approved', 'rejected'])
       )
       const subSnap = await getDocs(q)
       if (!subSnap.empty) {
-        const d = subSnap.docs[0].data()
-        setSubmissionId(subSnap.docs[0].id)
-        setApproval(d.status)
+        const docs = subSnap.docs.slice().sort((a, b) => {
+          const ta = a.data().createdAt?.toMillis?.() || 0
+          const tb = b.data().createdAt?.toMillis?.() || 0
+          return tb - ta
+        })
+        const d = docs[0].data()
+        setSubmissionId(docs[0].id)
+        // A 'reopened' submission is no longer a lock — treat as editable (null).
+        setApproval(d.status === 'reopened' ? null : d.status)
         setSubmissionEvents(d.events || [])
         setRejectNoteFromDoc(d.rejectNote || '')
       } else {
@@ -755,6 +779,38 @@ export default function WeeklySales() {
     setLoading(false)
   }
 
+  // Daily draft save: writes the sales doc and posts to P&L so numbers are
+  // visible immediately, WITHOUT creating an approval submission or closing
+  // the week. The approval/close flow stays on handleSave (Save & Close).
+  // Safe to call repeatedly (used by autosave).
+  async function handleSaveDraft() {
+    if (!location || !week) return false
+    if (approvalStatus === 'approved') return false  // locked — don't autosave over an approved week
+    try {
+      const salesRef = doc(db, 'tenants', orgId, 'locations', locId(location), 'sales', week.weekKey)
+      await setDoc(salesRef, {
+        entries,
+        weekKey:   week.weekKey,
+        location,
+        updatedAt: serverTimestamp(),
+        updatedBy: user?.name || user?.email || 'unknown',
+      }, { merge: true })
+
+      const _popup    = Object.values(entries).reduce((sum, d) => sum + (parseFloat(d?.popup)    || 0), 0)
+      const _catering = Object.values(entries).reduce((sum, d) => sum + (parseFloat(d?.catering) || 0), 0)
+      const _retail   = Object.values(entries).reduce((sum, d) => sum + (parseFloat(d?.retail)   || 0), 0)
+      await writeSalesPnL(location, periodKey, { retail: _retail, catering: _catering, popup: _popup })
+
+      setDirty(false)
+      setLastSaved(new Date().toISOString())
+      setSavedBy(user?.name || user?.email || '')
+      return true
+    } catch (e) {
+      console.error('Draft save failed:', e)
+      return false
+    }
+  }
+
   async function handleSave() {
     if (!location || !week) return
     if (approvalStatus === 'approved') {
@@ -821,9 +877,23 @@ export default function WeeklySales() {
       }
 
       await batch.commit()
+
+      // Post to P&L immediately on manager save so the numbers are visible
+      // to everyone right away. Director approval is a separate, week-level
+      // final lock — it does NOT gate P&L visibility. Posting here writes the
+      // rev_* sub-lines via writeSalesPnL's manual branch.
+      const _popup    = Object.values(entries).reduce((sum, d) => sum + (parseFloat(d?.popup)    || 0), 0)
+      const _catering = Object.values(entries).reduce((sum, d) => sum + (parseFloat(d?.catering) || 0), 0)
+      const _retail   = Object.values(entries).reduce((sum, d) => sum + (parseFloat(d?.retail)   || 0), 0)
+      try {
+        await writeSalesPnL(location, periodKey, { retail: _retail, catering: _catering, popup: _popup })
+      } catch (pnlErr) {
+        console.error('Failed to post sales to P&L on save:', pnlErr)
+      }
+
       if (!submissionId) setSubmissionId(newSubmissionId)
       setApproval('pending')
-      toast.success('Sales saved — pending director approval before posting to P&L')
+      toast.success('Sales saved and posted to P&L — pending director sign-off to close the week')
       setDirty(false)
       setLastSaved(new Date().toISOString())
       setSavedBy(user?.name || user?.email || '')
@@ -883,12 +953,55 @@ export default function WeeklySales() {
       )
 
       setApproval('approved')
-      toast.success('Sales approved — period closed')
+      toast.success('Sales approved — week signed off and locked')
     } catch (e) {
       console.error('Approval failed:', e)
       toast.error('Approval failed — ' + (e.message || 'unknown error'))
     } finally {
       setApproving(false)
+    }
+  }
+
+  async function handleReopen() {
+    if (!submissionId || !location) return
+    if (!window.confirm('Reopen ' + periodKey + ' for ' + cleanLocName(location) + '? This unlocks the period for editing.')) return
+    try {
+      const actor = user?.name || user?.email || 'unknown'
+      const { arrayUnion } = await import('firebase/firestore')
+      // Clear the approval lock on this submission
+      await updateDoc(doc(db, 'tenants', orgId, 'salesSubmissions', submissionId), {
+        status: 'reopened',
+        reopenedBy: actor,
+        reopenedAt: serverTimestamp(),
+        events: arrayUnion({ action: 'reopened', actor, timestamp: new Date().toISOString() }),
+      })
+      // Clear the period-level locks too (periodStatus + periodLocks)
+      const { writePeriodClose, unlockPeriod } = await import('@/lib/pnl')
+      await writePeriodClose(location, periodKey, { status: 'reopened', actor, reason: 'Reopened from Sales' })
+      await unlockPeriod(location, periodKey, user)
+      setApproval(null)
+      toast.success('Period reopened — you can edit and resave')
+    } catch (e) {
+      console.error('Reopen failed:', e)
+      toast.error('Reopen failed — ' + (e.message || 'unknown error'))
+    }
+  }
+
+  async function handleRequestReopen() {
+    if (!submissionId) return
+    try {
+      const actor = user?.name || user?.email || 'unknown'
+      const { arrayUnion } = await import('firebase/firestore')
+      await updateDoc(doc(db, 'tenants', orgId, 'salesSubmissions', submissionId), {
+        reopenRequested: true,
+        reopenRequestedBy: actor,
+        reopenRequestedAt: serverTimestamp(),
+        events: arrayUnion({ action: 'reopen_requested', actor, timestamp: new Date().toISOString() }),
+      })
+      toast.success('Reopen request sent to your director')
+    } catch (e) {
+      console.error('Request failed:', e)
+      toast.error('Request failed — ' + (e.message || 'unknown error'))
     }
   }
 
@@ -1823,6 +1936,20 @@ export default function WeeklySales() {
                 <button className={styles.btnReject} onClick={() => setShowRejectModal(true)} disabled={approving}>Reject</button>
               </>
             )}
+            {approvalStatus === 'approved' && isDirector && (
+              <button onClick={handleReopen} style={{
+                padding: '6px 14px', fontSize: 12, fontWeight: 600,
+                background: '#d97706', color: '#fff', border: 'none',
+                borderRadius: 8, cursor: 'pointer', whiteSpace: 'nowrap',
+              }}>Reopen Period</button>
+            )}
+            {approvalStatus === 'approved' && !isDirector && (
+              <button onClick={handleRequestReopen} style={{
+                padding: '6px 14px', fontSize: 12, fontWeight: 600,
+                background: '#fff', color: '#d97706', border: '0.5px solid #d97706',
+                borderRadius: 8, cursor: 'pointer', whiteSpace: 'nowrap',
+              }}>Request Reopen</button>
+            )}
           </div>
         </div>
       )}
@@ -2710,22 +2837,36 @@ export default function WeeklySales() {
         </div>
       )}
 
-      {/* ── Submit bar ── */}
-      <div className={`${styles.submitBar} ${dirty ? styles.submitBarDirty : ''}`}>
-        <div className={styles.submitInfo}>
-          {dirty
-            ? <>Unsaved changes · <strong>{fmt$(weekTotal)}</strong> total this week</>
-            : approvalStatus === 'approved'
-              ? <>Period locked · <strong>{fmt$(weekTotal)}</strong> posted to P&L</>
-              : <><strong>{fmt$(weekTotal)}</strong> saved for this week</>
-          }
-        </div>
-        {approvalStatus !== 'approved' && (
-          <button className={styles.btnSave} onClick={handleSave} disabled={saving || !dirty}>
-            {saving ? 'Saving...' : 'Save & Close Period'}
+      {/* ── Floating save bar — autosave status + manual Save + Save & Close ── */}
+      {approvalStatus !== 'approved' && !periodClosed && (
+        <div style={{
+          position: 'fixed', bottom: 20, right: 20, zIndex: 50,
+          display: 'flex', alignItems: 'center', gap: 14,
+          background: '#0f172a', color: '#fff',
+          padding: '12px 18px', borderRadius: 12,
+          boxShadow: '0 8px 24px rgba(0,0,0,0.25)', maxWidth: 'calc(100vw - 40px)'
+        }}>
+          <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.3 }}>
+            <span style={{ fontSize: 11, opacity: 0.7, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Week total</span>
+            <span style={{ fontSize: 17, fontWeight: 700 }}>{fmt$(weekTotal)}</span>
+          </div>
+          <span style={{ fontSize: 12, minWidth: 92, color: autoSaveStatus === 'saving' ? '#fbbf24' : autoSaveStatus === 'saved' ? '#34d399' : '#94a3b8' }}>
+            {autoSaveStatus === 'saving' ? 'Saving…'
+              : autoSaveStatus === 'saved' ? 'Saved to P&L'
+              : dirty ? 'Unsaved changes' : 'All changes saved'}
+          </span>
+          <button onClick={handleSaveDraft} disabled={saving || !dirty} style={{
+            padding: '8px 14px', fontSize: 13, fontWeight: 600,
+            background: '#fff', color: '#0f172a', border: 'none',
+            borderRadius: 8, cursor: (saving || !dirty) ? 'default' : 'pointer',
+            opacity: (saving || !dirty) ? 0.5 : 1, whiteSpace: 'nowrap'
+          }}>Save</button>
+          <button className={styles.btnSave} onClick={handleSave} disabled={saving}
+            style={{ whiteSpace: 'nowrap' }}>
+            {saving ? 'Saving…' : 'Save & Close Period'}
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
           </div>
   )

@@ -43,14 +43,17 @@ export function usePeriodStatus(location, periodKey) {
             collection(db, 'tenants', orgId, 'salesSubmissions'),
             where('period', '==', periodKey),
             where('location', '==', location),
-            where('status', 'in', ['approved'])
+            where('status', 'in', ['pending', 'approved'])
           )
           const salesSnap = await getDocs(salesQ)
-          sources.push({
-            key: 'sales',
-            label: 'Weekly Sales',
-            status: salesSnap.size > 0 ? 'approved' : 'missing',
+          // A manager submission (pending or approved) means sales are posted
+          // to P&L and ready. 'approved' specifically reflects director sign-off.
+          let salesStatus = 'missing'
+          salesSnap.forEach(d => {
+            if (d.data().status === 'approved') salesStatus = 'approved'
+            else if (salesStatus !== 'approved') salesStatus = 'posted'
           })
+          sources.push({ key: 'sales', label: 'Weekly Sales', status: salesStatus })
         } catch {
           sources.push({ key: 'sales', label: 'Weekly Sales', status: 'missing' })
         }
@@ -61,14 +64,15 @@ export function usePeriodStatus(location, periodKey) {
             collection(db, 'tenants', orgId, 'laborSubmissions'),
             where('period', '==', periodKey),
             where('location', '==', location),
-            where('status', 'in', ['approved'])
+            where('status', 'in', ['pending', 'approved'])
           )
           const laborSnap = await getDocs(laborQ)
-          sources.push({
-            key: 'labor',
-            label: 'Labor',
-            status: laborSnap.size > 0 ? 'approved' : 'missing',
+          let laborStatus = 'missing'
+          laborSnap.forEach(d => {
+            if (d.data().status === 'approved') laborStatus = 'approved'
+            else if (laborStatus !== 'approved') laborStatus = 'posted'
           })
+          sources.push({ key: 'labor', label: 'Labor', status: laborStatus })
         } catch {
           sources.push({ key: 'labor', label: 'Labor', status: 'missing' })
         }

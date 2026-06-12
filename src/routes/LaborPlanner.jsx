@@ -222,7 +222,8 @@ export default function LaborPlanner() {
           setSource(d.fileName || '')
           setImportedBy(d.importedBy || '')
           setImportedAt(d.createdAt?.toDate() || null)
-          setApproval(d.status)
+          // A 'reopened' submission is no longer a lock — treat as editable.
+          setApproval(d.status === 'reopened' ? null : d.status)
           setRejectedReason(d.rejectNote || '')
         } else {
           // Clear state when switching to a period with no submission
@@ -366,7 +367,21 @@ export default function LaborPlanner() {
       setSubmissionId(submissionRef.id)
       setRejectedReason('')
 
-      toast.success(`Imported ${parsed.length} GL lines — pending director approval`)
+      // Post to P&L immediately on import so labor is visible right away.
+      // Director approval is the separate week-level sign-off; it does not
+      // gate P&L visibility.
+      if (location) {
+        try {
+          const onsiteLabor  = parsed.filter(r => r.gl?.startsWith('504') && r.gl !== '50420').reduce((sum, r) => sum + r.amount, 0)
+          const thirdParty   = parsed.find(r => r.gl === '50420')?.amount || 0
+          const compBenefits = parsed.filter(r => r.gl?.startsWith('68')).reduce((sum, r) => sum + r.amount, 0)
+          await writeLaborPnL(location, periodKey, { onsiteLabor, thirdParty, compBenefits, glRows: parsed })
+        } catch (pnlErr) {
+          console.error('Failed to post labor to P&L on import:', pnlErr)
+        }
+      }
+
+      toast.success(`Imported ${parsed.length} GL lines and posted to P&L — pending director sign-off to close the week`)
     } catch (err) {
       console.error(err)
       toast.error('Import failed. Please check the file format.')
@@ -389,7 +404,7 @@ export default function LaborPlanner() {
         await writeLaborPnL(location, periodKey, { onsiteLabor, thirdParty, compBenefits, glRows: rows })
       }
       setApproval('approved')
-      toast.success('Labor approved — period closed')
+      toast.success('Labor approved — week signed off and locked')
     } catch {
       toast.error('Approval failed — please try again')
     }
