@@ -494,15 +494,29 @@ export default function AureliaChat() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
+          model: 'claude-sonnet-4-6',
           max_tokens: 1000,
           system: SYSTEM_PROMPT + '\n\nCurrent financial data:\n' + context,
           messages: apiMessages,
           tools: TOOLS,
         })
       })
+      if (!response.ok) {
+        let detail = ''
+        try { const e = await response.json(); detail = e?.error?.message || e?.error || JSON.stringify(e) }
+        catch { detail = 'HTTP ' + response.status }
+        setMessages(prev => [...prev, { role: 'assistant', text: 'The assistant hit an error: ' + detail }])
+        setLoading(false)
+        return
+      }
       const data = await response.json()
-      
+
+      if (data.error) {
+        setMessages(prev => [...prev, { role: 'assistant', text: 'The assistant hit an error: ' + (data.error.message || data.error) }])
+        setLoading(false)
+        return
+      }
+
       // Handle tool use
       let finalText = ''
       for (const block of (data.content || [])) {
@@ -514,7 +528,11 @@ export default function AureliaChat() {
         }
       }
 
-      if (finalText) setMessages(prev => [...prev, { role: 'assistant', text: finalText }])
+      if (finalText) {
+        setMessages(prev => [...prev, { role: 'assistant', text: finalText }])
+      } else {
+        setMessages(prev => [...prev, { role: 'assistant', text: 'I did not get a usable response. Try rephrasing, or check back shortly.' }])
+      }
     } catch (err) {
       setMessages(prev => [...prev, { role: 'assistant', text: 'Error: ' + (err.message || 'Failed to connect') }])
     }
@@ -575,10 +593,19 @@ export default function AureliaChat() {
           <div style={{ fontSize: 15, fontWeight: 600 }}>Aurelia AI</div>
           <div style={{ fontSize: 11, opacity: 0.7 }}>{location ? cleanLocName(location) : 'All Locations'} \u00b7 {periodKey}</div>
         </div>
-        <button onClick={() => setOpen(false)} style={{
-          background: 'none', border: 'none', color: '#fff', fontSize: 18,
-          cursor: 'pointer', padding: 4, opacity: 0.7,
-        }}>\u2715</button>
+        <button
+          onClick={() => setOpen(false)}
+          aria-label="Close chat"
+          title="Close"
+          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.18)' }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)' }}
+          style={{
+            background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.2)',
+            color: '#fff', fontSize: 18, lineHeight: 1, cursor: 'pointer',
+            width: 32, height: 32, borderRadius: 8, display: 'flex',
+            alignItems: 'center', justifyContent: 'center', opacity: 1,
+          }}
+        >\u2715</button>
       </div>
 
       <div ref={scrollRef} style={{

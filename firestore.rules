@@ -268,8 +268,12 @@ service cloud.firestore {
       allow write: if ownsTenant(orgId) && isManager();
 
       match /users/{uid} {
-        allow read:  if ownsTenant(orgId) && isManager();
-        allow write: if ownsTenant(orgId) && isManager();
+        // Admins manage all users; every user may read/update only their OWN
+        // doc (loadProfile reads roles/regions and writes lastLoginAt on login).
+        // Closes the roster-enumeration leak: managers can no longer read the
+        // full user list over the network.
+        allow read:  if ownsTenant(orgId) && (isAdmin() || uid == request.auth.uid);
+        allow write: if ownsTenant(orgId) && (isAdmin() || uid == request.auth.uid);
       }
 
       match /userLocations/{joinId} {

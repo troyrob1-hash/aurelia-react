@@ -357,6 +357,7 @@ export default function Inventory() {
   }
 
   const [search, setSearch] = useState('')
+  const [sortAlpha, setSortAlpha] = useState(false)  // A-Z sort within categories
   const [activeCat, setActiveCat] = useState('all')
   const [collapsed, setCollapsed] = useState({})
   const [blindMode, setBlindMode] = useState(false)
@@ -768,11 +769,19 @@ export default function Inventory() {
 
   const displayGroups = useMemo(() => {
     const cats = activeCat === 'all' ? categories : categories.filter(c => c.key === activeCat)
-    return cats.map(cat => ({
-      ...cat,
-      items: displayItems.filter(i => i._cat === cat.key),
-    })).filter(g => g.items.length > 0)
-  }, [displayItems, activeCat, categories])
+    return cats.map(cat => {
+      let catItems = displayItems.filter(i => i._cat === cat.key)
+      if (sortAlpha) {
+        catItems = [...catItems].sort((a, b) =>
+          (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
+        )
+      }
+      return {
+        ...cat,
+        items: catItems,
+      }
+    }).filter(g => g.items.length > 0)
+  }, [displayItems, activeCat, categories, sortAlpha])
 
   // ─── Top Variance Alerts ───────────────────────────────────────────────────
   const topVariance = useMemo(() => getTopVarianceIssues(items, 3), [items])
@@ -1160,6 +1169,13 @@ export default function Inventory() {
               className={styles.searchInput} 
             />
           </div>
+          <button
+            className={`${styles.btnVariance} ${sortAlpha ? styles.btnVarianceActive : ''}`}
+            onClick={() => setSortAlpha(v => !v)}
+            title="Sort items A-Z within each category"
+          >
+            A–Z
+          </button>
           <button 
             className={`${styles.btnVariance} ${showVariance ? styles.btnVarianceActive : ''}`}
             onClick={() => setShowVariance(v => !v)}
