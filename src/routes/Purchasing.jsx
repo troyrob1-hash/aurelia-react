@@ -5,7 +5,7 @@ import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { useToast } from '@/components/ui/Toast'
 import AllLocationsGrid from '@/components/AllLocationsGrid'
 import { usePeriod } from '@/store/PeriodContext'
-import { readPeriodClose, writePnL, locId } from '@/lib/pnl'
+import { readPeriodClose, writePnL, locId, weeksInPeriod } from '@/lib/pnl'
 import { db, storage } from '@/lib/firebase'
 import {
   collection, query, orderBy, getDocs, addDoc, updateDoc,
@@ -979,7 +979,11 @@ export default function Purchasing() {
   const totalPaid  = invoices.filter(i => i.status === 'Paid').reduce((s, i) => s + i.amount, 0)
   const overdueAmt = aging['1-30'] + aging['31-60'] + aging['61-90'] + aging['90+']
   const periodSpend = invoices.filter(i => i.periodKey === periodKey && i.status !== 'Void').reduce((s, i) => s + i.amount, 0)
-  const budgetCOGS  = (budgetData.cogs || 0) / 4.33
+  // Weekly budget = monthly budget / ACTUAL weeks in this period (4 or 5),
+  // not a fixed 4.33 which is wrong in 5-week months.
+  const _pkMatch = (periodKey || '').match(/(\d{4})-P(\d{2})/)
+  const _numWeeks = _pkMatch ? (weeksInPeriod(parseInt(_pkMatch[1]), parseInt(_pkMatch[2])) || 4.33) : 4.33
+  const budgetCOGS  = (budgetData.cogs || 0) / _numWeeks
   const spendPct    = budgetCOGS > 0 ? periodSpend / budgetCOGS : null
 
   // Vendor spend summary
@@ -1291,7 +1295,7 @@ export default function Purchasing() {
             </div>
             {parseFloat(form.amount) >= APPROVAL_THRESHOLD && (
               <div className={styles.thresholdNote}>
-                <AlertCircle size={13} /> Invoices ≥ {fmt$(APPROVAL_THRESHOLD)} require director approval before payment.
+                <AlertCircle size={13} /> Invoices ≥ {fmt$(APPROVAL_THRESHOLD)} should have director review before payment.
               </div>
             )}
             <div className={styles.formActions}>
@@ -1549,7 +1553,7 @@ export default function Purchasing() {
                                   </button>
                                 )}
                                 {inv.status === 'Pending' && !isDirector && needsDirector && (
-                                  <span className={styles.awaitingTag}>Awaiting director</span>
+                                  <span className={styles.awaitingTag}>Director review suggested</span>
                                 )}
                                 {inv.status === 'Approved' && !inv.scheduledPaymentDate && (
                                   <button className={styles.btnPay} onClick={() => markPaid(inv.id)}>
@@ -1612,7 +1616,7 @@ export default function Purchasing() {
                                     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: 12 }}>
                                       <div style={{ width: 22, height: 22, borderRadius: '50%', background: '#fef3c7', color: '#854d0e', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 600, flexShrink: 0 }}>2</div>
                                       <div style={{ flex: 1 }}>
-                                        <div style={{ color: '#64748b', fontStyle: 'italic' }}>Awaiting approval{needsDirector ? ' (director required)' : ''}</div>
+                                        <div style={{ color: '#64748b', fontStyle: 'italic' }}>Awaiting approval{needsDirector ? ' (director review suggested)' : ''}</div>
                                       </div>
                                     </div>
                                   )}
@@ -2070,7 +2074,7 @@ export default function Purchasing() {
                   ) : inv.status === 'Pending' && (
                     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, fontSize: 12 }}>
                       <div style={{ width: 24, height: 24, borderRadius: '50%', background: '#fef3c7', color: '#854d0e', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 600, flexShrink: 0 }}>2</div>
-                      <div style={{ flex: 1, color: '#64748b', fontStyle: 'italic' }}>Awaiting approval{inv.amount >= APPROVAL_THRESHOLD ? ' (director required)' : ''}</div>
+                      <div style={{ flex: 1, color: '#64748b', fontStyle: 'italic' }}>Awaiting approval{inv.amount >= APPROVAL_THRESHOLD ? ' (director review suggested)' : ''}</div>
                     </div>
                   )}
                   {inv.paidBy ? (
@@ -2276,62 +2280,6 @@ export default function Purchasing() {
               </button>
               <button onClick={confirmRecurrence} style={{ padding: '9px 20px', fontSize: 13, fontWeight: 500, background: '#1D9E75', color: '#fff', border: 'none', borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit' }}>
                 Set recurrence
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Schedule payment modal ── */}
-      {schedulingInvoice && (
-        <div
-          onClick={() => { setSchedulingInvoice(null); setScheduleDate('') }}
-          style={{
-            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            zIndex: 1000, padding: '1rem',
-          }}
-        >
-          <div
-            onClick={e => e.stopPropagation()}
-            style={{
-              background: '#fff', borderRadius: 12, width: '100%', maxWidth: 440,
-              boxShadow: '0 8px 32px rgba(0,0,0,.12)', overflow: 'hidden',
-            }}
-          >
-            <div style={{ padding: '20px 24px', borderBottom: '0.5px solid #e5e5e5', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h2 style={{ fontSize: 16, fontWeight: 500, margin: 0 }}>Schedule Payment</h2>
-              <button onClick={() => { setSchedulingInvoice(null); setScheduleDate('') }} style={{ background: 'none', border: 'none', fontSize: 16, color: '#999', cursor: 'pointer' }}>✕</button>
-            </div>
-            <div style={{ padding: '24px' }}>
-              <div style={{ padding: '14px 16px', background: '#f8fafc', borderRadius: 10, marginBottom: 20 }}>
-                <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', fontWeight: 500, marginBottom: 4 }}>Invoice</div>
-                <div style={{ fontSize: 14, fontWeight: 600, color: '#0f172a' }}>{schedulingInvoice.vendor}</div>
-                <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
-                  {schedulingInvoice.invoiceNum || 'Untitled'} · {fmt$(schedulingInvoice.amount)}
-                </div>
-              </div>
-              <label style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#475569', marginBottom: 6 }}>Payment date</label>
-              <input
-                type="date"
-                value={scheduleDate}
-                min={new Date().toISOString().slice(0, 10)}
-                onChange={e => setScheduleDate(e.target.value)}
-                style={{
-                  width: '100%', padding: '10px 12px', fontSize: 14,
-                  border: '1px solid #e2e8f0', borderRadius: 8, fontFamily: 'inherit',
-                }}
-              />
-              <div style={{ fontSize: 11, color: '#64748b', marginTop: 8, lineHeight: 1.5 }}>
-                On this date, the invoice will automatically be marked as Paid and posted to the P&L. You can cancel the schedule at any time before then.
-              </div>
-            </div>
-            <div style={{ padding: '16px 24px', borderTop: '0.5px solid #e5e5e5', display: 'flex', gap: 8, justifyContent: 'flex-end', background: '#f8fafc' }}>
-              <button onClick={() => { setSchedulingInvoice(null); setScheduleDate('') }} style={{ padding: '9px 16px', fontSize: 13, background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, cursor: 'pointer', color: '#475569', fontFamily: 'inherit' }}>
-                Cancel
-              </button>
-              <button onClick={confirmScheduledPayment} disabled={!scheduleDate} style={{ padding: '9px 20px', fontSize: 13, fontWeight: 500, background: '#1D9E75', color: '#fff', border: 'none', borderRadius: 8, cursor: scheduleDate ? 'pointer' : 'not-allowed', opacity: scheduleDate ? 1 : 0.5, fontFamily: 'inherit' }}>
-                Schedule payment
               </button>
             </div>
           </div>
