@@ -490,7 +490,7 @@ export default function AureliaChat() {
       if (!overrideMsg) apiMessages.push({ role: 'user', content: userMsg })
       else apiMessages.push({ role: 'user', content: userMsg })
 
-      const response = await fetch('/api/claude', {
+      const response = await fetch('/.netlify/functions/claude', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
