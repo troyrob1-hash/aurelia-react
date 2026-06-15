@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { loadSession, clearSession, getUser, refreshSession, signOut as authSignOut } from '@/lib/auth'
 import { signInWithCognito, db, auth } from '@/lib/firebase'
 import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore'
+import { onAuthStateChanged } from 'firebase/auth'
 
 export const useAuthStore = create((set, get) => ({
   user:    null,
@@ -60,18 +61,32 @@ export const useAuthStore = create((set, get) => ({
 
 async function loadProfile(user) {
   if (!user?.tenantId) return user
+  // Wait for Firebase auth to actually settle rather than guessing 500ms.
+  // On slow networks/cold starts the fixed timer expired before currentUser
+  // populated, stranding the user with no roles/regions until a manual reload.
+  try { if (auth.authStateReady) await auth.authStateReady() } catch (e) {}
   let uid = auth.currentUser?.uid
-  if (!uid) { await new Promise(r => setTimeout(r, 500)); uid = auth.currentUser?.uid }
-  if (!uid) return user
+  if (!uid) {
+    uid = await new Promise(resolve => {
+      let done = false
+      const finish = (v) => { if (done) return; done = true; resolve(v) }
+      const unsub = onAuthStateChanged(auth, (u) => { try { unsub() } catch (e) {}; finish(u?.uid || null) })
+      setTimeout(() => { try { unsub() } catch (e) {}; finish(auth.currentUser?.uid || null) }, 4000)
+    })
+  }
+  if (!uid) {
+    console.warn('[authStore] No Firebase uid after auth settled — profile (roles/regions) not loaded.')
+    return user
+  }
   const userRef = doc(db, 'orgs', user.tenantId, 'users', uid)
-  try { await setDoc(userRef, { lastLoginAt: serverTimestamp() }, { merge: true }) } catch(e) {}
+  try { await setDoc(userRef, { lastLoginAt: serverTimestamp() }, { merge: true }) } catch(e) { console.warn('[authStore] lastLoginAt write failed:', e?.message || e) }
   try {
     const snap = await getDoc(userRef)
     if (snap.exists()) {
       const profile = snap.data()
-      return { ...user, uid, managedRegionIds: profile.managedRegionIds || [], assignedLocations: profile.assignedLocations || [], roles: profile.roles || [user.role], displayName: profile.displayName || user.name }
+      return { ...user, uid, managedRegionIds: profile.managedRegionIds || [], assignedLocations: profile.assignedLocations || [], roles: (profile.roles && profile.roles.length) ? profile.roles : (user.role && user.role !== 'viewer' ? [user.role] : []), displayName: profile.displayName || user.name }
     }
-  } catch(e) {}
+  } catch(e) { console.warn('[authStore] profile read failed:', e?.message || e) }
   return { ...user, uid }
 }
 
