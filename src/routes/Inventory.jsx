@@ -455,6 +455,7 @@ export default function Inventory() {
   // never scroll to a Save button. Writes counts doc + live PnL only; does
   // NOT close the period. 'Save & Close Period' stays the deliberate finalize.
   const [autoSaveStatus, setAutoSaveStatus] = useState('idle')
+  const [lastSavedAt, setLastSavedAt] = useState(null)
   const autoSaveTimer = useRef(null)
   useEffect(() => {
     if (!dirty) return
@@ -463,7 +464,7 @@ export default function Inventory() {
       setAutoSaveStatus('saving')
       const ok = await saveCounts()
       setAutoSaveStatus(ok ? 'saved' : 'idle')
-      if (ok) setTimeout(() => setAutoSaveStatus('idle'), 2000)
+      if (ok) setLastSavedAt(new Date())
     }, 2000)
     return () => { if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current) }
   }, [dirty, saveCounts])
@@ -477,6 +478,25 @@ export default function Inventory() {
   const saveCountsRef = useRef(saveCounts)
   useEffect(() => { dirtyRef.current = dirty }, [dirty])
   useEffect(() => { saveCountsRef.current = saveCounts }, [saveCounts])
+
+  // Flush pending counts when the page is hidden or closed. Without this,
+  // leaving the site within the 2s autosave window loses the last entries
+  // (Brittney/Tracy: 'leave and come back, progress erased'). pagehide +
+  // visibilitychange are more reliable than beforeunload, esp. on mobile.
+  useEffect(() => {
+    const flush = () => {
+      if (dirtyRef.current && saveCountsRef.current) {
+        try { saveCountsRef.current() } catch (e) {}
+      }
+    }
+    const onVis = () => { if (document.visibilityState === 'hidden') flush() }
+    document.addEventListener('visibilitychange', onVis)
+    window.addEventListener('pagehide', flush)
+    return () => {
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('pagehide', flush)
+    }
+  }, [])
   useEffect(() => {
     return () => {
       if (dirtyRef.current && saveCountsRef.current) {
@@ -1485,11 +1505,24 @@ export default function Inventory() {
             <span style={{ fontSize: 11, opacity: 0.7, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Live COGS</span>
             <span style={{ fontSize: 18, fontWeight: 700 }}>{fmt$(totals.liveCOGS)}</span>
           </div>
-          <span style={{ fontSize: 12, minWidth: 92, color: autoSaveStatus === 'saving' ? '#fbbf24' : autoSaveStatus === 'saved' ? '#34d399' : '#94a3b8' }}>
-            {autoSaveStatus === 'saving' ? 'Saving…'
-              : autoSaveStatus === 'saved' ? 'All changes saved'
-              : dirty ? 'Unsaved changes' : 'All changes saved'}
-          </span>
+          {(() => {
+            const saving = autoSaveStatus === 'saving'
+            const unsaved = dirty && !saving
+            const dot = saving ? '#fbbf24' : unsaved ? '#94a3b8' : '#34d399'
+            const label = saving ? 'Saving…' : unsaved ? 'Saving in a moment…' : 'All changes saved'
+            const ts = lastSavedAt ? lastSavedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.3, minWidth: 150 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                  <span style={{ width: 9, height: 9, borderRadius: '50%', background: dot, flexShrink: 0, boxShadow: saving ? 'none' : '0 0 6px ' + dot }} />
+                  <span style={{ fontSize: 13, fontWeight: 600, color: '#fff' }}>{label}</span>
+                </div>
+                <span style={{ fontSize: 11, opacity: 0.65, marginTop: 2 }}>
+                  {ts ? 'Saved automatically at ' + ts : 'Counts save automatically'}
+                </span>
+              </div>
+            )
+          })()}
           <button className={styles.btnSaveFooter} onClick={handleSave} disabled={saving}
             style={{ whiteSpace: 'nowrap' }}>
             {saving ? 'Saving…' : 'Save & Close Period'}
