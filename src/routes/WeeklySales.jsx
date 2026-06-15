@@ -1223,59 +1223,7 @@ export default function WeeklySales() {
       return
     }
 
-    // Write across all weeks in the period
-    try {
-      const { setDoc, doc: fbDoc, serverTimestamp, getDoc: getD } = await import('firebase/firestore')
-      const { getPeriodWeeks, formatPeriodKey } = await import('@/store/PeriodContext')
-      const yearNum = parseInt(periodKey.split('-')[0])
-      const periodNum = parseInt(periodKey.split('-P')[1].split('-')[0])
-      const allWeeks = getPeriodWeeks(yearNum, periodNum)
-
-      for (let wi = 0; wi < allWeeks.length; wi++) {
-        const wk = allWeeks[wi]
-        const wkKey = formatPeriodKey(yearNum, periodNum, wi + 1)
-        const weekEntries = {}
-        const dayStart = new Date(wk.start)
-        const dayEnd = new Date(wk.end)
-        for (let d = new Date(dayStart); d <= dayEnd; d.setDate(d.getDate() + 1)) {
-          const dk = d.toISOString().slice(0, 10)
-          if (newEntries[dk]) weekEntries[dk] = newEntries[dk]
-        }
-        if (Object.keys(weekEntries).length > 0) {
-          const salesRef = fbDoc(db, 'tenants', orgId, 'locations', locId(selectedLocation), 'sales', wkKey)
-          const existingSnap = await getD(salesRef)
-          const existingEntries = existingSnap.exists() ? (existingSnap.data().entries || {}) : {}
-          const merged = { ...existingEntries }
-          Object.entries(weekEntries).forEach(([dk, cats]) => {
-            merged[dk] = { ...(merged[dk] || {}), ...cats }
-          })
-          await setDoc(salesRef, {
-            entries: merged,
-            weekKey: wkKey,
-            location: selectedLocation,
-            updatedAt: serverTimestamp(),
-            updatedBy: user?.name || user?.email || 'unknown',
-          }, { merge: true })
-          // Write P&L for this week
-          const weekPopup = Object.values(weekEntries).reduce((s, d) => s + (parseFloat(d.popup) || 0), 0)
-          const weekCatering = Object.values(weekEntries).reduce((s, d) => s + (parseFloat(d.catering) || 0), 0)
-          const weekRetail = Object.values(weekEntries).reduce((s, d) => s + (parseFloat(d.retail) || 0), 0)
-          console.log('Writing P&L:', selectedLocation, wkKey, { popup: weekPopup, catering: weekCatering, retail: weekRetail })
-          await writeSalesPnL(selectedLocation, wkKey, {
-            popup: Math.round(weekPopup * 100) / 100,
-            catering: Math.round(weekCatering * 100) / 100,
-            retail: Math.round(weekRetail * 100) / 100,
-          })
-          console.log('P&L written for', wkKey)
-        }
-      }
-    } catch (err) {
-      console.error('Cross-week save failed:', err)
-      toast.error('P&L save error: ' + err.message)
-    }
-
-    // Also update current week's state
-    // Write across all weeks in the period
+    // Write each week's catering entries + P&L across all weeks in the period.
     try {
       const { setDoc, doc: fbDoc, serverTimestamp, getDoc: getD } = await import('firebase/firestore')
       const { getPeriodWeeks, formatPeriodKey } = await import('@/store/PeriodContext')
@@ -1427,7 +1375,6 @@ export default function WeeklySales() {
           const wp = Object.values(wkEntries).reduce((s, d) => s + (parseFloat(d.popup) || 0), 0)
           const wc = Object.values(wkEntries).reduce((s, d) => s + (parseFloat(d.catering) || 0), 0)
           const wr = Object.values(wkEntries).reduce((s, d) => s + (parseFloat(d.retail) || 0), 0)
-          console.log('Retail/popup P&L write:', selectedLocation, wkKey, { popup: wp, catering: wc, retail: wr })
           await writeSalesPnL(selectedLocation, wkKey, { popup: Math.round(wp * 100) / 100, catering: Math.round(wc * 100) / 100, retail: Math.round(wr * 100) / 100 })
         }
       }
