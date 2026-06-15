@@ -207,9 +207,13 @@ export default function WeeklySales() {
           // Build week-level revenue data proportional to the daily totals
           const weekPnl = { ...eventMerged }
           delete weekPnl._daily
-          // Scale each revenue field by this week's share of total GFS
+          // Scale each revenue field by this week's share of the EVENT total.
+          // Use weekTotal (event-only, computed above) rather than mergedTotal,
+          // which includes pre-existing manual entries and would overstate
+          // commission/fees on mixed manual+import weeks or re-imports. The
+          // gfs_* lines below are still overridden with exact merged totals.
           const totalGFS = eventMerged.gfs_total || 1
-          const weekShare = mergedTotal / totalGFS
+          const weekShare = totalGFS > 0 ? weekTotal / totalGFS : 0
           const weekPnlScaled = {}
           for (const [k, v] of Object.entries(weekPnl)) {
             if (typeof v === 'number') {
