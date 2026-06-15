@@ -293,24 +293,24 @@ service cloud.firestore {
 
       match /auditLog/{logId} {
         allow read:  if ownsTenant(orgId) && isDirector();
-        allow write: if ownsTenant(tenantId) && isAdmin();
+        allow write: if ownsTenant(orgId) && isAdmin();
       }
 
       match /sessions/{sessionId} {
         allow read:  if ownsTenant(orgId);
-        allow write: if ownsTenant(tenantId) && isAdmin();
+        allow write: if ownsTenant(orgId) && isAdmin();
       }
 
       // Ramp sync audit trail
       // Waste log entries
       match /wasteLog/{entryId} {
-        allow read:  if ownsTenant(tenantId);
-        allow write: if ownsTenant(tenantId) && isManager();
+        allow read:  if ownsTenant(orgId);
+        allow write: if ownsTenant(orgId) && isManager();
       }
 
       match /rampSync/{syncId} {
-        allow read:  if ownsTenant(tenantId);
-        allow write: if ownsTenant(tenantId) && isManager();
+        allow read:  if ownsTenant(orgId);
+        allow write: if ownsTenant(orgId) && isManager();
       }
 
 
