@@ -357,7 +357,7 @@ export default function Inventory() {
   }
 
   const [search, setSearch] = useState('')
-  const [sortAlpha, setSortAlpha] = useState(false)  // A-Z sort within categories
+  const [viewMode, setViewMode] = useState('grouped')  // 'grouped' (categories) | 'flat' (A-Z, no categories)
   const [activeCat, setActiveCat] = useState('all')
   const [collapsed, setCollapsed] = useState({})
   const [blindMode, setBlindMode] = useState(false)
@@ -467,6 +467,24 @@ export default function Inventory() {
     }, 2000)
     return () => { if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current) }
   }, [dirty, saveCounts])
+
+  // Flush unsaved counts when the location changes. Without this, switching
+  // location while counts are dirty (within the 2s autosave debounce) reloads
+  // the new location and wipes the prior location's pending counts. We capture
+  // the dirty flag and save fn in refs so the cleanup flushes the OUTGOING
+  // location's data before the reload.
+  const dirtyRef = useRef(dirty)
+  const saveCountsRef = useRef(saveCounts)
+  useEffect(() => { dirtyRef.current = dirty }, [dirty])
+  useEffect(() => { saveCountsRef.current = saveCounts }, [saveCounts])
+  useEffect(() => {
+    return () => {
+      if (dirtyRef.current && saveCountsRef.current) {
+        // fire-and-forget flush for the outgoing location
+        saveCountsRef.current()
+      }
+    }
+  }, [location])
 
   // ─── Handlers ──────────────────────────────────────────────────────────────
   async function seedPriorPeriod() {
@@ -593,8 +611,8 @@ export default function Inventory() {
     const locName = cleanLocName(location).replace(/[^a-zA-Z0-9]/g, '_')
     const fileName = 'inventory-' + locName + '-' + periodKey
 
-    // Build row data
-    const rows = items.map(item => {
+    // Map one item -> export row.
+    const toRow = (item) => {
       const opening = item.openingQty || 0
       const closing = item.qty || 0
       const purchased = item.purchased || 0
@@ -604,7 +622,6 @@ export default function Inventory() {
       const usageValue = usage * unitCost
       const parLevel = item.parLevel || item.minStock || ''
       const needsReorder = parLevel && closing <= parLevel ? 'Yes' : ''
-
       return {
         'Item': item.name || '',
         'Category': item.category || item.vendor || '',
@@ -621,7 +638,14 @@ export default function Inventory() {
         'Par Level': parLevel,
         'Reorder': needsReorder,
       }
-    })
+    }
+
+    // Build rows by walking displayGroups -- the SAME structure the screen
+    // renders -- so the export order and grouping ALWAYS match the screen.
+    // Flat view: one group, items A-Z. Grouped view: category order.
+    // Search filter is already applied (displayGroups derives from displayItems).
+    const rows = displayGroups.flatMap(g => g.items.map(toRow))
+    if (rows.length === 0) { toast.error('Nothing to export in the current view'); return }
 
     // Summary
     const totalClosingValue = rows.reduce((s, r) => s + parseFloat(r['Closing Value']), 0)
@@ -768,20 +792,38 @@ export default function Inventory() {
   const keyItemCount = useMemo(() => items.filter(i => i.isKey).length, [items])
 
   const displayGroups = useMemo(() => {
+    // Flat A-Z: one synthetic group, no category header, all items alphabetical.
+    // Returning a single group means the SAME row-rendering code path serves
+    // both views, so flat and grouped can never drift in how counts behave.
+    if (viewMode === 'flat') {
+      const sorted = [...displayItems].sort((a, b) =>
+        (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
+      )
+      if (sorted.length === 0) return []
+      return [{ key: '__flat__', label: null, isFlat: true, color: '#0f172a', bg: '#f8fafc', items: sorted }]
+    }
     const cats = activeCat === 'all' ? categories : categories.filter(c => c.key === activeCat)
-    return cats.map(cat => {
-      let catItems = displayItems.filter(i => i._cat === cat.key)
-      if (sortAlpha) {
-        catItems = [...catItems].sort((a, b) =>
-          (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
-        )
-      }
-      return {
-        ...cat,
-        items: catItems,
-      }
-    }).filter(g => g.items.length > 0)
-  }, [displayItems, activeCat, categories, sortAlpha])
+    return cats.map(cat => ({
+      ...cat,
+      items: displayItems.filter(i => i._cat === cat.key),
+    })).filter(g => g.items.length > 0)
+  }, [displayItems, activeCat, categories, viewMode])
+
+  // Flat A-Z view: every visible item in one alphabetical list, no category
+  // grouping. Derived purely from displayItems (the same source as the grouped
+  // view) so toggling view never touches count data.
+  const flatItems = useMemo(() =>
+    [...displayItems].sort((a, b) =>
+      (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
+    )
+  , [displayItems])
+
+  // Summary for the flat view (replaces per-category subtotals).
+  const flatSummary = useMemo(() => {
+    const counted = flatItems.filter(i => i.qty != null && i.qty > 0).length
+    const value = flatItems.reduce((s, i) => s + (i._value || 0), 0)
+    return { counted, total: flatItems.length, value }
+  }, [flatItems])
 
   // ─── Top Variance Alerts ───────────────────────────────────────────────────
   const topVariance = useMemo(() => getTopVarianceIssues(items, 3), [items])
@@ -1169,13 +1211,27 @@ export default function Inventory() {
               className={styles.searchInput} 
             />
           </div>
-          <button
-            className={`${styles.btnVariance} ${sortAlpha ? styles.btnVarianceActive : ''}`}
-            onClick={() => setSortAlpha(v => !v)}
-            title="Sort items A-Z within each category"
-          >
-            A–Z
-          </button>
+          <div style={{ display: 'inline-flex', border: '1px solid #cbd5e1', borderRadius: 8, overflow: 'hidden' }}>
+            <button
+              onClick={() => setViewMode('grouped')}
+              title="Group items by category"
+              style={{
+                padding: '6px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer', border: 'none',
+                background: viewMode === 'grouped' ? '#0f172a' : '#fff',
+                color: viewMode === 'grouped' ? '#fff' : '#475569',
+              }}
+            >Grouped</button>
+            <button
+              onClick={() => setViewMode('flat')}
+              title="Show all items A-Z, no categories"
+              style={{
+                padding: '6px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer', border: 'none',
+                borderLeft: '1px solid #cbd5e1',
+                background: viewMode === 'flat' ? '#0f172a' : '#fff',
+                color: viewMode === 'flat' ? '#fff' : '#475569',
+              }}
+            >A–Z</button>
+          </div>
           <button 
             className={`${styles.btnVariance} ${showVariance ? styles.btnVarianceActive : ''}`}
             onClick={() => setShowVariance(v => !v)}
@@ -1206,9 +1262,20 @@ export default function Inventory() {
           </div>
         )}
 
-        {/* Category Sections */}
+        {/* Item Sections (category groups, or one flat A-Z group) */}
         {!loading && displayGroups.map(cat => (
           <div key={cat.key} className={styles.section}>
+            {cat.isFlat ? (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>
+                  All Items (A–Z)
+                  <span style={{ marginLeft: 10, fontSize: 12, fontWeight: 500, color: '#64748b' }}>
+                    {flatSummary.counted}/{flatSummary.total} counted
+                  </span>
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a' }}>{fmt$(flatSummary.value)}</div>
+              </div>
+            ) : (
             <div 
               className={styles.catHeader} 
               style={{ background: cat.bg, borderBottomColor: cat.color + '40', cursor: 'pointer' }}
@@ -1230,8 +1297,9 @@ export default function Inventory() {
                 </span>
               </div>
             </div>
+            )}
 
-            {!collapsed[cat.key] && (
+            {(cat.isFlat || !collapsed[cat.key]) && (
               <table className={styles.table}>
                 <thead>
                   <tr className={styles.thead}>
@@ -1347,7 +1415,7 @@ export default function Inventory() {
                             <input 
                               type="text" 
                               inputMode="decimal"
-                              value={item.qty ?? ''}
+                              value={item._qtyRaw ?? (item.qty ?? '')}
                               onChange={e => setQty(item.id, e.target.value)}
                               onDoubleClick={() => !blindMode && copyPrior(item.id)}
                               className={`${styles.countInput} ${isCounted ? styles['counted_' + (item._varClass || 'neutral')] : ''}`}

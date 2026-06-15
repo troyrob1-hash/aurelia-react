@@ -418,13 +418,18 @@ export function useInventory(orgId, locationId, periodKey, user) {
   const setQty = useCallback((itemId, value) => {
     setItems(prev => prev.map(item => {
       if (item.id !== itemId) return item
-      const qty = value === '' ? null : Math.max(0, parseFloat(value) || 0)
+      // Keep the raw typed string so in-progress decimals ('.', '0.', '.5')
+      // are not wiped by parseFloat while the user is still typing.
+      const raw = value
+      const parsed = value === '' ? null : Math.max(0, parseFloat(value))
+      const qty = (parsed === null || isNaN(parsed)) ? (value === '' ? null : 0) : parsed
       const attribution = buddyMode && buddyNames.caller && buddyNames.marker
         ? `${buddyNames.caller} + ${buddyNames.marker}`
         : (user?.email || 'unknown')
       return {
         ...item,
         qty,
+        _qtyRaw: raw,
         lastCountedAt: new Date().toISOString(),
         lastCountedBy: attribution,
         countedInBuddyMode: buddyMode,
