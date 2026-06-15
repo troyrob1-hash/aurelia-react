@@ -91,6 +91,10 @@ export default function WeeklySales() {
   const [dirty,        setDirty]        = useState(false)
   const [autoSaveStatus, setAutoSaveStatus] = useState('idle') // idle | saving | saved
   const autoSaveTimer = useRef(null)
+  // Refs so the page-exit and location-change flushes always see the latest
+  // dirty flag and save fn without re-subscribing listeners every render.
+  const dirtyRef = useRef(false)
+  const handleSaveDraftRef = useRef(null)
   const [approvalStatus, setApproval]   = useState(null)
 
   const [periodClosed, setPeriodClosed] = useState(false)
@@ -312,6 +316,27 @@ export default function WeeklySales() {
     }, 2000)
     return () => { if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current) }
   }, [dirty, approvalStatus, periodClosed])
+
+  // Keep refs current for the flush handlers below.
+  useEffect(() => { dirtyRef.current = dirty }, [dirty])
+
+  // Flag 7 — flush pending edits when the page is hidden or closed, so leaving
+  // the site within the 2s autosave window doesn't lose the last entries.
+  // pagehide + visibilitychange are more reliable than beforeunload (mobile).
+  useEffect(() => {
+    const flush = () => {
+      if (dirtyRef.current && handleSaveDraftRef.current && approvalStatus !== 'approved' && !periodClosed) {
+        try { handleSaveDraftRef.current() } catch (e) {}
+      }
+    }
+    const onVis = () => { if (document.visibilityState === 'hidden') flush() }
+    document.addEventListener('visibilitychange', onVis)
+    window.addEventListener('pagehide', flush)
+    return () => {
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('pagehide', flush)
+    }
+  }, [approvalStatus, periodClosed])
 
   // Dismiss hover context card when the user scrolls — the card is
   // position: fixed and would otherwise strand at the wrong screen position
@@ -810,6 +835,10 @@ export default function WeeklySales() {
       return false
     }
   }
+
+  // Keep the ref pointing at the latest handleSaveDraft so the page-exit
+  // flush always calls the current closure (latest entries/location/week).
+  handleSaveDraftRef.current = handleSaveDraft
 
   async function handleSave() {
     if (!location || !week) return
