@@ -299,7 +299,7 @@ export default function AureliaChat() {
     }
 
     if (toolName === 'close_period') {
-      return 'To close ' + periodKey + ', all data sources need to be submitted:\n\n1. Sales data \u2014 import events or manually enter\n2. Labor \u2014 upload from Mosaic\n3. Inventory \u2014 complete a count\n4. Purchasing \u2014 enter invoices\n\nOnce all are green, click "Close Period" in the top bar. Want me to check which ones are ready?'
+      return 'To close ' + periodKey + ', all data sources need to be submitted:\n\n1. Sales data — import events or manually enter\n2. Labor — upload from Mosaic\n3. Inventory — complete a count\n4. Purchasing — enter invoices\n\nOnce all are green, click "Close Period" in the top bar. Want me to check which ones are ready?'
     }
 
     if (toolName === 'generate_report') {
@@ -318,7 +318,7 @@ export default function AureliaChat() {
       const locName = location ? cleanLocName(location) : 'All Locations'
 
       if (toolInput.report_type === 'period_summary' || toolInput.report_type === 'month_end') {
-        return '\u2501\u2501\u2501 ' + locName + ' \u2014 ' + periodKey + ' \u2501\u2501\u2501\n\n' +
+        return '━━━ ' + locName + ' — ' + periodKey + ' ━━━\n\n' +
           'GROSS FOOD SALES\n' +
           '  Popup:      ' + fmt(pnl.gfs_popup || 0) + '\n' +
           '  Catering:   ' + fmt(pnl.gfs_catering || 0) + '\n' +
@@ -351,33 +351,33 @@ export default function AureliaChat() {
             varLines.push('  ' + actualKey + ': ' + fmt(actual) + ' vs ' + fmt(budget) + ' (' + variance + '%)' + flag)
           }
         })
-        return '\u2501\u2501\u2501 Variance Analysis \u2014 ' + periodKey + ' \u2501\u2501\u2501\n\n' +
+        return '━━━ Variance Analysis — ' + periodKey + ' ━━━\n\n' +
           (varLines.length > 0 ? varLines.join('\n') : 'No budget data available for variance analysis.') +
           '\n\n\u26a0 = variance > 10%'
       }
 
       if (toolInput.report_type === 'action_items') {
         const actions = []
-        if (budgetGfs > 0 && gfs < budgetGfs * 0.9) actions.push('\u2022 GFS is ' + Math.abs(parseFloat(gfsVsBudget)) + '% below budget \u2014 review event calendar and popup vendor schedule')
-        if (budgetLabor > 0 && laborTotal > budgetLabor * 1.05) actions.push('\u2022 Labor ' + (((laborTotal / budgetLabor - 1) * 100).toFixed(1)) + '% over budget \u2014 review scheduling and overtime')
-        if (gfs > 0 && laborTotal / gfs > 0.35) actions.push('\u2022 Labor % of GFS at ' + laborPct + '% \u2014 target is 30-35%')
+        if (budgetGfs > 0 && gfs < budgetGfs * 0.9) actions.push('• GFS is ' + Math.abs(parseFloat(gfsVsBudget)) + '% below budget — review event calendar and popup vendor schedule')
+        if (budgetLabor > 0 && laborTotal > budgetLabor * 1.05) actions.push('• Labor ' + (((laborTotal / budgetLabor - 1) * 100).toFixed(1)) + '% over budget — review scheduling and overtime')
+        if (gfs > 0 && laborTotal / gfs > 0.35) actions.push('• Labor % of GFS at ' + laborPct + '% — target is 30-35%')
         const highExpenses = Object.keys(pnl).filter(k => k.startsWith('exp_') && pnl['budget_' + k] && pnl[k] > pnl['budget_' + k] * 1.2)
-        highExpenses.forEach(k => actions.push('\u2022 ' + k.replace('exp_', '').replace(/_/g, ' ') + ' is significantly over budget \u2014 investigate'))
-        if (actions.length === 0) actions.push('\u2022 All metrics within normal ranges \u2014 no immediate action required')
-        return '\u2501\u2501\u2501 Action Items \u2014 ' + locName + ' \u2501\u2501\u2501\n\n' + actions.join('\n')
+        highExpenses.forEach(k => actions.push('• ' + k.replace('exp_', '').replace(/_/g, ' ') + ' is significantly over budget — investigate'))
+        if (actions.length === 0) actions.push('• All metrics within normal ranges — no immediate action required')
+        return '━━━ Action Items — ' + locName + ' ━━━\n\n' + actions.join('\n')
       }
 
       if (toolInput.report_type === 'regional_review') {
-        return '\u2501\u2501\u2501 Regional Review Prep \u2014 ' + locName + ' \u2501\u2501\u2501\n\n' +
+        return '━━━ Regional Review Prep — ' + locName + ' ━━━\n\n' +
           'KEY METRICS:\n' +
           '  GFS: ' + fmt(gfs) + ' (' + gfsVsBudget + '% vs budget)\n' +
           '  Revenue: ' + fmt(rev) + '\n' +
           '  Labor: ' + fmt(laborTotal) + ' (' + laborPct + '% of GFS)\n' +
           '  EBITDA: ' + fmt(ebitda) + '\n\n' +
           'TALKING POINTS:\n' +
-          (gfs >= budgetGfs ? '  \u2713 GFS on track or ahead of budget\n' : '  \u2717 GFS below budget \u2014 need action plan\n') +
-          (laborTotal <= budgetLabor ? '  \u2713 Labor within budget\n' : '  \u2717 Labor over budget \u2014 review schedule\n') +
-          (ebitda >= budgetEbitda ? '  \u2713 EBITDA on target\n' : '  \u2717 EBITDA below target \u2014 identify drivers\n') +
+          (gfs >= budgetGfs ? '  ✓ GFS on track or ahead of budget\n' : '  ✗ GFS below budget — need action plan\n') +
+          (laborTotal <= budgetLabor ? '  ✓ Labor within budget\n' : '  ✗ Labor over budget — review schedule\n') +
+          (ebitda >= budgetEbitda ? '  ✓ EBITDA on target\n' : '  ✗ EBITDA below target — identify drivers\n') +
           '\nSUGGESTED DISCUSSION:\n' +
           '  1. Review ' + (gfs < budgetGfs ? 'GFS recovery plan' : 'what\'s driving GFS outperformance') + '\n' +
           '  2. Labor optimization opportunities\n' +
@@ -462,7 +462,7 @@ export default function AureliaChat() {
       const monthlyBudget = budgetGfs * (weeksInPeriod(year, period))
       const willHitBudget = projectedMonthly >= monthlyBudget
 
-      return '\u2501\u2501\u2501 Forecast \u2014 ' + periodKey + ' \u2501\u2501\u2501\n\n' +
+      return '━━━ Forecast — ' + periodKey + ' ━━━\n\n' +
         'Current GFS: ' + fmt(gfs) + '\n' +
         'Daily run rate: ' + fmt(dailyRate) + '/day\n' +
         'Projected month-end: ' + fmt(projectedMonthly) + '\n' +
@@ -591,7 +591,7 @@ export default function AureliaChat() {
       }}>
         <div>
           <div style={{ fontSize: 15, fontWeight: 600 }}>Aurelia AI</div>
-          <div style={{ fontSize: 11, opacity: 0.7 }}>{location ? cleanLocName(location) : 'All Locations'} \u00b7 {periodKey}</div>
+          <div style={{ fontSize: 11, opacity: 0.7 }}>{location ? cleanLocName(location) : 'All Locations'} · {periodKey}</div>
         </div>
         <button
           onClick={() => setOpen(false)}
@@ -605,7 +605,7 @@ export default function AureliaChat() {
             width: 32, height: 32, borderRadius: 8, display: 'flex',
             alignItems: 'center', justifyContent: 'center', opacity: 1,
           }}
-        >\u2715</button>
+        >✕</button>
       </div>
 
       <div ref={scrollRef} style={{
