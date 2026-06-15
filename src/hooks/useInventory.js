@@ -649,17 +649,28 @@ export function useInventory(orgId, locationId, periodKey, user) {
   const saveCounts = useCallback(async () => {
     if (!locationId || !periodKey) return false
     try {
-      const countsItems = items
+      const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
+      const newCounts = items
         .filter(i => i.qty != null)
         .map(i => ({
           id: i.id,
-          qty: i.qty,
-          eaches: i.eaches || 0,
+          qty: num(i.qty),
+          eaches: num(i.eaches),
           countedAt: i.lastCountedAt || null,
           countedBy: i.lastCountedBy || null,
         }))
+      // Merge new counts OVER existing saved counts by id, so a partial save
+      // never wipes counts already saved (Tracy's 'enter 5-6 times' bug:
+      // merge:false overwrote the whole array with a subset).
+      const countsRef = doc(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey)
+      let existing = []
+      try { const snap = await getDoc(countsRef); if (snap.exists()) existing = snap.data().items || [] } catch (e) {}
+      const byId = {}
+      existing.forEach(it => { if (it && it.id != null) byId[it.id] = it })
+      newCounts.forEach(it => { byId[it.id] = it })
+      const countsItems = Object.values(byId)
       await setDoc(
-        doc(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey),
+        countsRef,
         { items: countsItems, period: periodKey, updatedAt: serverTimestamp(), updatedBy: user?.email || 'unknown' },
         { merge: false }
       )
@@ -680,6 +691,7 @@ export function useInventory(orgId, locationId, periodKey, user) {
       return true
     } catch (err) {
       console.error('Autosave (counts) failed:', err)
+      setError('Count save failed: ' + (err?.message || 'unknown error'))
       return false
     }
   }, [items, locationId, locId, periodKey, orgId, openingValue, purchases, user])
@@ -718,17 +730,26 @@ export function useInventory(orgId, locationId, periodKey, user) {
       await Promise.all(batch)
 
       // ── Per-week counts doc — canonical count store ───────────────────
-      const countsItems = items
+      const num2 = (v) => { const x = Number(v); return Number.isFinite(x) ? x : 0 }
+      const newCounts2 = items
         .filter(i => i.qty != null)
         .map(i => ({
           id: i.id,
-          qty: i.qty,
-          eaches: i.eaches || 0,
+          qty: num2(i.qty),
+          eaches: num2(i.eaches),
           countedAt: i.lastCountedAt || null,
           countedBy: i.lastCountedBy || null,
         }))
+      // Merge over existing saved counts by id (no clobber).
+      const countsRef2 = doc(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey)
+      let existing2 = []
+      try { const snap2 = await getDoc(countsRef2); if (snap2.exists()) existing2 = snap2.data().items || [] } catch (e) {}
+      const byId2 = {}
+      existing2.forEach(it => { if (it && it.id != null) byId2[it.id] = it })
+      newCounts2.forEach(it => { byId2[it.id] = it })
+      const countsItems = Object.values(byId2)
       await setDoc(
-        doc(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey),
+        countsRef2,
         {
           items:     countsItems,
           period:    periodKey,
