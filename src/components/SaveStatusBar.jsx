@@ -47,7 +47,7 @@ export default function SaveStatusBar({
 
   return (
     <div style={{
-      position: 'fixed', bottom: 88, right: 20, zIndex: 50,
+      position: 'fixed', bottom: 24, right: 96, zIndex: 50,
       display: 'flex', alignItems: 'center', gap: 16,
       background: '#0f172a', color: '#fff',
       padding: '12px 18px', borderRadius: 12,
