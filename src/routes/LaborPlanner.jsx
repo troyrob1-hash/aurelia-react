@@ -444,13 +444,23 @@ export default function LaborPlanner() {
     URL.revokeObjectURL(url)
   }
 
-  const displayRows = rows.length > 0 ? rows : Object.keys(budgets).length > 0 ? [
-    { gl: '50410', label: 'Onsite Labor (Fooda) Salaries and Wages', amount: 0, section: 'Location Costs' },
-    { gl: '50411', label: '401k', amount: 0, section: 'Location Costs' },
-    { gl: '50412', label: 'Benefits', amount: 0, section: 'Location Costs' },
-    { gl: '50413', label: 'Payroll Taxes', amount: 0, section: 'Location Costs' },
-    { gl: '50414', label: 'Bonus', amount: 0, section: 'Location Costs' },
-  ] : []
+  // Always render the full GL chart of accounts as an editable surface.
+  // Start from glMap (every GL line), then merge in any amount the user has
+  // typed or imported (tracked in `rows`). This removes the old shell/empty
+  // dead-end: there's always a table to type into or import over.
+  const displayRows = useMemo(() => {
+    const byGl = {}
+    rows.forEach(r => { if (r.gl) byGl[r.gl] = r })
+    // Preserve any imported rows whose GL isn't in glMap (custom/unmapped).
+    const extraRows = rows.filter(r => r.gl && !glMap[r.gl])
+    const mapped = Object.entries(glMap).map(([gl, cfg]) => ({
+      gl,
+      label: byGl[gl]?.label || cfg.label,
+      section: byGl[gl]?.section || cfg.section,
+      amount: byGl[gl]?.amount || 0,
+    }))
+    return [...mapped, ...extraRows]
+  }, [rows, glMap])
   const sections = useMemo(() => {
     const s = {}
     displayRows.forEach(r => {
