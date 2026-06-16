@@ -174,19 +174,11 @@ export default function LaborPlanner() {
         setPnl(pnlData)
         const pnl = pnlData
         const budgetLaborKeys = Object.keys(pnl).filter(k => k.startsWith('budget_cogs_labor') || k.startsWith('budget_labor'))
-        console.log('[labor-budget-debug]', {
-          path: `tenants/${orgId}/pnl/${locKey}/periods/${periodKey}`,
-          docExists: snap.exists(),
-          budgetLaborKeys,
-          sampleValues: budgetLaborKeys.reduce((a,k)=>{a[k]=pnl[k]; return a}, {}),
-          allBudgetKeys: Object.keys(pnl).filter(k => k.startsWith('budget_')).slice(0, 20),
-        })
         const glBudgets = {}
         for (const [gl, pnlKey] of Object.entries(GL_TO_PNL_BUDGET_KEY)) {
           const v = pnl[pnlKey]
           if (typeof v === 'number' && v !== 0) glBudgets[gl] = v
         }
-        console.log('[labor-budget-debug] mapped glBudgets:', glBudgets)
         setBudgets(glBudgets)
       } catch { /* no budgets yet */ }
     }
@@ -211,13 +203,11 @@ export default function LaborPlanner() {
           where('location', '==', location || 'all'),
         )
         const snap = await getDocs(q)
-        console.log('[LABOR LOAD]', 'period:', periodKey, 'location:', location, 'found:', snap.size)
         if (!snap.empty) {
           // Get the most recent submission
           const sorted = snap.docs.sort((a, b) => (b.data().createdAt?.seconds || 0) - (a.data().createdAt?.seconds || 0))
           const d = sorted[0].data()
           setSubmissionId(sorted[0].id)
-          console.log('[LABOR LOAD] setting rows:', (d.glRows || []).length, 'status:', d.status)
           setRows(d.glRows || [])
           setSource(d.fileName || '')
           setImportedBy(d.importedBy || '')
@@ -227,7 +217,6 @@ export default function LaborPlanner() {
           setRejectedReason(d.rejectNote || '')
         } else {
           // Clear state when switching to a period with no submission
-          console.log('[LABOR LOAD] clearing rows — no submission found')
           setRows([])
           setSource('')
           setImportedAt(null)
