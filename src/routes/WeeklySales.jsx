@@ -19,6 +19,8 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from 'recharts'
 import styles from './WeeklySales.module.css'
+import { useAutosave } from '@/hooks/useAutosave'
+import SaveStatusBar from '@/components/SaveStatusBar'
 
 // Full list of weekday names — used for iterating over a week. Individual
 // locations can customize which days they operate via the operatingDays
@@ -89,12 +91,6 @@ export default function WeeklySales() {
   const [loading,      setLoading]      = useState(false)
   const [saving,       setSaving]       = useState(false)
   const [dirty,        setDirty]        = useState(false)
-  const [autoSaveStatus, setAutoSaveStatus] = useState('idle') // idle | saving | saved
-  const autoSaveTimer = useRef(null)
-  // Refs so the page-exit and location-change flushes always see the latest
-  // dirty flag and save fn without re-subscribing listeners every render.
-  const dirtyRef = useRef(false)
-  const handleSaveDraftRef = useRef(null)
   const [approvalStatus, setApproval]   = useState(null)
 
   const [periodClosed, setPeriodClosed] = useState(false)
@@ -305,42 +301,6 @@ export default function WeeklySales() {
   // if the ID doesn't match by the time an await resolves, bail silently.
   const loadRequestId = useRef(0)
 
-  // Debounced autosave: 2s after the last edit, save the draft (sales doc +
-  // P&L) without submitting for approval or closing the week. Same pattern as
-  // inventory. Skips when the week is approved/locked.
-  useEffect(() => {
-    if (!dirty) return
-    if (approvalStatus === 'approved' || periodClosed) return
-    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
-    autoSaveTimer.current = setTimeout(async () => {
-      setAutoSaveStatus('saving')
-      const ok = await handleSaveDraft()
-      setAutoSaveStatus(ok ? 'saved' : 'idle')
-      if (ok) setTimeout(() => setAutoSaveStatus('idle'), 2000)
-    }, 2000)
-    return () => { if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current) }
-  }, [dirty, approvalStatus, periodClosed])
-
-  // Keep refs current for the flush handlers below.
-  useEffect(() => { dirtyRef.current = dirty }, [dirty])
-
-  // Flag 7 — flush pending edits when the page is hidden or closed, so leaving
-  // the site within the 2s autosave window doesn't lose the last entries.
-  // pagehide + visibilitychange are more reliable than beforeunload (mobile).
-  useEffect(() => {
-    const flush = () => {
-      if (dirtyRef.current && handleSaveDraftRef.current && approvalStatus !== 'approved' && !periodClosed) {
-        try { handleSaveDraftRef.current() } catch (e) {}
-      }
-    }
-    const onVis = () => { if (document.visibilityState === 'hidden') flush() }
-    document.addEventListener('visibilitychange', onVis)
-    window.addEventListener('pagehide', flush)
-    return () => {
-      document.removeEventListener('visibilitychange', onVis)
-      window.removeEventListener('pagehide', flush)
-    }
-  }, [approvalStatus, periodClosed])
 
   // Dismiss hover context card when the user scrolls — the card is
   // position: fixed and would otherwise strand at the wrong screen position
@@ -363,6 +323,17 @@ export default function WeeklySales() {
   const location = selectedLocation === 'all' ? null : selectedLocation
   const isAll    = selectedLocation === 'all'
   const isDirector = canApproveSales(user)  // directors, VPs, and admins can approve
+
+  // Autosave lifecycle (debounce + page-exit flush + location-switch flush) is
+  // owned by the shared useAutosave hook so every tab behaves identically.
+  // handleSaveDraft writes the sales doc + P&L without submitting/closing.
+  // flushKey={location} flushes the OUTGOING location before a switch loads.
+  const { autoSaveStatus, lastSavedAt } = useAutosave({
+    dirty,
+    save: handleSaveDraft,
+    enabled: approvalStatus !== 'approved' && !periodClosed,
+    flushKey: location,
+  })
 
   const week = useMemo(() => {
     if (!currentWeek) return null
@@ -840,9 +811,6 @@ export default function WeeklySales() {
     }
   }
 
-  // Keep the ref pointing at the latest handleSaveDraft so the page-exit
-  // flush always calls the current closure (latest entries/location/week).
-  handleSaveDraftRef.current = handleSaveDraft
 
   async function handleSave() {
     if (!location || !week) return
@@ -2817,36 +2785,20 @@ export default function WeeklySales() {
         </div>
       )}
 
-      {/* ── Floating save bar — autosave status + manual Save + Save & Close ── */}
-      {approvalStatus !== 'approved' && !periodClosed && (
-        <div style={{
-          position: 'fixed', bottom: 20, right: 20, zIndex: 50,
-          display: 'flex', alignItems: 'center', gap: 14,
-          background: '#0f172a', color: '#fff',
-          padding: '12px 18px', borderRadius: 12,
-          boxShadow: '0 8px 24px rgba(0,0,0,0.25)', maxWidth: 'calc(100vw - 40px)'
-        }}>
-          <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.3 }}>
-            <span style={{ fontSize: 11, opacity: 0.7, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Week total</span>
-            <span style={{ fontSize: 17, fontWeight: 700 }}>{fmt$(weekTotal)}</span>
-          </div>
-          <span style={{ fontSize: 12, minWidth: 92, color: autoSaveStatus === 'saving' ? '#fbbf24' : autoSaveStatus === 'saved' ? '#34d399' : '#94a3b8' }}>
-            {autoSaveStatus === 'saving' ? 'Saving…'
-              : autoSaveStatus === 'saved' ? 'Saved to P&L'
-              : dirty ? 'Unsaved changes' : 'All changes saved'}
-          </span>
-          <button onClick={handleSaveDraft} disabled={saving || !dirty} style={{
-            padding: '8px 14px', fontSize: 13, fontWeight: 600,
-            background: '#fff', color: '#0f172a', border: 'none',
-            borderRadius: 8, cursor: (saving || !dirty) ? 'default' : 'pointer',
-            opacity: (saving || !dirty) ? 0.5 : 1, whiteSpace: 'nowrap'
-          }}>Save</button>
-          <button className={styles.btnSave} onClick={handleSave} disabled={saving}
-            style={{ whiteSpace: 'nowrap' }}>
-            {saving ? 'Saving…' : 'Save & Close Period'}
-          </button>
-        </div>
-      )}
+      <SaveStatusBar
+        metricLabel="Week total"
+        metricValue={fmt$(weekTotal)}
+        autoSaveStatus={autoSaveStatus}
+        lastSavedAt={lastSavedAt}
+        dirty={dirty}
+        reassurance="Changes save automatically"
+        onSave={handleSaveDraft}
+        saveLabel="Save"
+        onSaveAndClose={handleSave}
+        saveAndCloseLabel="Save & Close Period"
+        saving={saving}
+        hidden={approvalStatus === 'approved' || periodClosed}
+      />
 
           </div>
   )
