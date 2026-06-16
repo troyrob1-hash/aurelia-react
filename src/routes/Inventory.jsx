@@ -459,7 +459,7 @@ export default function Inventory() {
   const { autoSaveStatus, lastSavedAt } = useAutosave({
     dirty,
     save: saveCounts,
-    flushKey: location,
+    flushKey: `${location || ''}|${periodKey || ''}`,
   })
 
   // ─── Handlers ──────────────────────────────────────────────────────────────

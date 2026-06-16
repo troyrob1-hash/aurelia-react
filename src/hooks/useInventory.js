@@ -648,6 +648,9 @@ export function useInventory(orgId, locationId, periodKey, user) {
   // completed or closing the period. Safe to call repeatedly (debounced).
   const saveCounts = useCallback(async () => {
     if (!locationId || !periodKey) return false
+    // Guard: if items haven't loaded yet (transition / reload), do NOT write —
+    // saving an empty/partial set here would clobber real counts.
+    if (!Array.isArray(items) || items.length === 0) return false
     try {
       const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
       const newCounts = items
