@@ -97,6 +97,22 @@ export default function LaborPlanner() {
     })
     setDirty(true)
   }
+
+  // Spreadsheet-style keyboard nav between Actual inputs. Enter/ArrowDown moves
+  // to the next GL input, ArrowUp to the previous. Uses DOM order of the
+  // data-labor-gl inputs so it works across both sections seamlessly.
+  function handleLaborKeyDown(e) {
+    if (e.key !== 'Enter' && e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+    const inputs = Array.from(document.querySelectorAll('input[data-labor-gl]'))
+    const idx = inputs.indexOf(e.target)
+    if (idx === -1) return
+    const next = (e.key === 'ArrowUp') ? idx - 1 : idx + 1
+    if (next >= 0 && next < inputs.length) {
+      e.preventDefault()
+      inputs[next].focus()
+      inputs[next].select()
+    }
+  }
   useEffect(() => {
     if (!selectedLocation || selectedLocation === 'all' || !periodKey) return
     (async () => {
@@ -792,6 +808,7 @@ export default function LaborPlanner() {
                                     placeholder="0"
                                     disabled={locked}
                                     data-labor-gl={r.gl}
+                                    onKeyDown={handleLaborKeyDown}
                                     style={{
                                       width: 88, textAlign: 'right', fontWeight: 700,
                                       border: locked ? '1px solid transparent' : `1px solid ${tint.bd}`,
