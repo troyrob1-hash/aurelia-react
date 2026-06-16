@@ -7,6 +7,8 @@ import { usePeriod } from '@/store/PeriodContext'
 import { readPeriodClose, getPriorKey } from '@/lib/pnl'
 import { db } from '@/lib/firebase'
 import { useInventory, fmt$, sanitizeDocId } from '@/hooks/useInventory'
+import { useAutosave } from '@/hooks/useAutosave'
+import SaveStatusBar from '@/components/SaveStatusBar'
 import { getTopVarianceIssues, calcParStatus } from '@/lib/variance'
 import { Search, Download, RefreshCw, Eye, EyeOff, TrendingUp, TrendingDown, Minus, AlertTriangle , Upload } from 'lucide-react'
 import { useToast } from '@/components/ui/Toast'
@@ -451,60 +453,14 @@ export default function Inventory() {
     saveCounts
   } = useInventory(orgId, location, periodKey, user)
 
-  // Debounced autosave: counts persist ~2s after the last change so users
-  // never scroll to a Save button. Writes counts doc + live PnL only; does
-  // NOT close the period. 'Save & Close Period' stays the deliberate finalize.
-  const [autoSaveStatus, setAutoSaveStatus] = useState('idle')
-  const [lastSavedAt, setLastSavedAt] = useState(null)
-  const autoSaveTimer = useRef(null)
-  useEffect(() => {
-    if (!dirty) return
-    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
-    autoSaveTimer.current = setTimeout(async () => {
-      setAutoSaveStatus('saving')
-      const ok = await saveCounts()
-      setAutoSaveStatus(ok ? 'saved' : 'idle')
-      if (ok) setLastSavedAt(new Date())
-    }, 2000)
-    return () => { if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current) }
-  }, [dirty, saveCounts])
-
-  // Flush unsaved counts when the location changes. Without this, switching
-  // location while counts are dirty (within the 2s autosave debounce) reloads
-  // the new location and wipes the prior location's pending counts. We capture
-  // the dirty flag and save fn in refs so the cleanup flushes the OUTGOING
-  // location's data before the reload.
-  const dirtyRef = useRef(dirty)
-  const saveCountsRef = useRef(saveCounts)
-  useEffect(() => { dirtyRef.current = dirty }, [dirty])
-  useEffect(() => { saveCountsRef.current = saveCounts }, [saveCounts])
-
-  // Flush pending counts when the page is hidden or closed. Without this,
-  // leaving the site within the 2s autosave window loses the last entries
-  // (Brittney/Tracy: 'leave and come back, progress erased'). pagehide +
-  // visibilitychange are more reliable than beforeunload, esp. on mobile.
-  useEffect(() => {
-    const flush = () => {
-      if (dirtyRef.current && saveCountsRef.current) {
-        try { saveCountsRef.current() } catch (e) {}
-      }
-    }
-    const onVis = () => { if (document.visibilityState === 'hidden') flush() }
-    document.addEventListener('visibilitychange', onVis)
-    window.addEventListener('pagehide', flush)
-    return () => {
-      document.removeEventListener('visibilitychange', onVis)
-      window.removeEventListener('pagehide', flush)
-    }
-  }, [])
-  useEffect(() => {
-    return () => {
-      if (dirtyRef.current && saveCountsRef.current) {
-        // fire-and-forget flush for the outgoing location
-        saveCountsRef.current()
-      }
-    }
-  }, [location])
+  // Autosave lifecycle (debounce + page-exit flush + location-switch flush)
+  // is owned by the shared useAutosave hook so every tab behaves identically.
+  // saveCounts writes the counts doc + live P&L; it does NOT close the period.
+  const { autoSaveStatus, lastSavedAt } = useAutosave({
+    dirty,
+    save: saveCounts,
+    flushKey: location,
+  })
 
   // ─── Handlers ──────────────────────────────────────────────────────────────
   async function seedPriorPeriod() {
@@ -1491,43 +1447,17 @@ export default function Inventory() {
           </div>
         ))}
 
-        {/* Floating save bar — always visible while scrolling. Shows live COGS,
-            autosave status, and the deliberate Close Period action. */}
-        <div style={{
-          position: 'fixed', bottom: 20, right: 20, zIndex: 50,
-          display: 'flex', alignItems: 'center', gap: 16,
-          background: '#0f172a', color: '#fff',
-          padding: '12px 18px', borderRadius: 12,
-          boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
-          maxWidth: 'calc(100vw - 40px)'
-        }}>
-          <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.3 }}>
-            <span style={{ fontSize: 11, opacity: 0.7, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Live COGS</span>
-            <span style={{ fontSize: 18, fontWeight: 700 }}>{fmt$(totals.liveCOGS)}</span>
-          </div>
-          {(() => {
-            const saving = autoSaveStatus === 'saving'
-            const unsaved = dirty && !saving
-            const dot = saving ? '#fbbf24' : unsaved ? '#94a3b8' : '#34d399'
-            const label = saving ? 'Saving…' : unsaved ? 'Saving in a moment…' : 'All changes saved'
-            const ts = lastSavedAt ? lastSavedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null
-            return (
-              <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.3, minWidth: 150 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                  <span style={{ width: 9, height: 9, borderRadius: '50%', background: dot, flexShrink: 0, boxShadow: saving ? 'none' : '0 0 6px ' + dot }} />
-                  <span style={{ fontSize: 13, fontWeight: 600, color: '#fff' }}>{label}</span>
-                </div>
-                <span style={{ fontSize: 11, opacity: 0.65, marginTop: 2 }}>
-                  {ts ? 'Saved automatically at ' + ts : 'Counts save automatically'}
-                </span>
-              </div>
-            )
-          })()}
-          <button className={styles.btnSaveFooter} onClick={handleSave} disabled={saving}
-            style={{ whiteSpace: 'nowrap' }}>
-            {saving ? 'Saving…' : 'Save & Close Period'}
-          </button>
-        </div>
+        <SaveStatusBar
+          metricLabel="Live COGS"
+          metricValue={fmt$(totals.liveCOGS)}
+          autoSaveStatus={autoSaveStatus}
+          lastSavedAt={lastSavedAt}
+          dirty={dirty}
+          reassurance="Counts save automatically"
+          onSaveAndClose={handleSave}
+          saveAndCloseLabel="Save & Close Period"
+          saving={saving}
+        />
 
         {/* ── Why panel — item-level explanation drawer ── */}
         {whyItem && (() => {
