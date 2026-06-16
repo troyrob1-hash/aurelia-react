@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
+import SaveStatusBar from '@/components/SaveStatusBar'
 import { useToast } from '@/components/ui/Toast'
 import { usePeriod } from '@/store/PeriodContext'
 import { db } from '@/lib/firebase'
@@ -1054,6 +1055,19 @@ export default function Budgets() {
           )}
         </>
       )}
+
+      <SaveStatusBar
+        metricLabel="Annual Budget"
+        metricValue={fmt$(annualGFS)}
+        autoSaveStatus={saving ? 'saving' : isLocked ? 'saved' : 'idle'}
+        lastSavedAt={null}
+        dirty={dirty && !isLocked}
+        reassurance={isLocked ? 'Approved & locked' : dirty ? 'Unsaved budget changes' : 'No changes'}
+        onSave={(dirty && !isLocked) ? handleSave : undefined}
+        saveLabel={saving ? 'Submitting…' : 'Submit for Approval'}
+        saving={saving}
+        hidden={!location || schema.length === 0}
+      />
     </div>
   )
 }
