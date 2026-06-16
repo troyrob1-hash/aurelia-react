@@ -21,6 +21,7 @@ const Budgets     = lazy(() => import('@/routes/Budgets'))
 const Transfers   = lazy(() => import('@/routes/Transfers'))
 const LaborPlanner = lazy(() => import('@/routes/LaborPlanner'))
 const Settings    = lazy(() => import('@/routes/Settings'))
+const BudgetImport = lazy(() => import('@/routes/BudgetImport'))
 const Home = lazy(() => import('@/routes/Home'))
 function PendingApproval() {
   const { user, clearAuth } = useAuthStore()
@@ -95,6 +96,7 @@ export default function App() {
           <Route path="transfers" element={<Suspense fallback={<LoadingScreen />}><Transfers /></Suspense>} />
           <Route path="labor"     element={<Suspense fallback={<LoadingScreen />}><LaborPlanner /></Suspense>} />
           <Route path="settings"  element={<Suspense fallback={<LoadingScreen />}><AdminOnly><Settings /></AdminOnly></Suspense>} />
+          <Route path="budget-import" element={<Suspense fallback={<LoadingScreen />}><AdminOnly><BudgetImport /></AdminOnly></Suspense>} />
           <Route path="*"         element={<Navigate to="/" replace />} />
         </Route>
       </Routes>
