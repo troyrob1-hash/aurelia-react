@@ -14,6 +14,8 @@ import {
   query, where, orderBy, limit, getDocs, serverTimestamp
 } from 'firebase/firestore'
 import styles from './LaborPlanner.module.css'
+import { useAutosave } from '@/hooks/useAutosave'
+import SaveStatusBar from '@/components/SaveStatusBar'
 
 const PERIOD_OPTS = ['Weekly', 'Monthly', 'Period to date']
 
@@ -113,6 +115,51 @@ export default function LaborPlanner() {
       inputs[next].select()
     }
   }
+
+  // Draft save for manual entry: writes the current rows to a laborSubmissions
+  // doc (same shape import produces) and posts to P&L. Create-or-update so
+  // autosave doesn't spawn a new submission per keystroke. Status stays
+  // 'pending' so manual entries enter the approval queue like imports do.
+  async function saveLabor() {
+    if (!location) return false
+    if (approvalStatus === 'approved') return false
+    try {
+      const name = user?.name || user?.email || 'unknown'
+      const payload = {
+        period:     periodKey,
+        location:   location,
+        glRows:     rows,
+        importedBy: name,
+        status:     'pending',
+        updatedAt:  serverTimestamp(),
+      }
+      if (submissionId) {
+        await updateDoc(doc(db, 'tenants', orgId, 'laborSubmissions', submissionId), payload)
+      } else {
+        const ref = await addDoc(collection(db, 'tenants', orgId, 'laborSubmissions'), { ...payload, createdAt: serverTimestamp() })
+        setSubmissionId(ref.id)
+      }
+      const onsiteLabor  = rows.filter(r => r.gl?.startsWith('504') && r.gl !== '50420').reduce((sum, r) => sum + r.amount, 0)
+      const thirdParty   = rows.find(r => r.gl === '50420')?.amount || 0
+      const compBenefits = rows.filter(r => r.gl?.startsWith('68')).reduce((sum, r) => sum + r.amount, 0)
+      await writeLaborPnL(location, periodKey, { onsiteLabor, thirdParty, compBenefits, glRows: rows })
+      if (approvalStatus !== 'pending') setApproval('pending')
+      setDirty(false)
+      return true
+    } catch (e) {
+      console.error('Labor save failed:', e)
+      return false
+    }
+  }
+
+  // Shared autosave lifecycle: debounce + page-exit flush + location-switch
+  // flush + status badge. saveLabor is the draft-save; enabled while editable.
+  const { autoSaveStatus, lastSavedAt } = useAutosave({
+    dirty,
+    save: saveLabor,
+    enabled: approvalStatus !== 'approved' && !periodClosed,
+    flushKey: location,
+  })
   useEffect(() => {
     if (!selectedLocation || selectedLocation === 'all' || !periodKey) return
     (async () => {
@@ -876,6 +923,19 @@ export default function LaborPlanner() {
           )}
         </div>
       )}
+
+      <SaveStatusBar
+        metricLabel="Total Labor"
+        metricValue={`$${fmt(grandTotal)}`}
+        autoSaveStatus={autoSaveStatus}
+        lastSavedAt={lastSavedAt}
+        dirty={dirty}
+        reassurance="Labor entries save automatically"
+        onSave={saveLabor}
+        saveLabel="Save"
+        saving={false}
+        hidden={approvalStatus === 'approved' || periodClosed}
+      />
     </div>
   )
 }
