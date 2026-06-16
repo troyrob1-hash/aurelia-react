@@ -1408,7 +1408,7 @@ export default function Inventory() {
                               value={item.eaches || ''}
                               onChange={e => setEaches(item.id, e.target.value)}
                               placeholder="ea"
-                              className={styles.countInput}
+                              className={`${styles.countInput} ${(parseFloat(item.eaches) || 0) > 0 ? styles.counted_neutral : ''}`}
                               title="Eaches - loose units from open case"
                             />
                             <button className={styles.adjBtn} onClick={() => { const st = window.scrollY; adjustEaches(item.id, 1); requestAnimationFrame(() => window.scrollTo(0, st)) }}>+</button>
