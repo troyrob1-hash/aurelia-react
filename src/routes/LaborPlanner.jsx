@@ -81,6 +81,22 @@ export default function LaborPlanner() {
   const [approvalStatus, setApproval] = useState(null)
 
   const [periodClosed, setPeriodClosed] = useState(false)
+  const [dirty, setDirty] = useState(false)
+
+  // Manual entry: update (or promote) a GL row's amount in `rows`. Works for
+  // imported rows, glMap defaults, and unmapped GLs. Marks the tab dirty so
+  // autosave picks it up. Same `rows` shape import produces -> same save/P&L.
+  function setAmount(gl, value) {
+    const num = parseFloat(String(value).replace(/[$,\s]/g, ''))
+    const amount = isNaN(num) ? 0 : num
+    setRows(prev => {
+      const exists = prev.some(r => r.gl === gl)
+      if (exists) return prev.map(r => r.gl === gl ? { ...r, amount } : r)
+      const cfg = glMap[gl] || {}
+      return [...prev, { gl, label: cfg.label || gl, section: cfg.section || 'Other', amount }]
+    })
+    setDirty(true)
+  }
   useEffect(() => {
     if (!selectedLocation || selectedLocation === 'all' || !periodKey) return
     (async () => {
@@ -753,7 +769,47 @@ export default function LaborPlanner() {
                         <tr key={i}>
                           <td className={styles.glCode}>{r.gl || '—'}</td>
                           <td className={styles.desc}>{r.label}</td>
-                          <td style={{ textAlign: 'right', fontWeight: 700 }}>${fmt(r.amount)}</td>
+                          <td style={{ textAlign: 'right', padding: '4px 8px' }}>
+                            {(() => {
+                              const locked = approvalStatus === 'approved' || periodClosed
+                              const hasVal = r.amount > 0
+                              // Three states: empty = plain gray; filled w/ budget = variance
+                              // tint (over=red, on/under=green); filled w/o budget = subtle
+                              // neutral fill (entry confirmation, matches inventory pattern).
+                              const tint = (hasVal && bud)
+                                ? (v > 0 ? { bd: '#fca5a5', bg: '#fef2f2' } : { bd: '#86efac', bg: '#f0fdf4' })
+                                : hasVal
+                                ? { bd: '#cbd5e1', bg: '#f1f5f9' }
+                                : { bd: '#e2e8f0', bg: '#f8fafc' }
+                              return (
+                                <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'flex-end', gap: 2 }}>
+                                  <span style={{ color: '#94a3b8', fontWeight: 600, fontSize: 12 }}>$</span>
+                                  <input
+                                    type="text"
+                                    inputMode="decimal"
+                                    value={r.amount ? String(r.amount) : ''}
+                                    onChange={e => setAmount(r.gl, e.target.value)}
+                                    placeholder="0"
+                                    disabled={locked}
+                                    data-labor-gl={r.gl}
+                                    style={{
+                                      width: 88, textAlign: 'right', fontWeight: 700,
+                                      border: locked ? '1px solid transparent' : `1px solid ${tint.bd}`,
+                                      borderRadius: 5,
+                                      padding: '4px 6px', fontSize: 13, fontFamily: 'inherit',
+                                      background: locked ? 'transparent' : tint.bg,
+                                      color: '#0f172a',
+                                      cursor: locked ? 'not-allowed' : 'text',
+                                      outline: 'none',
+                                      transition: 'border-color 0.12s, background 0.12s, box-shadow 0.12s',
+                                    }}
+                                    onFocus={e => { if (!locked) { e.target.style.borderColor = '#2563eb'; e.target.style.boxShadow = '0 0 0 2px rgba(37,99,235,0.12)' } }}
+                                    onBlur={e => { if (!locked) { e.target.style.borderColor = tint.bd } e.target.style.boxShadow = 'none' }}
+                                  />
+                                </div>
+                              )
+                            })()}
+                          </td>
                           <td style={{ textAlign: 'right', color: '#999' }}>{bud ? `$${fmt(bud)}` : '—'}</td>
                           <td style={{ textAlign: 'right' }}>
                             {bud ? <span className={varianceCls(v)}>{varianceArrow(v)}</span> : <span style={{ color: '#ccc' }}>—</span>}
