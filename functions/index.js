@@ -87,7 +87,30 @@ exports.mintFirebaseToken = onCall(
 
     const uid = decoded.sub;
     const email = decoded.email || "";
-    const tenantId = decoded["custom:tenantId"] || "fooda";
+    // Phase A observability for the 'fooda' silent-fallback bug cluster: log
+    // + audit-log when the Cognito token genuinely lacks the custom:tenantId
+    // claim. mapUser (client) has a matching console.warn. The fallback is
+    // kept for now to avoid locking out any legacy Cognito users whose pool
+    // entries pre-date the attribute; Phase B will remove it after the
+    // backfill script runs and these audit entries confirm zero recent hits.
+    const claimTenantId = decoded["custom:tenantId"];
+    if (!claimTenantId) {
+      console.warn(
+        `[mintFirebaseToken] custom:tenantId missing — uid=${uid} email=${email || "<none>"} — falling back to fooda. ` +
+        `Phase B will tighten this after Cognito backfill.`
+      );
+      try {
+        await writeAuditLog(
+          "fooda",
+          { uid, email: email || null, displayName: null, ip: null, userAgent: null },
+          "auth.tenantId_fallback",
+          { type: "auth", id: uid }
+        );
+      } catch (logErr) {
+        console.warn("[mintFirebaseToken] audit-log write failed:", logErr.message);
+      }
+    }
+    const tenantId = claimTenantId || "fooda";
     const role = decoded["custom:role"] || "viewer";
     const name = decoded["custom:managerName"] || decoded.name || email;
 

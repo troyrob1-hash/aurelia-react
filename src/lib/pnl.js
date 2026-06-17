@@ -5,19 +5,26 @@
 
 import { db } from './firebase'
 import { doc, setDoc, getDoc, onSnapshot, serverTimestamp, collection, query, where, getDocs, documentId } from 'firebase/firestore'
-
-
-import { auth } from './firebase'
+import { useAuthStore } from '@/store/authStore'
 
 // Default commission rate. Interim: single constant (was hardcoded 0.18 in
 // multiple files). Future: read per-location commissionRate from the location
 // doc, falling back to this. Change here once to update everywhere.
 export const DEFAULT_COMMISSION_RATE = 0.18
 
+// Previously this read `auth.currentUser?.tenantId` — but that property is
+// Firebase Auth's multi-tenancy field (GCIP tenants), not the `custom:tenantId`
+// claim Aurelia uses. It was ALWAYS undefined for Aurelia users, so the
+// `|| 'fooda'` fallback fired on every call and every writePnL silently
+// targeted the fooda tenant regardless of the signed-in user's actual tenant.
+// Now reads from useAuthStore (which carries the real claim via mapUser) and
+// throws if missing — better to fail loudly than write to the wrong tenant.
 function _getOrgId() {
-  const user = auth.currentUser
-  if (!user) console.warn('_getOrgId: no authenticated user; defaulting to fooda tenant')
-  return user?.tenantId || 'fooda'
+  const tenantId = useAuthStore.getState().user?.tenantId
+  if (!tenantId) {
+    throw new Error('pnl.js: _getOrgId called without a signed-in user/tenantId — pnl writers must not run before sign-in completes')
+  }
+  return tenantId
 }
 
 export function locId(name) {

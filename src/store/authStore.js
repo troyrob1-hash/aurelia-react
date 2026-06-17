@@ -91,11 +91,25 @@ async function loadProfile(user) {
 }
 
 function mapUser(attrs) {
+  // Phase A observability for the 'fooda' silent-fallback bug cluster: log
+  // when a real sign-in flow hits the fallback so the affected-user list can
+  // be built before Phase B removes the fallback. mintFirebaseToken (Cloud
+  // Function) has a matching log + audit-log entry. Fallback is intentionally
+  // kept for now to avoid locking out legacy Cognito users whose pool entries
+  // pre-date the custom:tenantId attribute.
+  const tenantClaim = attrs['custom:tenantId']
+  if (!tenantClaim) {
+    console.warn(
+      '[mapUser] custom:tenantId missing for',
+      attrs.email || attrs['cognito:username'] || '<unknown>',
+      '— falling back to fooda. Tracked: Phase B will remove this fallback after Cognito backfill.'
+    )
+  }
   return {
     username:    attrs.email || attrs['cognito:username'],
     email:       attrs.email || '',
     name:        attrs['custom:managerName'] || attrs.name || attrs.email || '',
     role:        attrs['custom:role']     || 'viewer',
-    tenantId:    attrs['custom:tenantId'] || 'fooda',
+    tenantId:    tenantClaim || 'fooda',
   }
 }

@@ -54,7 +54,21 @@ export default function AppShell() {
   const [pwSaving, setPwSaving] = useState(false)
   const [pwError, setPwError] = useState(null)
   const [pwSuccess, setPwSuccess] = useState(false)
-  const orgId = user?.tenantId || 'fooda'
+  const orgId = user?.tenantId
+
+  // Defense-in-depth against the 'fooda' silent fallback class of bug: if a
+  // user reached AppShell without a tenantId claim, don't quietly bucket them
+  // into someone else's tenant — sign them out and bounce them to login.
+  // mapUser (authStore) still has its own fallback today, so this code path
+  // shouldn't fire in practice; this is the belt-and-suspenders that will
+  // become the only line of defense once Phase B tightens the gateway.
+  useEffect(() => {
+    if (user && !user.tenantId) {
+      console.error('AppShell: signed-in user has no tenantId claim — forcing sign-out')
+      signOut()
+      navigate('/login')
+    }
+  }, [user, signOut, navigate])
 
   // Notifications today are admin-only (the only writer is submitAccessRequest,
   // which mirrors access-request alerts here). Gate the subscription AND the
