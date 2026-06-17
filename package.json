@@ -6,11 +6,12 @@
   "scripts": {
     "dev": "vite",
     "dev:staging": "dotenv -e .env.staging -- vite",
+    "prebuild": "npm test",
     "build": "vite build",
     "build:staging": "dotenv -e .env.staging -- vite build",
     "preview": "vite preview",
     "lint": "eslint src --ext .js,.jsx",
-    "test": "vitest run",
+    "test": "vitest run --exclude=tests/smoke.test.js --exclude=tests/rules.test.js --exclude=**/node_modules/** --exclude=**/dist/**",
     "test:smoke": "dotenv -e .env.test -- vitest run tests/smoke.test.js --reporter=verbose",
     "test:rules": "firebase emulators:exec --only firestore --project aurelia-rules-test 'vitest run tests/rules.test.js'"
   },
@@ -31,12 +32,14 @@
     "zustand": "^4.5.0"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.1.0",
     "@vitejs/plugin-react": "^4.2.1",
     "dotenv-cli": "^11.0.0",
     "eslint": "^8.57.0",
     "eslint-plugin-react": "^7.34.0",
     "eslint-plugin-react-hooks": "^4.6.0",
     "firebase-admin": "^13.7.0",
+    "jsdom": "^25.0.1",
     "puppeteer": "^24.42.0",
     "vite": "^5.1.4",
     "vitest": "^4.1.3"
