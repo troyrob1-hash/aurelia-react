@@ -109,7 +109,7 @@ export async function writePnL(location, period, data, options = {}) {
     const lockRef = doc(db, 'tenants', _getOrgId(), 'periodLocks', locId(location) + '__' + period)
     const lockSnap = await getDoc(lockRef)
     if (lockSnap.exists() && lockSnap.data().locked) {
-      throw new Error('Period ' + period + ' is locked. Unlock it in Settings to make changes.')
+      throw new Error('Period ' + period + ' is locked. Use the 🔓 Reopen button on the period bar to unlock (director+ only).')
     }
   }
   const ref = doc(db, 'tenants', _getOrgId(), 'pnl', locId(location), 'periods', period)

@@ -4,7 +4,7 @@ import { useAuthStore } from '@/store/authStore'
 import { changePassword } from '@/lib/auth'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { usePeriod, getWeekLabel } from '@/store/PeriodContext'
-import { readPeriodClose, writePeriodClose, lockPeriod, unlockPeriod } from '@/lib/pnl'
+import { readPeriodClose, writePeriodClose, lockPeriod, unlockPeriod, isPeriodLocked } from '@/lib/pnl'
 import {
   LayoutDashboard, ShoppingCart, Package, TrendingUp,
   Trash2, FileText, PieChart, ArrowLeftRight,
@@ -107,22 +107,43 @@ export default function AppShell() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [periodClosed, setPeriodClosed] = useState(false)
   const [closedBy, setClosedBy] = useState(null)
+  // periodLocked is the canonical lock state read from periodLocks/{loc}__{period}.
+  // periodClosed is read from the P&L doc's periodStatus field. The normal
+  // close/reopen flow writes both in sync, but they can drift (interrupted
+  // close, Cloud-Function write, direct Firestore edit). When they drift,
+  // periodClosed=false but periodLocked=true — writes still throw, and the
+  // old UI hid the Reopen button. Tracking both lets us surface Reopen in
+  // the drift case too.
+  const [periodLocked, setPeriodLocked] = useState(false)
   const isDirector = /^(admin|director)$/i.test(user?.role || '')
   const periodKey = `${year}-P${String(period).padStart(2,'0')}-W${week}`
 
   useEffect(() => {
-    if (!selectedLocation || selectedLocation === 'all') { setPeriodClosed(false); return }
+    if (!selectedLocation || selectedLocation === 'all') {
+      setPeriodClosed(false)
+      setPeriodLocked(false)
+      setClosedBy(null)
+      return
+    }
     (async () => {
       try {
-        const info = await readPeriodClose(selectedLocation, periodKey)
+        const [info, locked] = await Promise.all([
+          readPeriodClose(selectedLocation, periodKey),
+          isPeriodLocked(selectedLocation, periodKey),
+        ])
         setPeriodClosed(info.periodStatus === 'closed')
         setClosedBy(info.closedBy || null)
+        setPeriodLocked(!!locked)
       } catch {}
     })()
   }, [selectedLocation, periodKey])
 
   async function handleClosePeriod() {
     if (!selectedLocation || selectedLocation === 'all') return
+    // Defensive: refuse to "close" a period that's already locked or closed —
+    // would overwrite closedBy/closedAt metadata if a race lets the UI fall
+    // out of sync with the actual state docs.
+    if (periodClosed || periodLocked) return
     if (!window.confirm(`Close period ${periodKey} for ${cleanLocName(selectedLocation)}?\n\nThis locks all data for this period across all tabs.`)) return
     try {
       const actor = user?.name || user?.email || 'unknown'
@@ -130,6 +151,7 @@ export default function AppShell() {
       await lockPeriod(selectedLocation, periodKey, user)
       setPeriodClosed(true)
       setClosedBy(actor)
+      setPeriodLocked(true)
     } catch (err) {
       alert('Failed to close period: ' + (err.message || ''))
     }
@@ -172,6 +194,7 @@ export default function AppShell() {
 
       setPeriodClosed(false)
       setClosedBy(null)
+      setPeriodLocked(false)
     } catch (err) {
       alert('Failed to reopen: ' + (err.message || ''))
     }
@@ -257,7 +280,7 @@ export default function AppShell() {
           <div className={styles.liveBadge}>
             <span className={styles.liveDot}/> live
           </div>
-          {selectedLocation && selectedLocation !== 'all' && isDirector && !periodClosed && (
+          {selectedLocation && selectedLocation !== 'all' && isDirector && !periodClosed && !periodLocked && (
             <button onClick={handleClosePeriod} style={{
               display:'inline-flex', alignItems:'center', gap:5,
               padding:'6px 14px', fontSize:11, fontWeight:600,
@@ -266,14 +289,27 @@ export default function AppShell() {
               cursor:'pointer', whiteSpace:'nowrap',
             }}>🔒 Close Period</button>
           )}
-          {selectedLocation && selectedLocation !== 'all' && periodClosed && (
+          {selectedLocation && selectedLocation !== 'all' && (periodClosed || periodLocked) && (
             <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-              <span style={{
-                display:'inline-flex', alignItems:'center', gap:4,
-                padding:'5px 10px', fontSize:11, fontWeight:500,
-                background:'#dcfce7', color:'#166534',
-                borderRadius:999, whiteSpace:'nowrap',
-              }}>🔒 Closed{closedBy ? ` by ${closedBy.split(' ')[0]}` : ''}</span>
+              {periodClosed ? (
+                // Normal close: green "Closed by X" badge with actor metadata.
+                <span style={{
+                  display:'inline-flex', alignItems:'center', gap:4,
+                  padding:'5px 10px', fontSize:11, fontWeight:500,
+                  background:'#dcfce7', color:'#166534',
+                  borderRadius:999, whiteSpace:'nowrap',
+                }}>🔒 Closed{closedBy ? ` by ${closedBy.split(' ')[0]}` : ''}</span>
+              ) : (
+                // Drift case: lock exists but periodStatus is not 'closed', so
+                // we don't have actor metadata. Amber badge visually flags this
+                // as out-of-band state (vs the green "normal close" badge).
+                <span style={{
+                  display:'inline-flex', alignItems:'center', gap:4,
+                  padding:'5px 10px', fontSize:11, fontWeight:500,
+                  background:'#fef3c7', color:'#92400e',
+                  borderRadius:999, whiteSpace:'nowrap',
+                }} title="Period is locked but has no close metadata — likely from an interrupted close or a direct Firestore write. Reopening will release the lock.">🔒 Locked</span>
+              )}
               {isDirector && (
                 <button onClick={handleReopenPeriod} style={{
                   padding:'5px 10px', fontSize:11, fontWeight:500,
