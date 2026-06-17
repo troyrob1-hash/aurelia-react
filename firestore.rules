@@ -283,6 +283,58 @@ service cloud.firestore {
         allow read:  if ownsTenant(tenantId) && isAdmin();
         allow write: if ownsTenant(tenantId) && isAdmin();
       }
+
+      // Period locks — the gate that prevents writes to a closed period.
+      // pnl.js writePnL preflights read this; AppShell close/reopen calls
+      // lockPeriod / unlockPeriod to write. Director-only writes match the
+      // existing close/reopen UI gate.
+      match /periodLocks/{periodKey} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isDirector();
+      }
+
+      // Client-side audit trail (src/lib/audit.js). Many manager-tier actions
+      // append entries — invoice approve, JE post, sales import, period close,
+      // etc. Read by Settings → Audit Log (admin-gated route). Append-only.
+      match /auditTrail/{logId} {
+        allow read:   if ownsTenant(tenantId) && isDirector();
+        allow create: if ownsTenant(tenantId) && isManager();
+        allow update, delete: if false;
+      }
+
+      // Vendor purchase orders. Currently written by processVendorInvoice
+      // (integration ingestion) and Cloud Functions; mirrors the /orders rule
+      // shape so future direct OrderHub PO writes need no rules deploy.
+      match /purchaseOrders/{poId} {
+        allow read:   if ownsTenant(tenantId) && isManager();
+        allow create: if ownsTenant(tenantId) && isManager();
+        allow update: if ownsTenant(tenantId) && isManager();
+        allow delete: if ownsTenant(tenantId) && isDirector();
+      }
+
+      // POS transactions ingested from upstream POS systems. ONLY the Cloud
+      // Function writes (admin SDK bypasses rules); client writes denied.
+      // Manager-tier read leaves room for future revenue dashboards.
+      match /posTransactions/{txnId} {
+        allow read:  if ownsTenant(tenantId) && isManager();
+        allow write: if false;
+      }
+
+      // Per-integration runtime status (Ramp, NetSuite, etc.) — credentials
+      // live in Secret Manager, this is metadata/last-sync state. Setup and
+      // read in Settings → Integration Map / Sync Status (admin-gated).
+      match /integrations/{integId} {
+        allow read:  if ownsTenant(tenantId) && isAdmin();
+        allow write: if ownsTenant(tenantId) && isAdmin();
+      }
+
+      // Integration sync attempt log. Same admin-tier readers/writers as
+      // /integrations. Append-only.
+      match /syncLog/{logId} {
+        allow read:   if ownsTenant(tenantId) && isAdmin();
+        allow create: if ownsTenant(tenantId) && isAdmin();
+        allow update, delete: if false;
+      }
     }
 
     // ============================================================
@@ -344,52 +396,17 @@ service cloud.firestore {
     }
 
     // ============================================================
-    // DEFAULT DENY — anything not matched above is rejected
+    // DEFAULT DENY — anything not matched above is rejected.
+    //
+    // NOTE: earlier versions of this block held nested rules for
+    // periodLocks, auditTrail, syncLog, integrations, purchaseOrders,
+    // posTransactions, and notifications that granted access on
+    // `request.auth != null` only (no ownsTenant, no role check) — a P0
+    // cross-tenant leak. All seven collections now live under
+    // match /tenants/{tenantId} above with ownsTenant + role gating.
     // ============================================================
     match /{document=**} {
       allow read, write: if false;
-
-    // Period locks
-    match /tenants/{orgId}/periodLocks/{periodKey} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null;
-    }
-
-    // Audit trail
-    match /tenants/{orgId}/auditTrail/{logId} {
-      allow read: if request.auth != null;
-      allow create: if request.auth != null;
-      allow update, delete: if false;
-    }
-
-    // Sync log
-    match /tenants/{orgId}/syncLog/{logId} {
-      allow read: if request.auth != null;
-      allow create: if request.auth != null;
-    }
-
-    // Integration status
-    match /tenants/{orgId}/integrations/{integId} {
-      allow read, write: if request.auth != null;
-    }
-
-
-    // Purchase orders
-    match /tenants/{orgId}/purchaseOrders/{poId} {
-      allow read, write: if request.auth != null;
-    }
-
-    // POS transactions
-    match /tenants/{orgId}/posTransactions/{txnId} {
-      allow read: if request.auth != null;
-      allow create: if request.auth != null;
-    }
-
-
-    // Notifications: rule moved under match /tenants/{tenantId} (above) and
-    // gated to ownsTenant + isAdmin so a manager-role user can no longer
-    // read admin-only access-request alerts.
-
     }
   }
 }
