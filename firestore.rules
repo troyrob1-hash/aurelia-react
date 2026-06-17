@@ -158,6 +158,23 @@ service cloud.firestore {
         allow update: if ownsTenant(tenantId) && isDirector();
       }
 
+      // Waste log entries (WasteLog.jsx writes per-item shrinkage events here,
+      // keyed by location + periodKey). Delete restricted to director+ so
+      // managers can log but can't quietly drop history.
+      match /wasteLog/{entryId} {
+        allow read:   if ownsTenant(tenantId);
+        allow create: if ownsTenant(tenantId) && isManager();
+        allow update: if ownsTenant(tenantId) && isManager();
+        allow delete: if ownsTenant(tenantId) && isDirector();
+      }
+
+      // POS imports keyed by {locationId}_{periodKey}. Same tier as inventory
+      // counts — managers upload, anyone in tenant reads.
+      match /posData/{docId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isManager();
+      }
+
       // Vendors and products — managers can create/update, directors can delete
       match /vendors/{vendorId} {
         allow read:   if ownsTenant(tenantId);
