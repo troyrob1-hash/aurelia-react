@@ -28,16 +28,16 @@ export function useAutosave({ dirty, save, enabled = true, flushKey, debounceMs 
     timerRef.current = setTimeout(async () => {
       setAutoSaveStatus('saving')
       let ok = false
-      try { ok = await save() } catch (e) { ok = false }
+      try { ok = saveRef.current ? await saveRef.current() : false } catch (e) { ok = false }
       setAutoSaveStatus(ok ? 'saved' : 'idle')
       if (ok) setLastSavedAt(new Date())
     }, debounceMs)
     return () => { if (timerRef.current) clearTimeout(timerRef.current) }
-  }, [dirty, enabled, save, debounceMs])
+  }, [dirty, enabled, debounceMs])
 
-  const flush = () => {
+  const flush = async () => {
     if (dirtyRef.current && enabledRef.current && saveRef.current) {
-      try { saveRef.current() } catch (e) {}
+      try { await saveRef.current() } catch (e) {}
     }
   }
 
