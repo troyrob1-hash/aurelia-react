@@ -56,8 +56,15 @@ export default function AppShell() {
   const [pwSuccess, setPwSuccess] = useState(false)
   const orgId = user?.tenantId || 'fooda'
 
+  // Notifications today are admin-only (the only writer is submitAccessRequest,
+  // which mirrors access-request alerts here). Gate the subscription AND the
+  // bell rendering on the admin role: skipping the subscription for non-admins
+  // avoids permission-denied snapshot errors now that the rule is tightened,
+  // and matches the UI behavior.
+  const isAdmin = /^admin$/i.test(user?.role || '')
+
   useEffect(() => {
-    if (!orgId) return
+    if (!orgId || !isAdmin) return
     const q = query(
       collection(db, 'tenants', orgId, 'notifications'),
       where('read', '==', false)
@@ -68,7 +75,7 @@ export default function AppShell() {
       setNotifications(notifs)
     })
     return unsub
-  }, [orgId])
+  }, [orgId, isAdmin])
 
   async function markRead(notifId) {
     try {
@@ -267,40 +274,44 @@ export default function AppShell() {
 
         <div className={styles.topbarRight}>
 
-            {/* Notification bell */}
-            <div style={{ position: 'relative' }}>
-              <button onClick={() => setShowNotifs(!showNotifs)} 
-                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 6, position: 'relative' }}>
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round">
-                  <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>
-                </svg>
-                {notifications.length > 0 && (
-                  <span style={{ position: 'absolute', top: 2, right: 2, width: 16, height: 16, borderRadius: '50%', background: '#F15D3B', color: '#fff', fontSize: 10, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    {notifications.length}
-                  </span>
+            {/* Notification bell — admin-only. Today's only notification source
+                is the access-request alert mirrored from submitAccessRequest,
+                which is admin-only content. */}
+            {isAdmin && (
+              <div style={{ position: 'relative' }}>
+                <button onClick={() => setShowNotifs(!showNotifs)}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 6, position: 'relative' }}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round">
+                    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                  </svg>
+                  {notifications.length > 0 && (
+                    <span style={{ position: 'absolute', top: 2, right: 2, width: 16, height: 16, borderRadius: '50%', background: '#F15D3B', color: '#fff', fontSize: 10, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      {notifications.length}
+                    </span>
+                  )}
+                </button>
+                {showNotifs && (
+                  <div style={{ position: 'absolute', top: '100%', right: 0, width: 320, background: '#fff', borderRadius: 12, boxShadow: '0 8px 32px rgba(0,0,0,0.15)', border: '1px solid #e5e7eb', zIndex: 100, marginTop: 8 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid #f1f5f9' }}>
+                      <span style={{ fontSize: 14, fontWeight: 700, color: '#0f172a' }}>Notifications</span>
+                      {notifications.length > 0 && (
+                        <button onClick={markAllRead} style={{ fontSize: 12, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>Mark all read</button>
+                      )}
+                    </div>
+                    <div style={{ maxHeight: 300, overflow: 'auto' }}>
+                      {notifications.length === 0 ? (
+                        <div style={{ padding: '20px 16px', textAlign: 'center', fontSize: 13, color: '#94a3b8' }}>No new notifications</div>
+                      ) : notifications.map(n => (
+                        <div key={n.id} onClick={() => { markRead(n.id); setShowNotifs(false); navigate('/settings'); }} style={{ padding: '10px 16px', borderBottom: '1px solid #f8fafc', cursor: 'pointer', background: '#fffbeb' }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>{n.title}</div>
+                          <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{n.message}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 )}
-              </button>
-              {showNotifs && (
-                <div style={{ position: 'absolute', top: '100%', right: 0, width: 320, background: '#fff', borderRadius: 12, boxShadow: '0 8px 32px rgba(0,0,0,0.15)', border: '1px solid #e5e7eb', zIndex: 100, marginTop: 8 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 16px', borderBottom: '1px solid #f1f5f9' }}>
-                    <span style={{ fontSize: 14, fontWeight: 700, color: '#0f172a' }}>Notifications</span>
-                    {notifications.length > 0 && (
-                      <button onClick={markAllRead} style={{ fontSize: 12, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>Mark all read</button>
-                    )}
-                  </div>
-                  <div style={{ maxHeight: 300, overflow: 'auto' }}>
-                    {notifications.length === 0 ? (
-                      <div style={{ padding: '20px 16px', textAlign: 'center', fontSize: 13, color: '#94a3b8' }}>No new notifications</div>
-                    ) : notifications.map(n => (
-                      <div key={n.id} onClick={() => { markRead(n.id); setShowNotifs(false); navigate('/settings'); }} style={{ padding: '10px 16px', borderBottom: '1px solid #f8fafc', cursor: 'pointer', background: '#fffbeb' }}>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>{n.title}</div>
-                        <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>{n.message}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
+              </div>
+            )}
           <button className={styles.userBtn} onClick={() => setMenuOpen(v => !v)}>
             <div className={styles.avatar}>{(user?.name || 'U').charAt(0).toUpperCase()}</div>
             <span className={styles.userName}>{user?.name?.split(' ')[0]}</span>

@@ -273,6 +273,16 @@ service cloud.firestore {
         allow read:  if ownsTenant(tenantId) && isAdmin();
         allow write: if ownsTenant(tenantId) && isAdmin();
       }
+
+      // In-app notifications. submitAccessRequest mirrors access-request alerts
+      // here so admins can see them in the top-bar bell. Admin-only at the
+      // rule layer because today's only writer (Cloud Function via admin SDK)
+      // produces admin-only content. If manager-targeted notifications are
+      // added later, add an `audience` field and broaden read accordingly.
+      match /notifications/{notifId} {
+        allow read:  if ownsTenant(tenantId) && isAdmin();
+        allow write: if ownsTenant(tenantId) && isAdmin();
+      }
     }
 
     // ============================================================
@@ -376,10 +386,9 @@ service cloud.firestore {
     }
 
 
-    // Notifications
-    match /tenants/{orgId}/notifications/{notifId} {
-      allow read, write: if request.auth != null;
-    }
+    // Notifications: rule moved under match /tenants/{tenantId} (above) and
+    // gated to ownsTenant + isAdmin so a manager-role user can no longer
+    // read admin-only access-request alerts.
 
     }
   }
