@@ -2,6 +2,7 @@ import BarcodeScanner from '@/components/BarcodeScanner'
 import SubCafeBar from '@/components/ui/SubCafePrompt'
 import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { useAuthStore } from '@/store/authStore'
+import { useUIStore } from '@/store/uiStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { usePeriod } from '@/store/PeriodContext'
 import { readPeriodClose, getPriorKey } from '@/lib/pnl'
@@ -359,7 +360,11 @@ export default function Inventory() {
   }
 
   const [search, setSearch] = useState('')
-  const [viewMode, setViewMode] = useState('grouped')  // 'grouped' (categories) | 'flat' (A-Z, no categories)
+  // viewMode lives in useUIStore so the user's A-Z/grouped choice survives
+  // route changes (e.g. clicking over to Sales and back). Resets on full page
+  // reload; cross-login persistence is a planned follow-up (CLAUDE.md).
+  const viewMode = useUIStore(s => s.inventoryViewMode)
+  const setViewMode = useUIStore(s => s.setInventoryViewMode)
   const [activeCat, setActiveCat] = useState('all')
   const [collapsed, setCollapsed] = useState({})
   const [blindMode, setBlindMode] = useState(false)
@@ -450,17 +455,57 @@ export default function Inventory() {
     setBuddyNames,
     markSectionComplete,
     save,
-    saveCounts
+    saveCounts,
+    mergeDraft,
   } = useInventory(orgId, location, periodKey, user)
 
   // Autosave lifecycle (debounce + page-exit flush + location-switch flush)
   // is owned by the shared useAutosave hook so every tab behaves identically.
   // saveCounts writes the counts doc + live P&L; it does NOT close the period.
+  //
+  // snapshot/hydrate add a localStorage crash-recovery backstop: every commit
+  // where dirty is true persists the in-progress counts; on remount (e.g.
+  // after a route change to Sales and back) the draft is restored before the
+  // async save has a chance to be cut off. flushKey includes orgId so a
+  // browser session that switches tenants doesn't bleed drafts across them.
+  const draftFlushKey = `${orgId || ''}|${location || ''}|${periodKey || ''}`
+  const pendingDraftRef = useRef(null)
   const { autoSaveStatus, lastSavedAt } = useAutosave({
     dirty,
     save: saveCounts,
-    flushKey: `${location || ''}|${periodKey || ''}`,
+    flushKey: draftFlushKey,
+    snapshot: () => items
+      .filter(i => i.qty != null)
+      .map(i => ({
+        id: i.id,
+        qty: i.qty,
+        eaches: i.eaches || 0,
+        lastCountedAt: i.lastCountedAt || null,
+        lastCountedBy: i.lastCountedBy || null,
+      })),
+    hydrate: (draftData) => {
+      // Stash; the effect below applies it after useInventory.load finishes
+      // populating items (mergeDraft is a no-op against an empty items list).
+      pendingDraftRef.current = { data: draftData, key: draftFlushKey }
+    },
   })
+
+  // Apply a pending hydrated draft once useInventory.load() finishes loading
+  // items. Discards a stale draft if the user already switched contexts.
+  useEffect(() => {
+    if (!pendingDraftRef.current) return
+    if (loading) return
+    if (!Array.isArray(items) || items.length === 0) return
+    if (pendingDraftRef.current.key !== draftFlushKey) {
+      pendingDraftRef.current = null
+      return
+    }
+    const ok = mergeDraft(pendingDraftRef.current.data)
+    if (ok) {
+      pendingDraftRef.current = null
+      toast.success('Restored unsaved counts from before you switched tabs')
+    }
+  }, [items.length, loading, mergeDraft, draftFlushKey, toast])
 
   // ─── Handlers ──────────────────────────────────────────────────────────────
   async function seedPriorPeriod() {

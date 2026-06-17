@@ -446,6 +446,41 @@ export function useInventory(orgId, locationId, periodKey, user) {
     }
   }, [priorItems, setQty, setEaches])
 
+  // Merge a draft of counts (from useAutosave's localStorage backstop) into
+  // the currently-loaded items. Returns true if any items were updated.
+  // Used by Inventory.jsx after load completes to restore counts the user
+  // typed before navigating away.
+  const itemsRef = useRef(items)
+  useEffect(() => { itemsRef.current = items }, [items])
+
+  const mergeDraft = useCallback((draftItems) => {
+    if (!Array.isArray(draftItems) || draftItems.length === 0) return false
+    const current = itemsRef.current
+    if (!Array.isArray(current) || current.length === 0) return false
+
+    const byId = new Map(current.map(i => [String(i.id), i]))
+    let changed = 0
+    draftItems.forEach(d => {
+      const id = String(d.id)
+      const existing = byId.get(id)
+      if (existing) {
+        byId.set(id, {
+          ...existing,
+          qty: d.qty,
+          eaches: d.eaches ?? 0,
+          lastCountedAt: d.lastCountedAt || existing.lastCountedAt || null,
+          lastCountedBy: d.lastCountedBy || existing.lastCountedBy || null,
+        })
+        changed++
+      }
+    })
+
+    if (changed === 0) return false
+    setItems(Array.from(byId.values()))
+    setDirty(true)
+    return true
+  }, [])
+
   // Toggle whether an item is marked as "key" — surfaces in Quick count mode.
   // Persists immediately so the flag survives a reload even if the user
   // hasn't clicked Save yet.
@@ -947,7 +982,8 @@ export function useInventory(orgId, locationId, periodKey, user) {
     setBuddyNames,
     markSectionComplete,
     save,
-    saveCounts
+    saveCounts,
+    mergeDraft,
   }
 }
 

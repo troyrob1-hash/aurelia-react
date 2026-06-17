@@ -16,8 +16,26 @@ import { renderHook } from '@testing-library/react'
 import { useAutosave } from '../src/hooks/useAutosave'
 
 describe('useAutosave', () => {
-  beforeEach(() => { vi.useFakeTimers() })
-  afterEach(() => { vi.useRealTimers() })
+  beforeEach(() => {
+    vi.useFakeTimers()
+    // vitest 4 + jsdom 25 leaves globalThis.localStorage as a plain {} (the
+    // `--localstorage-file was provided without a valid path` warning is the
+    // tell). Inject a minimal in-memory Storage shim so the hook's
+    // localStorage backstop has something to write to during tests.
+    const store = new Map()
+    globalThis.localStorage = {
+      getItem: (k) => store.has(k) ? store.get(k) : null,
+      setItem: (k, v) => { store.set(k, String(v)) },
+      removeItem: (k) => { store.delete(k) },
+      clear: () => store.clear(),
+      get length() { return store.size },
+      key: (i) => Array.from(store.keys())[i] ?? null,
+    }
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    globalThis.localStorage?.clear?.()
+  })
 
   it('still fires the debounced save when save fn identity changes on every render', async () => {
     const debounceMs = 2000
@@ -106,5 +124,52 @@ describe('useAutosave', () => {
     resolveSave(true)
     await flushPromise
     expect(flushResolved).toBe(true)
+  })
+
+  it('persists a snapshot to localStorage and restores it on a fresh mount (route-change recovery)', async () => {
+    // Reproduces the route-change data-loss bug: user types counts, navigates
+    // away (Inventory unmounts), comes back. The async flush on unmount can
+    // fail silently (rules denial, network) or be raced by the remount's
+    // load(). Without the localStorage backstop, counts vanish.
+    const flushKey = 'test-snapshot-' + Math.random().toString(36).slice(2)
+    const snapshotData = [{ id: 'apple', qty: 5 }, { id: 'banana', qty: 3 }]
+    // save returns false so the localStorage entry isn't cleared on unmount —
+    // simulates the silent-failure case the backstop must survive.
+    const save = vi.fn(async () => false)
+
+    // Step 1: mount with dirty=true + snapshot. The no-deps snapshot effect
+    // fires on the first commit and persists the draft to localStorage.
+    const { unmount } = renderHook(() => useAutosave({
+      dirty: true,
+      save,
+      flushKey,
+      snapshot: () => snapshotData,
+    }))
+
+    const stored = localStorage.getItem('aurelia:autosave:' + flushKey)
+    expect(stored).toBeTruthy()
+    expect(JSON.parse(stored).data).toEqual(snapshotData)
+
+    // Step 2: unmount (the route change). flushKey cleanup runs flush() which
+    // calls save() (returns false), so localStorage retains the draft.
+    unmount()
+    // Let the flush's awaited save settle so any post-save side effects run.
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // Step 3: fresh re-mount with a hydrate callback. The hook reads
+    // localStorage on flushKey-effect run and calls hydrate with the draft.
+    const hydrate = vi.fn()
+    renderHook(() => useAutosave({
+      dirty: false,
+      save: vi.fn(),
+      flushKey,
+      hydrate,
+    }))
+
+    expect(hydrate).toHaveBeenCalledTimes(1)
+    expect(hydrate.mock.calls[0][0]).toEqual(snapshotData)
+
+    localStorage.removeItem('aurelia:autosave:' + flushKey)
   })
 })
