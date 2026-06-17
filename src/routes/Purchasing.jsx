@@ -330,12 +330,53 @@ export default function Purchasing() {
     setSaving(false)
   }
 
+  // Recompute the period's purchasing P&L totals (cogs_purchases rollup,
+  // ap_paid, ap_pending) from the current invoices state. Called from
+  // approve() and markPaid() — extracted so approval (not only payment)
+  // refreshes cogs_purchases, since Inventory.saveCounts reads cogs_purchases
+  // as the "purchases" input to its COGS formula; previously the field only
+  // changed on markPaid, leaving COGS at $0 between receiving goods and
+  // paying weeks later.
+  //
+  // overrideInv (optional) lets the caller patch the just-updated invoice's
+  // new state into the period list — necessary because setInvoices() schedules
+  // a state update that hasn't yet propagated to this closure's `invoices`.
+  //
+  // cogs_purchases is the ROLLUP for invoices with NO dedicated GL line.
+  // Invoices whose glCode is in NAMED_GL_LINES are already counted on their
+  // own Dashboard line (posted via writePnL on invoice create), so they MUST
+  // stay excluded here to prevent double-counting. Don't change that filter.
+  async function recomputePurchasingTotalsForPeriod(targetLocation, targetPeriod, overrideInv) {
+    const periodInvoices = invoices
+      .filter(i => i.periodKey === targetPeriod && i.status !== 'Void')
+      .map(i => i.id === overrideInv?.id ? { ...i, ...overrideInv } : i)
+
+    const rollupInvoices = periodInvoices.filter(i => !NAMED_GL_LINES.has(i.glCode))
+    const invoiceTotal = rollupInvoices.reduce((s, i) => s + (i.amount || 0), 0)
+    const paidTotal    = periodInvoices.filter(i => i.status === 'Paid').reduce((s, i) => s + (i.amount || 0), 0)
+    const pendingTotal = periodInvoices.filter(i => i.status === 'Pending' || i.status === 'Approved').reduce((s, i) => s + (i.amount || 0), 0)
+
+    await writePurchasingPnL(targetLocation, targetPeriod, {
+      invoiceTotal, paidTotal, pendingTotal,
+    })
+  }
+
   async function approve(id) {
     const inv = invoices.find(i => i.id === id)
+    if (!inv) return
     await updateDoc(doc(db, 'tenants', orgId, 'invoices', id), {
       status: 'Approved', approvedBy: user?.name || user?.email, approvedAt: serverTimestamp(), updatedAt: serverTimestamp()
     })
     setInvoices(prev => prev.map(i => i.id === id ? { ...i, status: 'Approved' } : i))
+
+    // Refresh the purchasing P&L rollup so cogs_purchases reflects this
+    // approval immediately — used by Inventory.saveCounts to compute COGS.
+    const targetPeriod = inv.periodKey || periodKey
+    const targetLocation = inv.location || location || 'all'
+    await recomputePurchasingTotalsForPeriod(targetLocation, targetPeriod, {
+      id, status: 'Approved',
+    })
+
     toast.success('Invoice approved')
   }
 
@@ -357,21 +398,8 @@ export default function Purchasing() {
     const targetPeriod = inv.periodKey || periodKey
     const targetLocation = inv.location || location || 'all'
 
-    // Build the period's invoice list AS IF this invoice were already paid (no double-counting)
-    const periodInvoices = invoices
-      .filter(i => i.periodKey === targetPeriod && i.status !== 'Void')
-      .map(i => i.id === id ? { ...i, status: 'Paid', amountPaid: inv.amount } : i)
-
-    // cogs_purchases is the ROLLUP for invoices with NO dedicated GL line.
-    // Invoices whose glCode is a named Dashboard line are already counted there
-    // (posted on create), so exclude them here to prevent double-counting.
-    const rollupInvoices = periodInvoices.filter(i => !NAMED_GL_LINES.has(i.glCode))
-    const invoiceTotal = rollupInvoices.reduce((s, i) => s + (i.amount || 0), 0)
-    const paidTotal    = periodInvoices.filter(i => i.status === 'Paid').reduce((s, i) => s + (i.amount || 0), 0)
-    const pendingTotal = periodInvoices.filter(i => i.status === 'Pending' || i.status === 'Approved').reduce((s, i) => s + (i.amount || 0), 0)
-
-    await writePurchasingPnL(targetLocation, targetPeriod, {
-      invoiceTotal, paidTotal, pendingTotal,
+    await recomputePurchasingTotalsForPeriod(targetLocation, targetPeriod, {
+      id, status: 'Paid', amountPaid: inv.amount,
     })
 
     // EXTENSION POINT: post-payment hooks (NetSuite sync, notifications, etc.)
