@@ -7,7 +7,7 @@ import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { usePeriod } from '@/store/PeriodContext'
 import { readPeriodClose, getPriorKey } from '@/lib/pnl'
 import { db } from '@/lib/firebase'
-import { useInventory, fmt$, sanitizeDocId } from '@/hooks/useInventory'
+import { useInventory, fmt$, sanitizeDocId, hasCount } from '@/hooks/useInventory'
 import { useAutosave } from '@/hooks/useAutosave'
 import SaveStatusBar from '@/components/SaveStatusBar'
 import { getTopVarianceIssues, calcParStatus } from '@/lib/variance'
@@ -475,7 +475,7 @@ export default function Inventory() {
     save: saveCounts,
     flushKey: draftFlushKey,
     snapshot: () => items
-      .filter(i => i.qty != null)
+      .filter(hasCount)
       .map(i => ({
         id: i.id,
         qty: i.qty,
@@ -1449,8 +1449,8 @@ export default function Inventory() {
                             <button className={styles.adjBtn} onClick={() => { const st = window.scrollY; adjustEaches(item.id, -1); requestAnimationFrame(() => window.scrollTo(0, st)) }}>−</button>
                             <input
                               type="text"
-                              inputMode="numeric"
-                              value={item.eaches || ''}
+                              inputMode="decimal"
+                              value={item._eachesRaw ?? (item.eaches || '')}
                               onChange={e => setEaches(item.id, e.target.value)}
                               placeholder="ea"
                               className={`${styles.countInput} ${(parseFloat(item.eaches) || 0) > 0 ? styles.counted_neutral : ''}`}

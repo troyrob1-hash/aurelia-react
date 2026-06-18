@@ -49,6 +49,25 @@ function inferCategory(glCode, itemType, itemName) {
 }
 
 /**
+ * Predicate: does this item carry a count worth persisting?
+ * True if EITHER qty is set (incl. 0 — a legitimate "I counted zero of these")
+ * OR eaches is a positive number (the loose-units count). False if both fields
+ * are absent / zero. Used to:
+ *   - decide which items to include in newCounts (the save list)
+ *   - decide which touched items are "explicitly cleared" (the deletion list)
+ * Before this predicate existed, the filter was `i.qty != null` alone, which
+ * silently dropped items where the user only filled in the eaches input
+ * (qty stays null, eaches gets the value) — those items would contribute to
+ * closingValue but never land on the counts doc.
+ */
+export function hasCount(item) {
+  if (!item) return false
+  if (item.qty != null) return true
+  if (typeof item.eaches === 'number' && item.eaches > 0) return true
+  return false
+}
+
+/**
  * Merge a fresh batch of counted items into the existing Firestore items list,
  * applying explicit deletions for items the user cleared in this session.
  *
@@ -459,8 +478,13 @@ export function useInventory(orgId, locationId, periodKey, user) {
     touchedItemsRef.current.add(String(itemId))
     setItems(prev => prev.map(item => {
       if (item.id !== itemId) return item
+      // Mirror setQty: preserve the raw typed string in _eachesRaw so the
+      // controlled input doesn't wipe in-progress decimals ('1.' → 1 → display
+      // shows '1' → next keystroke produces '10', not '1.0'). The number form
+      // (eaches) drives math; the raw form drives display.
+      const raw = value
       const eaches = value === '' ? 0 : Math.max(0, parseFloat(value) || 0)
-      return { ...item, eaches, lastCountedAt: new Date().toISOString(), lastCountedBy: user?.email || 'unknown' }
+      return { ...item, eaches, _eachesRaw: raw, lastCountedAt: new Date().toISOString(), lastCountedBy: user?.email || 'unknown' }
     }))
     setDirty(true)
   }, [user])
@@ -595,9 +619,10 @@ export function useInventory(orgId, locationId, periodKey, user) {
   const restoreItem = useCallback(async (itemId) => {
     try {
       // Persist in-progress counts before the reload below, so restoring an
-      // item mid-count never wipes unsaved counts.
+      // item mid-count never wipes unsaved counts. Use hasCount so eaches-only
+      // entries persist too.
       const countsItems = items
-        .filter(i => i.qty != null)
+        .filter(hasCount)
         .map(i => ({ id: i.id, qty: i.qty, eaches: i.eaches || 0,
           countedAt: i.lastCountedAt || null, countedBy: i.lastCountedBy || null }))
       if (countsItems.length) {
@@ -645,10 +670,11 @@ export function useInventory(orgId, locationId, periodKey, user) {
       )
       // Persist any in-progress counts to the per-week counts doc BEFORE the
       // optimistic insert, so adding an item can never discard unsaved counts
-      // (a reload would otherwise rebuild items blank and wipe them).
+      // (a reload would otherwise rebuild items blank and wipe them). Use
+      // hasCount so eaches-only entries persist too.
       try {
         const countsItems = items
-          .filter(i => i.qty != null)
+          .filter(hasCount)
           .map(i => ({
             id: i.id,
             qty: i.qty,
@@ -743,23 +769,28 @@ export function useInventory(orgId, locationId, periodKey, user) {
     if (!Array.isArray(items) || items.length === 0) return false
     try {
       const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
+      // Include any item with EITHER qty OR positive eaches — see hasCount.
+      // Pre-fix this filtered on qty != null alone, so eaches-only entries
+      // never landed on the counts doc even though they contributed to
+      // closingValue (W1 $3.83 divergence, 2026-06-18).
       const newCounts = items
-        .filter(i => i.qty != null)
+        .filter(hasCount)
         .map(i => ({
           id: i.id,
-          qty: num(i.qty),
+          qty: i.qty == null ? null : num(i.qty),
           eaches: num(i.eaches),
           countedAt: i.lastCountedAt || null,
           countedBy: i.lastCountedBy || null,
         }))
-      // Deletions: items the user explicitly cleared in THIS session (qty=null
-      // AND touched). Without this, the merge below would silently preserve
-      // the prior Firestore value — that's the W1 $61K-reappear bug.
+      // Deletions: items the user explicitly cleared (no qty, no eaches) AND
+      // touched in this session. Excluding hasCount items here is critical —
+      // an item with qty=null and eaches=1.08 must NOT be deleted just
+      // because qty is null; the eaches counts as a real count.
       // Snapshot the set first so items touched DURING the async writes remain
       // pending for the next save.
       const touchedSnapshot = new Set(touchedItemsRef.current)
       const deletions = items
-        .filter(i => i.qty == null && touchedSnapshot.has(String(i.id)))
+        .filter(i => !hasCount(i) && touchedSnapshot.has(String(i.id)))
         .map(i => String(i.id))
       // Merge new counts OVER existing saved counts by id, so a partial save
       // never wipes counts already saved (Tracy's 'enter 5-6 times' bug:
@@ -834,20 +865,21 @@ export function useInventory(orgId, locationId, periodKey, user) {
 
       // ── Per-week counts doc — canonical count store ───────────────────
       const num2 = (v) => { const x = Number(v); return Number.isFinite(x) ? x : 0 }
+      // Same hasCount predicate as saveCounts — include eaches-only entries.
       const newCounts2 = items
-        .filter(i => i.qty != null)
+        .filter(hasCount)
         .map(i => ({
           id: i.id,
-          qty: num2(i.qty),
+          qty: i.qty == null ? null : num2(i.qty),
           eaches: num2(i.eaches),
           countedAt: i.lastCountedAt || null,
           countedBy: i.lastCountedBy || null,
         }))
-      // Deletions: items the user explicitly cleared in this session.
-      // Same logic as saveCounts — see that function for the rationale.
+      // Deletions: only items with NEITHER qty NOR eaches that the user
+      // touched. Same rationale as saveCounts.
       const touchedSnapshot2 = new Set(touchedItemsRef.current)
       const deletions2 = items
-        .filter(i => i.qty == null && touchedSnapshot2.has(String(i.id)))
+        .filter(i => !hasCount(i) && touchedSnapshot2.has(String(i.id)))
         .map(i => String(i.id))
       // Merge over existing saved counts by id (no clobber), with deletions.
       const countsRef2 = doc(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey)
