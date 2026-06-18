@@ -48,6 +48,36 @@ function inferCategory(glCode, itemType, itemName) {
   return 'Other'
 }
 
+/**
+ * Merge a fresh batch of counted items into the existing Firestore items list,
+ * applying explicit deletions for items the user cleared in this session.
+ *
+ * Three classes of input behavior:
+ *   - `newCounts` entries OVERRIDE existing entries with the same id (the
+ *     normal "user updated this item" case).
+ *   - `deletions` ids are REMOVED from the result. Without this signal a
+ *     cleared item would fall through to the existing Firestore value and
+ *     silently survive — that's the W1 $61K-reappear bug from 2026-06-18.
+ *   - Existing entries that are NOT in `newCounts` and NOT in `deletions`
+ *     are PRESERVED — the "Tracy protection": a partial save must never
+ *     wipe items the user didn't touch this session.
+ *
+ * Pure function — no Firestore access. Exported for unit testing.
+ */
+export function mergeCountsWithDeletions(existing, newCounts, deletions) {
+  const byId = {}
+  for (const it of existing || []) {
+    if (it && it.id != null) byId[String(it.id)] = it
+  }
+  for (const it of newCounts || []) {
+    if (it && it.id != null) byId[String(it.id)] = it
+  }
+  for (const id of deletions || []) {
+    delete byId[String(id)]
+  }
+  return Object.values(byId)
+}
+
 export function useInventory(orgId, locationId, periodKey, user) {
   const [items, setItems] = useState([])
   const [priorItems, setPriorItems] = useState([])
@@ -379,7 +409,25 @@ export function useInventory(orgId, locationId, periodKey, user) {
     load()
   }, [load])
 
+  // Tracks item ids the user has explicitly mutated in THIS session (any of
+  // setQty/setEaches/adjust/adjustEaches/copyPrior/mergeDraft adds to it).
+  // saveCounts and save use this set to distinguish:
+  //   - "qty=null because the user never counted this item"  → preserve
+  //     existing Firestore value (Tracy protection)
+  //   - "qty=null because the user explicitly cleared it"    → delete from
+  //     the counts doc (the W1 $61K-reappear fix)
+  // Cleared per-save (only the just-persisted ids) and on context change.
+  const touchedItemsRef = useRef(new Set())
+
+  // Reset the touched-items tracker when location/period changes — otherwise
+  // a cleared id from W1 would carry into W2 and could falsely trigger a
+  // deletion on a different period's save.
+  useEffect(() => {
+    touchedItemsRef.current = new Set()
+  }, [locationId, periodKey])
+
   const adjust = useCallback((itemId, delta) => {
+    touchedItemsRef.current.add(String(itemId))
     setItems(prev => prev.map(item => {
       if (item.id !== itemId) return item
       const next = Math.max(0, parseFloat(((item.qty || 0) + delta).toFixed(2)))
@@ -398,6 +446,7 @@ export function useInventory(orgId, locationId, periodKey, user) {
   }, [user, buddyMode, buddyNames])
 
   const adjustEaches = useCallback((itemId, delta) => {
+    touchedItemsRef.current.add(String(itemId))
     setItems(prev => prev.map(item => {
       if (item.id !== itemId) return item
       const next = Math.max(0, parseFloat(((item.eaches || 0) + delta).toFixed(2)))
@@ -407,6 +456,7 @@ export function useInventory(orgId, locationId, periodKey, user) {
   }, [user])
 
   const setEaches = useCallback((itemId, value) => {
+    touchedItemsRef.current.add(String(itemId))
     setItems(prev => prev.map(item => {
       if (item.id !== itemId) return item
       const eaches = value === '' ? 0 : Math.max(0, parseFloat(value) || 0)
@@ -416,6 +466,7 @@ export function useInventory(orgId, locationId, periodKey, user) {
   }, [user])
 
   const setQty = useCallback((itemId, value) => {
+    touchedItemsRef.current.add(String(itemId))
     setItems(prev => prev.map(item => {
       if (item.id !== itemId) return item
       // Keep the raw typed string so in-progress decimals ('.', '0.', '.5')
@@ -464,6 +515,10 @@ export function useInventory(orgId, locationId, periodKey, user) {
       const id = String(d.id)
       const existing = byId.get(id)
       if (existing) {
+        // The draft represents user edits from a prior session that may not
+        // have made it to Firestore. Treat each restored id as "touched" so a
+        // subsequent save can also persist a clear via the deletion path.
+        touchedItemsRef.current.add(id)
         byId.set(id, {
           ...existing,
           qty: d.qty,
@@ -697,16 +752,23 @@ export function useInventory(orgId, locationId, periodKey, user) {
           countedAt: i.lastCountedAt || null,
           countedBy: i.lastCountedBy || null,
         }))
+      // Deletions: items the user explicitly cleared in THIS session (qty=null
+      // AND touched). Without this, the merge below would silently preserve
+      // the prior Firestore value — that's the W1 $61K-reappear bug.
+      // Snapshot the set first so items touched DURING the async writes remain
+      // pending for the next save.
+      const touchedSnapshot = new Set(touchedItemsRef.current)
+      const deletions = items
+        .filter(i => i.qty == null && touchedSnapshot.has(String(i.id)))
+        .map(i => String(i.id))
       // Merge new counts OVER existing saved counts by id, so a partial save
       // never wipes counts already saved (Tracy's 'enter 5-6 times' bug:
-      // merge:false overwrote the whole array with a subset).
+      // merge:false overwrote the whole array with a subset). Deletions
+      // remove cleared ids from the result. See mergeCountsWithDeletions.
       const countsRef = doc(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey)
       let existing = []
       try { const snap = await getDoc(countsRef); if (snap.exists()) existing = snap.data().items || [] } catch (e) {}
-      const byId = {}
-      existing.forEach(it => { if (it && it.id != null) byId[it.id] = it })
-      newCounts.forEach(it => { byId[it.id] = it })
-      const countsItems = Object.values(byId)
+      const countsItems = mergeCountsWithDeletions(existing, newCounts, deletions)
       await setDoc(
         countsRef,
         { items: countsItems, period: periodKey, updatedAt: serverTimestamp(), updatedBy: user?.email || 'unknown' },
@@ -725,6 +787,9 @@ export function useInventory(orgId, locationId, periodKey, user) {
         { closingValue, openingValue, cogs_inventory: cogs, inventoryCountedAt: serverTimestamp(), inventoryCountedBy: user?.email },
         { merge: true }
       )
+      // Remove just-persisted ids from the touched set. Items touched DURING
+      // the async writes (rare) stay so the next save can act on them.
+      touchedSnapshot.forEach(id => touchedItemsRef.current.delete(id))
       setDirty(false)
       return true
     } catch (err) {
@@ -778,14 +843,17 @@ export function useInventory(orgId, locationId, periodKey, user) {
           countedAt: i.lastCountedAt || null,
           countedBy: i.lastCountedBy || null,
         }))
-      // Merge over existing saved counts by id (no clobber).
+      // Deletions: items the user explicitly cleared in this session.
+      // Same logic as saveCounts — see that function for the rationale.
+      const touchedSnapshot2 = new Set(touchedItemsRef.current)
+      const deletions2 = items
+        .filter(i => i.qty == null && touchedSnapshot2.has(String(i.id)))
+        .map(i => String(i.id))
+      // Merge over existing saved counts by id (no clobber), with deletions.
       const countsRef2 = doc(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey)
       let existing2 = []
       try { const snap2 = await getDoc(countsRef2); if (snap2.exists()) existing2 = snap2.data().items || [] } catch (e) {}
-      const byId2 = {}
-      existing2.forEach(it => { if (it && it.id != null) byId2[it.id] = it })
-      newCounts2.forEach(it => { byId2[it.id] = it })
-      const countsItems = Object.values(byId2)
+      const countsItems = mergeCountsWithDeletions(existing2, newCounts2, deletions2)
       await setDoc(
         countsRef2,
         {
@@ -863,6 +931,8 @@ export function useInventory(orgId, locationId, periodKey, user) {
         )
       }
 
+      // Remove just-persisted ids from the touched set (parallels saveCounts).
+      touchedSnapshot2.forEach(id => touchedItemsRef.current.delete(id))
       setDirty(false)
       return true
     } catch (err) {
