@@ -161,42 +161,66 @@ export default function AppShell() {
     if (!selectedLocation || selectedLocation === 'all') return
     const reason = window.prompt('Reason for reopening:')
     if (!reason?.trim()) return
+
+    const actor = user?.name || user?.email || 'unknown'
+
+    // 1. Clear the lock FIRST. Reopen is asymmetric to close: close can write
+    //    status before locking (writePnL's lock-check sees lock=false at that
+    //    moment), but reopen MUST clear the lock before writing anything that
+    //    routes through writePnL — which includes writePeriodClose. Previous
+    //    code did writePeriodClose first and the lock-check threw on its own
+    //    write ("Period is locked. Use the 🔓 Reopen button…"), leaving the
+    //    lock untouched and trapping the user.
     try {
-      const actor = user?.name || user?.email || 'unknown'
-      await writePeriodClose(selectedLocation, periodKey, { status: 'reopened', actor, reason: reason.trim() })
       await unlockPeriod(selectedLocation, periodKey, user)
-
-      // Also clear the per-tab approval locks (sales + labor submissions).
-      // An 'approved' submission locks its tab independently of periodStatus;
-      // reopening the period must release those too, or the tab stays locked.
-      // No orderBy (client-side only) per data rules.
-      try {
-        const { collection, query, where, getDocs, updateDoc, doc: fbDoc, serverTimestamp } = await import('firebase/firestore')
-        for (const coll of ['salesSubmissions', 'laborSubmissions']) {
-          const qy = query(
-            collection(db, 'tenants', orgId, coll),
-            where('period', '==', periodKey),
-            where('location', '==', selectedLocation),
-            where('status', '==', 'approved')
-          )
-          const snap = await getDocs(qy)
-          for (const d of snap.docs) {
-            await updateDoc(fbDoc(db, 'tenants', orgId, coll, d.id), {
-              status: 'reopened',
-              reopenedBy: actor,
-              reopenedAt: serverTimestamp(),
-            })
-          }
-        }
-      } catch (e) {
-        console.error('Failed to clear approval locks on reopen:', e)
-      }
-
-      setPeriodClosed(false)
-      setClosedBy(null)
-      setPeriodLocked(false)
     } catch (err) {
       alert('Failed to reopen: ' + (err.message || ''))
+      return
+    }
+
+    // Optimistic local-state update: the lock IS off — writes now succeed —
+    // so reflect that in the badge immediately even if the status write below
+    // fails. Otherwise the user stares at a "Closed" badge on an actually
+    // unlocked period and has no signal that they can save data.
+    setPeriodLocked(false)
+
+    // 2. Update periodStatus to 'reopened' with actor + reason metadata.
+    //    Routes through writePnL; the lock-check now passes since step 1
+    //    cleared the lock. Only flip periodClosed/closedBy after this lands.
+    try {
+      await writePeriodClose(selectedLocation, periodKey, { status: 'reopened', actor, reason: reason.trim() })
+      setPeriodClosed(false)
+      setClosedBy(null)
+    } catch (err) {
+      alert('Period unlocked, but status display may be stale — refresh.')
+      // Don't return — the per-tab approval-clearing loop below is idempotent
+      // and worth running even when the status write failed.
+    }
+
+    // 3. Also clear the per-tab approval locks (sales + labor submissions).
+    //    An 'approved' submission locks its tab independently of periodStatus;
+    //    reopening the period must release those too, or the tab stays locked.
+    //    No orderBy (client-side only) per data rules.
+    try {
+      const { collection, query, where, getDocs, updateDoc, doc: fbDoc, serverTimestamp } = await import('firebase/firestore')
+      for (const coll of ['salesSubmissions', 'laborSubmissions']) {
+        const qy = query(
+          collection(db, 'tenants', orgId, coll),
+          where('period', '==', periodKey),
+          where('location', '==', selectedLocation),
+          where('status', '==', 'approved')
+        )
+        const snap = await getDocs(qy)
+        for (const d of snap.docs) {
+          await updateDoc(fbDoc(db, 'tenants', orgId, coll, d.id), {
+            status: 'reopened',
+            reopenedBy: actor,
+            reopenedAt: serverTimestamp(),
+          })
+        }
+      }
+    } catch (e) {
+      console.error('Failed to clear approval locks on reopen:', e)
     }
   }
 
