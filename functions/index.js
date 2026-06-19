@@ -458,6 +458,27 @@ exports.submitAccessRequest = onCall(
     // Hardcoded to fooda for now — multi-tenant intake comes with the proper feature
     const tenantId = "fooda";
 
+    // Dedupe 1: email already maps to an active user. Public endpoint —
+    // return a clean status the frontend can render as "you already have
+    // access," not a scary error.
+    const existingUser = await db.collection("orgs").doc(tenantId)
+      .collection("users").where("email", "==", trimmedEmail).limit(1).get();
+    if (!existingUser.empty && existingUser.docs[0].data().active !== false) {
+      return { success: true, status: "already_active" };
+    }
+
+    // Dedupe 2: pending request for this email already exists. Avoids the
+    // Carl-delaRosa-twice-in-the-queue case. Approved/denied prior requests
+    // do NOT block a fresh submission — only an open pending one does.
+    const existingPending = await db.collection("tenants").doc(tenantId)
+      .collection("accessRequests")
+      .where("email", "==", trimmedEmail)
+      .where("status", "==", "pending")
+      .limit(1).get();
+    if (!existingPending.empty) {
+      return { success: true, status: "duplicate_pending" };
+    }
+
     // Capture metadata for review
     const ip        = request.rawRequest?.ip ?? null;
     const userAgent = request.rawRequest?.headers?.["user-agent"] ?? null;
@@ -519,7 +540,7 @@ exports.submitAccessRequest = onCall(
       console.warn("Failed to send admin email:", emailErr.message);
     }
 
-    return { success: true };
+    return { success: true, status: "created" };
   }
 );
 function generateTempPassword() {

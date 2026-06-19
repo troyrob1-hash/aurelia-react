@@ -11,6 +11,7 @@ export default function RequestAccessPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError]     = useState('')
   const [submitted, setSubmitted] = useState(false)
+  const [resultStatus, setResultStatus] = useState('created')
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -32,11 +33,12 @@ export default function RequestAccessPage() {
     setLoading(true)
     try {
       const submitAccessRequest = httpsCallable(functions, 'submitAccessRequest')
-      await submitAccessRequest({
+      const resp = await submitAccessRequest({
         name:    trimmedName,
         email:   trimmedEmail,
         message: trimmedMsg,
       })
+      setResultStatus(resp?.data?.status || 'created')
       setSubmitted(true)
     } catch (err) {
       console.error('submitAccessRequest error:', err)
@@ -65,9 +67,19 @@ export default function RequestAccessPage() {
               <div className={styles.appSub}>Operations Management Suite</div>
             </div>
           </div>
-          <h1 className={styles.heading}>Request received</h1>
+          <h1 className={styles.heading}>
+            {resultStatus === 'already_active' ? 'You already have an account'
+              : resultStatus === 'duplicate_pending' ? 'Request already on file'
+              : 'Request received'}
+          </h1>
           <p style={{color:'#6b7280',fontSize:13,marginBottom:20,lineHeight:1.5}}>
-            Thanks, {name.trim()}. We've received your access request and will be in touch at <strong>{email.trim().toLowerCase()}</strong> shortly.
+            {resultStatus === 'already_active' ? (
+              <>An account for <strong>{email.trim().toLowerCase()}</strong> already exists. Please <Link to="/login" className={styles.link}>sign in</Link>, or use <Link to="/forgot" className={styles.link}>forgot password</Link> if you can't remember yours.</>
+            ) : resultStatus === 'duplicate_pending' ? (
+              <>We already have a pending request for <strong>{email.trim().toLowerCase()}</strong> on file. We'll be in touch shortly — no need to submit again.</>
+            ) : (
+              <>Thanks, {name.trim()}. We've received your access request and will be in touch at <strong>{email.trim().toLowerCase()}</strong> shortly.</>
+            )}
           </p>
           <div className={styles.links}>
             <Link to="/login" className={styles.link}>Back to sign in</Link>
