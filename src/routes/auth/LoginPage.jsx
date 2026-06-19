@@ -82,7 +82,7 @@ export default function LoginPage() {
   async function handleLogin(e) {
     e.preventDefault(); setError(''); setLoading(true)
     try {
-      const r = await signIn(email.trim(), pw)
+      const r = await signIn(email.trim().toLowerCase(), pw)
       if (r.type === 'new_password') { setSession(r.session); setStep('new_password'); setShowLogin(false); setLoading(false); return }
       const a = await getUser(r.session.accessToken); setAuth(r.session, a); nav('/')
     } catch (err) { setError(friendly(err.message)) } finally { setLoading(false) }
@@ -93,7 +93,7 @@ export default function LoginPage() {
     if (newPw !== confirmPw) { setError('Passwords do not match.'); return }
     if (newPw.length < 8) { setError('Min 8 characters.'); return }
     setLoading(true)
-    try { const s = await completeNewPassword(email.trim(), newPw, session); const a = await getUser(s.accessToken); setAuth(s, a); nav('/') }
+    try { const s = await completeNewPassword(email.trim().toLowerCase(), newPw, session); const a = await getUser(s.accessToken); setAuth(s, a); nav('/') }
     catch (err) { setError(err.message) } finally { setLoading(false) }
   }
 

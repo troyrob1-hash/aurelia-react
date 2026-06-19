@@ -195,7 +195,7 @@ exports.inviteUser = onCall(async (request) => {
   if (!request.auth) throw new HttpsError("unauthenticated", "Must be signed in.");
 
   const {
-    orgId, email, displayName,
+    orgId, email: rawEmail, displayName,
     roles = [],
     managedRegionIds = [],
     assignedLocations = [],
@@ -204,7 +204,7 @@ exports.inviteUser = onCall(async (request) => {
 
   // Validate inputs
   const VALID_ROLES = ["manager", "director", "vp", "admin"];
-  if (!orgId || !email || !displayName) {
+  if (!orgId || !rawEmail || !displayName) {
     throw new HttpsError("invalid-argument", "orgId, email, and displayName are required.");
   }
   if (!Array.isArray(roles) || roles.length === 0) {
@@ -221,7 +221,30 @@ exports.inviteUser = onCall(async (request) => {
     throw new HttpsError("permission-denied", "Only admins can invite users. Your role: " + callerRole);
   }
 
-  // Duplicate check removed — Cognito handles existence check below
+  // Email is the authoritative chokepoint — Cognito Username and the
+  // Firestore doc id are both derived from it, so casing must be locked
+  // down here regardless of what the calling client sent.
+  const email = String(rawEmail).trim().toLowerCase();
+
+  // Dedupe guard — if an ACTIVE user doc already exists for this email
+  // in this org, refuse the invite. The existing-Cognito-user branch
+  // below would otherwise reset their password and overwrite their
+  // role/locations (and, if the existing Cognito Username has different
+  // casing, the create branch would silently make a second Cognito user).
+  const existingByEmail = await db.collection("orgs").doc(orgId)
+    .collection("users").where("email", "==", email).limit(1).get();
+  if (!existingByEmail.empty) {
+    const existing = existingByEmail.docs[0].data();
+    if (existing.active !== false) {
+      throw new HttpsError(
+        "already-exists",
+        "A user with email " + email + " already exists in this org. " +
+        "Edit that user's access instead of inviting them again."
+      );
+    }
+    // Deactivated → fall through; the existing-Cognito-user branch
+    // below will reactivate the account.
+  }
 
   const AWS     = require("aws-sdk");
   const cognito = new AWS.CognitoIdentityServiceProvider({ region: "us-east-2" });

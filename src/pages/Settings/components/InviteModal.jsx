@@ -73,7 +73,7 @@ export default function InviteModal({ orgId, onClose, onSuccess, prefillEmail, p
       const invite = httpsCallable(functions, "inviteUser");
       const result = await invite({
         orgId,
-        email: email.trim(),
+        email: email.trim().toLowerCase(),
         displayName: displayName.trim(),
         roles,
         managedRegionIds: seesAll ? [] : managedRegionIds,
