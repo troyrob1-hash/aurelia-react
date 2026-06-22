@@ -4,10 +4,18 @@
 const { onCall, HttpsError }    = require("firebase-functions/v2/https");
 const { onDocumentWritten }     = require("firebase-functions/v2/firestore");
 const { onSchedule }            = require("firebase-functions/v2/scheduler");
+const { defineSecret }          = require("firebase-functions/params");
 const admin                     = require("firebase-admin");
 const { v4: uuid }              = require("uuid");
 const jwt                       = require("jsonwebtoken");
 const jwksClient                = require("jwks-rsa");
+
+// AWS credentials live in Secret Manager (functions:secrets:set), bound to
+// each function below via the `secrets` option. aws-sdk v2's default
+// credential chain reads them from process.env at SDK-call time — no change
+// to the AWS client constructors themselves is needed.
+const AWS_ACCESS_KEY_ID     = defineSecret("AWS_ACCESS_KEY_ID");
+const AWS_SECRET_ACCESS_KEY = defineSecret("AWS_SECRET_ACCESS_KEY");
 
 admin.initializeApp();
 const db = admin.firestore();
@@ -191,7 +199,9 @@ exports.auditApiKeyWrite = onDocumentWritten("orgs/{orgId}/apiKeys/{keyId}", asy
 // ============================================================
 // CALLABLE: inviteUser
 // ============================================================
-exports.inviteUser = onCall(async (request) => {
+exports.inviteUser = onCall(
+  { secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY] },
+  async (request) => {
   if (!request.auth) throw new HttpsError("unauthenticated", "Must be signed in.");
 
   const {
@@ -364,7 +374,9 @@ exports.inviteUser = onCall(async (request) => {
 // ============================================================
 // CALLABLE: deactivateUser
 // ============================================================
-exports.deactivateUser = onCall(async (request) => {
+exports.deactivateUser = onCall(
+  { secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY] },
+  async (request) => {
   if (!request.auth) throw new HttpsError("unauthenticated", "Must be signed in.");
 
   const { orgId, targetUid } = request.data;
@@ -432,7 +444,7 @@ exports.cleanExpiredSessions = onSchedule("every 60 minutes", async () => {
 // Public — accepts access requests from unauthenticated visitors
 // ============================================================
 exports.submitAccessRequest = onCall(
-  { invoker: "public" },
+  { invoker: "public", secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY] },
   async (request) => {
     const { name, email, message } = request.data || {};
 
@@ -739,7 +751,9 @@ exports.revokeAPIKey = onCall(async (request) => {
 //   - Must have at least one role
 //   - Roles must be from the valid set
 // ============================================================
-exports.updateUserRoles = onCall(async (request) => {
+exports.updateUserRoles = onCall(
+  { secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY] },
+  async (request) => {
   if (!request.auth) throw new HttpsError("unauthenticated", "Must be signed in.");
 
   const { orgId, targetUid, roles, managedRegionIds, assignedLocations } = request.data;
