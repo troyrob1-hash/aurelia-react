@@ -27,7 +27,7 @@ service cloud.firestore {
     // ============================================================
     match /aurelia/{doc} {
       allow read: if isAuth();
-      allow write: if ownsTenant(tenantId) && isAdmin();
+      allow write: if isAdmin();
     }
 
     // ============================================================
