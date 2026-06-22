@@ -812,10 +812,24 @@ export function useInventory(orgId, locationId, periodKey, user) {
         const eachVal = (item.eaches || 0) * eachPrice
         return sum + packVal + eachVal
       }, 0)
-      const cogs = Math.max(0, openingValue + purchases - closingValue)
+      // Refresh opening from prior week's CURRENT closingValue at write time.
+      // The state var is a load-time snapshot and goes stale once the prior
+      // week is re-saved. UI reads opening live and is unaffected; this
+      // protects downstream consumers that read the stored field.
+      let freshOpening = openingValue
+      if (priorKey) {
+        try {
+          const priorPnlSnap = await getDoc(doc(db, 'tenants', orgId, 'pnl', locId, 'periods', priorKey))
+          freshOpening = priorPnlSnap.exists() ? (priorPnlSnap.data().closingValue || 0) : 0
+          if (freshOpening !== openingValue) setOpeningValue(freshOpening)
+        } catch (e) {
+          console.warn('Failed to refresh opening from prior week at save; using cached value', e)
+        }
+      }
+      const cogs = Math.max(0, freshOpening + purchases - closingValue)
       await setDoc(
         doc(db, 'tenants', orgId, 'pnl', locId, 'periods', periodKey),
-        { closingValue, openingValue, cogs_inventory: cogs, inventoryCountedAt: serverTimestamp(), inventoryCountedBy: user?.email },
+        { closingValue, openingValue: freshOpening, cogs_inventory: cogs, inventoryCountedAt: serverTimestamp(), inventoryCountedBy: user?.email },
         { merge: true }
       )
       // Remove just-persisted ids from the touched set. Items touched DURING
@@ -905,13 +919,25 @@ export function useInventory(orgId, locationId, periodKey, user) {
         return sum + packVal + eachVal
       }, 0)
 
-      const cogs = Math.max(0, openingValue + purchases - closingValue)
+      // See saveCounts — refresh opening from prior week's CURRENT closingValue
+      // so the stored field doesn't go stale relative to live reads.
+      let freshOpening = openingValue
+      if (priorKey) {
+        try {
+          const priorPnlSnap = await getDoc(doc(db, 'tenants', orgId, 'pnl', locId, 'periods', priorKey))
+          freshOpening = priorPnlSnap.exists() ? (priorPnlSnap.data().closingValue || 0) : 0
+          if (freshOpening !== openingValue) setOpeningValue(freshOpening)
+        } catch (e) {
+          console.warn('Failed to refresh opening from prior week at save; using cached value', e)
+        }
+      }
+      const cogs = Math.max(0, freshOpening + purchases - closingValue)
 
       await setDoc(
         doc(db, 'tenants', orgId, 'pnl', locId, 'periods', periodKey),
         {
           closingValue,
-          openingValue,
+          openingValue: freshOpening,
           cogs_inventory: cogs,
           inventoryCountedAt: serverTimestamp(),
           inventoryCountedBy: user?.email
