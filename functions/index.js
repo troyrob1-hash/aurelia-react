@@ -382,9 +382,10 @@ exports.deactivateUser = onCall(
   const { orgId, targetUid } = request.data;
   const callerUid = request.auth.uid;
 
-  const callerSnap = await db.collection("orgs").doc(orgId).collection("users").doc(callerUid).get();
-  if (!callerSnap.exists || callerSnap.data().role !== "admin") {
-    throw new HttpsError("permission-denied", "Only admins can deactivate users.");
+  // Check caller role from auth token (set by Cognito via mintFirebaseToken)
+  const callerRole = request.auth.token["custom:role"] || "";
+  if (callerRole !== "admin") {
+    throw new HttpsError("permission-denied", "Only admins can deactivate users. Your role: " + callerRole);
   }
   if (callerUid === targetUid) {
     throw new HttpsError("failed-precondition", "You cannot deactivate yourself.");
@@ -408,7 +409,6 @@ exports.deactivateUser = onCall(
     // the Cognito disable already blocks future sign-ins.
   }
 
-  const caller = callerSnap.data();
   await writeAuditLog(orgId,
     { uid: callerUid, email: request.auth.token.email || "", displayName: request.auth.token["custom:name"] || "", ip: null, userAgent: null },
     "user.deactivated", { type: "user", id: targetUid },
@@ -578,9 +578,17 @@ exports.createAPIKey = onCall(async (request) => {
     throw new HttpsError("invalid-argument", "orgId, label, and rawKey are required.");
   }
 
+  // Check caller role from auth token (set by Cognito via mintFirebaseToken)
+  const callerRole = request.auth.token["custom:role"] || "";
+  if (callerRole !== "admin") {
+    throw new HttpsError("permission-denied", "Only admins can create API keys. Your role: " + callerRole);
+  }
+  // Lightweight active check — Cognito claim has no active flag, so a deactivated
+  // admin still passes the role check within their token's TTL. Block only on
+  // explicit active=false (skeleton docs with undefined active still pass).
   const callerSnap = await db.collection("orgs").doc(orgId).collection("users").doc(callerUid).get();
-  if (!callerSnap.exists || callerSnap.data().role !== "admin" || !callerSnap.data().active) {
-    throw new HttpsError("permission-denied", "Only admins can create API keys.");
+  if (callerSnap.exists && callerSnap.data().active === false) {
+    throw new HttpsError("permission-denied", "Your account has been deactivated.");
   }
 
   const { SecretManagerServiceClient } = require("@google-cloud/secret-manager");
@@ -624,7 +632,6 @@ exports.createAPIKey = onCall(async (request) => {
     createdBy: callerUid,
   });
 
-  const caller = callerSnap.data();
   await writeAuditLog(orgId,
     { uid: callerUid, email: request.auth.token.email || "", displayName: request.auth.token["custom:name"] || "", ip: null, userAgent: null },
     "apikey.created", { type: "apiKey", id: keyId },
@@ -647,9 +654,17 @@ exports.getAPIKeyValue = onCall(async (request) => {
     throw new HttpsError("invalid-argument", "orgId and keyId are required.");
   }
 
+  // Check caller role from auth token (set by Cognito via mintFirebaseToken)
+  const callerRole = request.auth.token["custom:role"] || "";
+  if (callerRole !== "admin") {
+    throw new HttpsError("permission-denied", "Only admins can reveal API keys. Your role: " + callerRole);
+  }
+  // Lightweight active check — Cognito claim has no active flag, so a deactivated
+  // admin still passes the role check within their token's TTL. Block only on
+  // explicit active=false (skeleton docs with undefined active still pass).
   const callerSnap = await db.collection("orgs").doc(orgId).collection("users").doc(callerUid).get();
-  if (!callerSnap.exists || callerSnap.data().role !== "admin" || !callerSnap.data().active) {
-    throw new HttpsError("permission-denied", "Only admins can reveal API keys.");
+  if (callerSnap.exists && callerSnap.data().active === false) {
+    throw new HttpsError("permission-denied", "Your account has been deactivated.");
   }
 
   const keySnap = await db.collection("orgs").doc(orgId).collection("apiKeys").doc(keyId).get();
@@ -668,7 +683,6 @@ exports.getAPIKeyValue = onCall(async (request) => {
     });
     const rawKey = version.payload.data.toString("utf8");
 
-    const caller = callerSnap.data();
     await writeAuditLog(orgId,
       { uid: callerUid, email: request.auth.token.email || "", displayName: request.auth.token["custom:name"] || "", ip: null, userAgent: null },
       "apiKey.accessed", { type: "apiKey", id: keyId },
@@ -695,9 +709,17 @@ exports.revokeAPIKey = onCall(async (request) => {
     throw new HttpsError("invalid-argument", "orgId and keyId are required.");
   }
 
+  // Check caller role from auth token (set by Cognito via mintFirebaseToken)
+  const callerRole = request.auth.token["custom:role"] || "";
+  if (callerRole !== "admin") {
+    throw new HttpsError("permission-denied", "Only admins can revoke API keys. Your role: " + callerRole);
+  }
+  // Lightweight active check — Cognito claim has no active flag, so a deactivated
+  // admin still passes the role check within their token's TTL. Block only on
+  // explicit active=false (skeleton docs with undefined active still pass).
   const callerSnap = await db.collection("orgs").doc(orgId).collection("users").doc(callerUid).get();
-  if (!callerSnap.exists || callerSnap.data().role !== "admin" || !callerSnap.data().active) {
-    throw new HttpsError("permission-denied", "Only admins can revoke API keys.");
+  if (callerSnap.exists && callerSnap.data().active === false) {
+    throw new HttpsError("permission-denied", "Your account has been deactivated.");
   }
 
   const keySnap = await db.collection("orgs").doc(orgId).collection("apiKeys").doc(keyId).get();
@@ -731,7 +753,6 @@ exports.revokeAPIKey = onCall(async (request) => {
     }
   }
 
-  const caller = callerSnap.data();
   await writeAuditLog(orgId,
     { uid: callerUid, email: request.auth.token.email || "", displayName: request.auth.token["custom:name"] || "", ip: null, userAgent: null },
     "apikey.revoked", { type: "apiKey", id: keyId },
@@ -906,17 +927,10 @@ exports.updateRegion = onCall(async (request) => {
     throw new HttpsError("invalid-argument", "action must be create, update, or delete.");
   }
 
-  // Verify caller is admin
-  const callerSnap = await db.collection("orgs").doc(orgId).collection("users").doc(callerUid).get();
-  if (!callerSnap.exists) {
-    throw new HttpsError("permission-denied", "Caller not found in tenant.");
-  }
-  const caller = callerSnap.data();
-  const callerRoles = Array.isArray(caller.roles) && caller.roles.length > 0
-    ? caller.roles
-    : (caller.role ? [caller.role] : []);
-  if (!callerRoles.includes("admin")) {
-    throw new HttpsError("permission-denied", "Only admins can manage regions.");
+  // Check caller role from auth token (set by Cognito via mintFirebaseToken)
+  const callerRole = request.auth.token["custom:role"] || "";
+  if (callerRole !== "admin") {
+    throw new HttpsError("permission-denied", "Only admins can manage regions. Your role: " + callerRole);
   }
 
   const regionsRef = db.collection("tenants").doc(orgId).collection("regions");
