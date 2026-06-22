@@ -400,7 +400,13 @@ exports.deactivateUser = onCall(
     active: false, deactivatedAt: now, deactivatedBy: callerUid, updatedAt: now,
   });
 
-  await admin.auth().revokeRefreshTokens(targetUid);
+  try {
+    await admin.auth().revokeRefreshTokens(targetUid);
+  } catch (err) {
+    if (err?.errorInfo?.code !== "auth/user-not-found") throw err;
+    // No Firebase Auth record (user never signed in via app). Nothing to revoke;
+    // the Cognito disable already blocks future sign-ins.
+  }
 
   const caller = callerSnap.data();
   await writeAuditLog(orgId,
@@ -845,8 +851,10 @@ exports.updateUserRoles = onCall(
   // Revoke refresh tokens so the target user has to re-login and pick up new claims
   try {
     await admin.auth().revokeRefreshTokens(targetUid);
-  } catch (e) {
-    console.warn("Refresh token revocation failed:", e.message);
+  } catch (err) {
+    if (err?.errorInfo?.code !== "auth/user-not-found") throw err;
+    // No Firebase Auth record (user never signed in via app). Nothing to revoke;
+    // the Cognito disable already blocks future sign-ins.
   }
 
   // Audit log
