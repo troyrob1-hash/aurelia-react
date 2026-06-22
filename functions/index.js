@@ -200,7 +200,7 @@ exports.auditApiKeyWrite = onDocumentWritten("orgs/{orgId}/apiKeys/{keyId}", asy
 // CALLABLE: inviteUser
 // ============================================================
 exports.inviteUser = onCall(
-  { secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY] },
+  { invoker: "public", secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY] },
   async (request) => {
   if (!request.auth) throw new HttpsError("unauthenticated", "Must be signed in.");
 
@@ -375,7 +375,7 @@ exports.inviteUser = onCall(
 // CALLABLE: deactivateUser
 // ============================================================
 exports.deactivateUser = onCall(
-  { secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY] },
+  { invoker: "public", secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY] },
   async (request) => {
   if (!request.auth) throw new HttpsError("unauthenticated", "Must be signed in.");
 
@@ -752,7 +752,7 @@ exports.revokeAPIKey = onCall(async (request) => {
 //   - Roles must be from the valid set
 // ============================================================
 exports.updateUserRoles = onCall(
-  { secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY] },
+  { invoker: "public", secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY] },
   async (request) => {
   if (!request.auth) throw new HttpsError("unauthenticated", "Must be signed in.");
 
