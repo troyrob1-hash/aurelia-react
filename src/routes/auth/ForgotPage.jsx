@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { forgotPassword, confirmForgotPassword } from '@/lib/auth'
 import styles from './Auth.module.css'
@@ -12,6 +12,29 @@ export default function ForgotPage() {
   const [loading, setLoading]     = useState(false)
   const [error, setError]         = useState('')
   const [success, setSuccess]     = useState('')
+  const [resending, setResending] = useState(false)
+  const [cooldown, setCooldown]   = useState(0)
+
+  useEffect(() => {
+    if (cooldown <= 0) return
+    const t = setTimeout(() => setCooldown(c => c - 1), 1000)
+    return () => clearTimeout(t)
+  }, [cooldown])
+
+  async function handleResend() {
+    if (cooldown > 0 || resending) return
+    setError('')
+    setResending(true)
+    try {
+      await forgotPassword(email.trim().toLowerCase())
+      setSuccess(`New code sent to ${email}`)
+      setCooldown(30)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setResending(false)
+    }
+  }
 
   async function handleSendCode(e) {
     e.preventDefault()
@@ -83,6 +106,26 @@ export default function ForgotPage() {
             <h1 className={styles.heading}>Enter new password</h1>
             {success && <div className={styles.success}>{success}</div>}
             {error   && <div className={styles.error}>{error}</div>}
+            <div style={{color:'#6b7280',fontSize:12,marginBottom:16,lineHeight:1.5}}>
+              Didn't get it within a few minutes? Check your spam folder, or{' '}
+              <button
+                type="button"
+                onClick={handleResend}
+                disabled={cooldown > 0 || resending}
+                style={{
+                  background:'none',
+                  border:'none',
+                  padding:0,
+                  font:'inherit',
+                  color: (cooldown > 0 || resending) ? '#9ca3af' : '#F15D3B',
+                  cursor: (cooldown > 0 || resending) ? 'default' : 'pointer',
+                  textDecoration:'underline',
+                }}
+              >
+                {resending ? 'resending…' : cooldown > 0 ? `resend in ${cooldown}s` : 'resend the code'}
+              </button>
+              . If it still doesn't arrive, contact your administrator.
+            </div>
             <form onSubmit={handleReset} className={styles.form}>
               <div className={styles.field}>
                 <label className={styles.label}>Reset Code</label>
