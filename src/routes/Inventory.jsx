@@ -14,6 +14,8 @@ import { getTopVarianceIssues, calcParStatus } from '@/lib/variance'
 import { Search, Download, RefreshCw, Eye, EyeOff, TrendingUp, TrendingDown, Minus, AlertTriangle , Upload } from 'lucide-react'
 import { useToast } from '@/components/ui/Toast'
 import AllLocationsGrid from '@/components/AllLocationsGrid'
+import ErrorBoundary from '@/components/ErrorBoundary'
+import ArrangeList from '@/components/inventory/ArrangeList'
 import styles from './Inventory.module.css'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
@@ -369,6 +371,21 @@ export default function Inventory() {
   // Same store/persistence story as viewMode.
   const sortMode = useUIStore(s => s.inventorySortMode)
   const setSortMode = useUIStore(s => s.setInventorySortMode)
+  // Arrange mode (Stage 2): transient drag-to-reorder editing mode. Local state
+  // (not the store) — you should never reload/route back INTO arrange mode.
+  // Entering forces shelf sort (you can't arrange while viewing A-Z); exiting
+  // restores the prior sort choice.
+  const [arrangeMode, setArrangeMode] = useState(false)
+  const prevSortModeRef = useRef(null)
+  const enterArrangeMode = () => {
+    prevSortModeRef.current = sortMode
+    setSortMode('shelf')
+    setArrangeMode(true)
+  }
+  const exitArrangeMode = () => {
+    setArrangeMode(false)
+    if (prevSortModeRef.current) setSortMode(prevSortModeRef.current)
+  }
   const [activeCat, setActiveCat] = useState('all')
   const [collapsed, setCollapsed] = useState({})
   const [blindMode, setBlindMode] = useState(false)
@@ -1327,6 +1344,18 @@ export default function Inventory() {
               }}
             >Shelf</button>
           </div>
+          {/* Arrange mode toggle (Stage 2): hides counting, shows the drag list.
+              Entering forces shelf sort so you arrange what you see. */}
+          <button
+            onClick={() => (arrangeMode ? exitArrangeMode() : enterArrangeMode())}
+            title="Drag items into physical shelf order"
+            style={{
+              padding: '6px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+              border: '1px solid #cbd5e1', borderRadius: 8,
+              background: arrangeMode ? '#1D9E75' : '#fff',
+              color: arrangeMode ? '#fff' : '#475569',
+            }}
+          >{arrangeMode ? 'Done arranging' : 'Arrange'}</button>
           <button
             className={`${styles.btnVariance} ${showVariance ? styles.btnVarianceActive : ''}`}
             onClick={() => setShowVariance(v => !v)}
@@ -1357,8 +1386,23 @@ export default function Inventory() {
           </div>
         )}
 
-        {/* Item Sections (category groups, or one flat A-Z group) */}
-        {!loading && displayGroups.map(cat => (
+        {/* Item Sections (category groups, or one flat A-Z group).
+            Arrange mode swaps the counting table for the isolated ArrangeList
+            (drag-reorder UI), wrapped in an ErrorBoundary so a fault there can
+            never crash counting. */}
+        {!loading && (arrangeMode ? (
+          <ErrorBoundary fallback={(err, reset) => (
+            <div style={{ padding: 16, color: '#b91c1c', fontSize: 13 }}>
+              Arrange mode hit an error and was disabled — your counts are unaffected.{' '}
+              <button
+                onClick={() => { reset(); exitArrangeMode() }}
+                style={{ textDecoration: 'underline', background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', padding: 0, font: 'inherit' }}
+              >Back to counting</button>
+            </div>
+          )}>
+            <ArrangeList groups={displayGroups} viewMode={viewMode} />
+          </ErrorBoundary>
+        ) : displayGroups.map(cat => (
           <div key={cat.key} className={styles.section}>
             {cat.isFlat ? (
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
@@ -1564,7 +1608,7 @@ export default function Inventory() {
               </table>
             )}
           </div>
-        ))}
+        )))}
 
         <SaveStatusBar
           metricLabel="Live COGS"
@@ -1756,12 +1800,6 @@ export default function Inventory() {
                       { label: 'Unit cost', field: 'unitCost', type: 'number', prefix: '$' },
                       { label: 'GL code', field: 'glCode', type: 'text' },
                       { label: 'Par level', field: 'parLevel', type: 'number' },
-                      // Shelf-to-sheet ordering (Stage 1) — TEMPORARY manual
-                      // inputs to prove save+sort before Stage 2's drag UI.
-                      // Route through saveEditField (updateDoc/merge) like every
-                      // other field here. Remove when drag-arrange lands.
-                      { label: 'Shelf order (category)', field: 'catShelfOrder', type: 'number' },
-                      { label: 'Shelf order (flat)', field: 'flatShelfOrder', type: 'number' },
                     ].map(f => (
                       <div key={f.field} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                         <label style={{ fontSize: 13, color: '#475569', minWidth: 100 }}>{f.label}</label>
