@@ -379,29 +379,6 @@ export default function Inventory() {
   })
   const [manageSearch, setManageSearch] = useState('')
   const [whyItem, setWhyItem] = useState(null)
-  // Edit-panel save state — autosave-on-blur stays the data path, this tracks
-  // in-flight writes so the panel's Done button can reflect "Saving…" /
-  // "All changes saved" aggregate state instead of relying only on per-field
-  // toasts.
-  const [editSavingCount, setEditSavingCount] = useState(0)
-  const [editLastSavedAt, setEditLastSavedAt] = useState(null)
-  const editSaving = editSavingCount > 0
-  const editHasSaved = editLastSavedAt !== null
-  const saveEditField = useCallback(async (itemId, field, val) => {
-    setEditSavingCount(c => c + 1)
-    try {
-      const { doc: fbDoc, updateDoc } = await import('firebase/firestore')
-      const locKey = sanitizeDocId(location)
-      await updateDoc(fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', itemId), { [field]: val })
-      setEditLastSavedAt(Date.now())
-    } finally {
-      setEditSavingCount(c => c - 1)
-    }
-  }, [location, orgId])
-  // Reset the "all saved" affordance when the panel switches items (or closes).
-  // Without this, opening item B right after editing item A would briefly show
-  // "✓ All changes saved" stale from A's session.
-  useEffect(() => { setEditLastSavedAt(null) }, [whyItem?.id])
   const [showBuddySetup, setShowBuddySetup] = useState(false)
   const [buddyDraft, setBuddyDraft] = useState({ caller: '', marker: '' })
 
@@ -1700,7 +1677,6 @@ export default function Inventory() {
                       Edit item
                     </div>
                     {[
-                      { label: 'Product name', field: 'name', type: 'text', wide: true },
                       { label: 'Category', field: 'category', type: 'select', options: categories.map(cat => ({ value: cat.key, label: cat.label })) },
                       { label: 'Vendor', field: 'vendor', type: 'text' },
                       { label: 'Pack size', field: 'packSize', type: 'text' },
@@ -1722,7 +1698,9 @@ export default function Inventory() {
                             onChange={async (e) => {
                               const catKey = e.target.value
                               const catLabel = categories.find(cat => cat.key === catKey)?.label || catKey
-                              await saveEditField(item.id, 'category', catLabel)
+                              const { doc: fbDoc, updateDoc } = await import('firebase/firestore')
+                              const locKey = sanitizeDocId(location)
+                              await updateDoc(fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', item.id), { category: catLabel })
                               // Do NOT call load() — it would wipe unsaved counts. Category is persisted.
                               toast.success('Category updated')
                             }}
@@ -1739,42 +1717,20 @@ export default function Inventory() {
                               onBlur={async (e) => {
                                 const val = f.type === 'number' ? (parseFloat(e.target.value) || 0) : e.target.value.trim()
                                 if (val === (item[f.field] ?? '')) return
-                                await saveEditField(item.id, f.field, val)
+                                const { doc: fbDoc, updateDoc } = await import('firebase/firestore')
+                                const locKey = sanitizeDocId(location)
+                                await updateDoc(fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', item.id), { [f.field]: val })
                                 // Field already persisted to Firestore. Do NOT call load() here —
                                 // load() rebuilds items blank and would wipe unsaved in-progress
                                 // counts. The field value is saved; the UI updates on next natural reload.
                                 toast.success(f.label + ' updated')
                               }}
-                              style={{ width: f.wide ? 220 : (f.type === 'number' ? 100 : 160), padding: '5px 8px', fontSize: 13, borderRadius: 6, border: '0.5px solid #e2e8f0' }}
+                              style={{ width: f.type === 'number' ? 100 : 160, padding: '5px 8px', fontSize: 13, borderRadius: 6, border: '0.5px solid #e2e8f0' }}
                             />
                           </div>
                         )}
                       </div>
                     ))}
-                  </div>
-
-                  {/* Save status + Done — autosave-on-blur stays the data path;
-                      this button reflects aggregate save state so users don't
-                      have to trust the per-field toasts alone. */}
-                  <div style={{ borderTop: '0.5px solid #e2e8f0', padding: '16px 0' }}>
-                    <button
-                      onClick={() => setWhyItem(null)}
-                      disabled={editSaving}
-                      style={{
-                        width: '100%', padding: '10px', fontSize: 13, fontWeight: 600,
-                        background: editSaving ? '#e2e8f0' : '#1D9E75',
-                        color: editSaving ? '#94a3b8' : '#fff',
-                        border: 'none', borderRadius: 8,
-                        cursor: editSaving ? 'wait' : 'pointer',
-                        transition: 'background 0.15s',
-                      }}
-                    >
-                      {editSaving
-                        ? 'Saving…'
-                        : editHasSaved
-                          ? '✓ All changes saved · Done'
-                          : 'Done'}
-                    </button>
                   </div>
 
                   {/* Remove from count sheet */}
