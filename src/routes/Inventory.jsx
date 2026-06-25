@@ -367,25 +367,13 @@ export default function Inventory() {
   // reload; cross-login persistence is a planned follow-up (CLAUDE.md).
   const viewMode = useUIStore(s => s.inventoryViewMode)
   const setViewMode = useUIStore(s => s.setInventoryViewMode)
-  // Sort within the chosen view: 'alpha' (A-Z) | 'shelf' (custom shelf order).
-  // Same store/persistence story as viewMode.
-  const sortMode = useUIStore(s => s.inventorySortMode)
-  const setSortMode = useUIStore(s => s.setInventorySortMode)
   // Arrange mode (Stage 2): transient drag-to-reorder editing mode. Local state
   // (not the store) — you should never reload/route back INTO arrange mode.
-  // Entering forces shelf sort (you can't arrange while viewing A-Z); exiting
-  // restores the prior sort choice.
+  // Sort is always shelf-order-by-default now (see byShelf below), so there's
+  // no sort mode to flip on enter/exit — these just toggle the editing UI.
   const [arrangeMode, setArrangeMode] = useState(false)
-  const prevSortModeRef = useRef(null)
-  const enterArrangeMode = () => {
-    prevSortModeRef.current = sortMode
-    setSortMode('shelf')
-    setArrangeMode(true)
-  }
-  const exitArrangeMode = () => {
-    setArrangeMode(false)
-    if (prevSortModeRef.current) setSortMode(prevSortModeRef.current)
-  }
+  const enterArrangeMode = () => setArrangeMode(true)
+  const exitArrangeMode = () => setArrangeMode(false)
   const [activeCat, setActiveCat] = useState('all')
   const [collapsed, setCollapsed] = useState({})
   const [blindMode, setBlindMode] = useState(false)
@@ -930,35 +918,33 @@ export default function Inventory() {
   }
 
   const displayGroups = useMemo(() => {
-    // Flat view: one synthetic group, no category header. A-Z in alpha mode,
-    // flatShelfOrder in shelf mode. Returning a single group means the SAME
-    // row-rendering code path serves both views, so flat and grouped can never
-    // drift in how counts behave.
+    // Shelf order is the single default sort: byShelf puts arranged items in
+    // ascending shelf position, with un-arranged (null position) items falling
+    // to the bottom A-Z. With nothing arranged every item is null → pure A-Z,
+    // so this also IS the alphabetical behavior — no separate sort toggle.
+    // Flat view: one synthetic group sorted by flatShelfOrder. Returning a
+    // single group means the SAME row-rendering code path serves both views.
     if (viewMode === 'flat') {
-      const sorted = [...displayItems].sort(
-        sortMode === 'shelf' ? byShelf('flatShelfOrder') : byName
-      )
+      const sorted = [...displayItems].sort(byShelf('flatShelfOrder'))
       if (sorted.length === 0) return []
       return [{ key: '__flat__', label: null, isFlat: true, color: '#0f172a', bg: '#f8fafc', items: sorted }]
     }
     const cats = activeCat === 'all' ? categories : categories.filter(c => c.key === activeCat)
-    // Within-group order: A-Z in alpha mode, catShelfOrder in shelf mode.
+    // Within-group order by catShelfOrder (null → bottom A-Z).
     return cats.map(cat => ({
       ...cat,
       items: displayItems
         .filter(i => i._cat === cat.key)
-        .sort(sortMode === 'shelf' ? byShelf('catShelfOrder') : byName),
+        .sort(byShelf('catShelfOrder')),
     })).filter(g => g.items.length > 0)
-  }, [displayItems, activeCat, categories, viewMode, sortMode])
+  }, [displayItems, activeCat, categories, viewMode])
 
   // Flat view list: every visible item in one list, no category grouping.
   // Derived purely from displayItems (the same source as the grouped view) so
   // toggling view never touches count data. Mirrors displayGroups' flat sort.
   const flatItems = useMemo(() =>
-    [...displayItems].sort(
-      sortMode === 'shelf' ? byShelf('flatShelfOrder') : byName
-    )
-  , [displayItems, sortMode])
+    [...displayItems].sort(byShelf('flatShelfOrder'))
+  , [displayItems])
 
   // Summary for the flat view (replaces per-category subtotals).
   const flatSummary = useMemo(() => {
@@ -1374,32 +1360,9 @@ export default function Inventory() {
               }}
             >A–Z</button>
           </div>
-          {/* Sort toggle (Stage 1): A-Z vs custom shelf order. Orthogonal to the
-              grouped/flat view toggle — shelf mode sorts within groups by
-              catShelfOrder (grouped) or across all by flatShelfOrder (flat). */}
-          <div style={{ display: 'inline-flex', border: '1px solid #cbd5e1', borderRadius: 8, overflow: 'hidden' }}>
-            <button
-              onClick={() => setSortMode('alpha')}
-              title="Sort alphabetically"
-              style={{
-                padding: '6px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer', border: 'none',
-                background: sortMode === 'alpha' ? '#0f172a' : '#fff',
-                color: sortMode === 'alpha' ? '#fff' : '#475569',
-              }}
-            >A-Z</button>
-            <button
-              onClick={() => setSortMode('shelf')}
-              title="Sort by custom shelf order"
-              style={{
-                padding: '6px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer', border: 'none',
-                borderLeft: '1px solid #cbd5e1',
-                background: sortMode === 'shelf' ? '#0f172a' : '#fff',
-                color: sortMode === 'shelf' ? '#fff' : '#475569',
-              }}
-            >Shelf</button>
-          </div>
           {/* Arrange mode toggle (Stage 2): hides counting, shows the drag list.
-              Entering forces shelf sort so you arrange what you see. */}
+              Sort is always shelf-order-by-default, so arranging takes effect
+              immediately in whichever view you're in. */}
           <button
             onClick={() => (arrangeMode ? exitArrangeMode() : enterArrangeMode())}
             title="Drag items into physical shelf order"

@@ -2,9 +2,9 @@ import { GripVertical } from 'lucide-react'
 import { useDragReorder } from '@/hooks/useDragReorder'
 
 // Stage 2b: LIVE drag-to-reorder arrange view. Renders the same `displayGroups`
-// the count table uses (shelf-sorted, because arrange mode forces
-// sortMode='shelf') as a plain div list — a grip handle + item name + current
-// shelf position per row, NO counting inputs. All drag mechanics live in
+// the count table uses (always shelf-order-sorted by default) as a plain div
+// list — a grip handle + item name + current shelf position per row, NO
+// counting inputs. All drag mechanics live in
 // useDragReorder; this file is pure presentation. Within-group drag only
 // (grouped view); flat view reorders across the single flat group. On drop the
 // hook calls onReorder(groupKey, orderedIds), which the parent persists.
