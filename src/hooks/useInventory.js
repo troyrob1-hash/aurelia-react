@@ -223,7 +223,7 @@ export function useInventory(orgId, locationId, periodKey, user) {
             const override = locationOverrides[String(item.id)] || {}
             return {
               id: String(item.id),
-              name: item.name,
+              name: override.name ?? item.name,
               // Edit-panel writes for these 6 fields land on the per-location
               // override doc — prefer them over the catalog so edits stick on
               // reload. ?? respects an explicit override of 0 / "" while
