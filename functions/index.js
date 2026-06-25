@@ -296,7 +296,13 @@ exports.inviteUser = onCall(
           UserPoolId: POOL_ID,
           Username: email,
           MessageAction: "SUPPRESS",
-          TemporaryPassword: tempPassword,
+          // TemporaryPassword intentionally omitted — Cognito generates a
+          // throwaway random temp password we never use. Passing our own
+          // here AND then setting the SAME value as Permanent below causes
+          // Cognito to no-op the second call and leave the user in
+          // FORCE_CHANGE_PASSWORD. Letting Cognito invent the temp value
+          // ensures the Permanent set below is a real password change that
+          // transitions the user to CONFIRMED.
           UserAttributes: [
             { Name: "email", Value: email },
             { Name: "email_verified", Value: "true" },
@@ -315,6 +321,7 @@ exports.inviteUser = onCall(
           Password: tempPassword,
           Permanent: true,
         }).promise();
+        console.log("inviteUser: password set (permanent) for new user:", email);
       } catch (createErr) {
         console.error("inviteUser: create failed:", createErr);
         throw new HttpsError("internal", "Failed to create account: " + createErr.message);
