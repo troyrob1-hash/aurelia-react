@@ -1,22 +1,25 @@
 // src/pages/Settings/components/EditAccessModal.jsx
 //
 // Full "Edit access" modal for a user. Admins use this to change:
-//   - Roles (checkboxes: manager, director, vp, admin — additive)
+//   - Role (radio: manager, director, vp, admin — single role per user)
 //   - Managed regions (multi-select from the regions collection)
 //   - Ad-hoc assigned locations (individual location overrides)
 //
 // On save, calls the updateUserRoles Cloud Function which:
-//   - Writes Firestore
-//   - Syncs Cognito custom:role claim
+//   - Writes Cognito custom:role (authoritative)
+//   - Mirrors role + roles[] to Firestore for display
 //   - Revokes refresh tokens so the target picks up new claims on next load
 //   - Writes an audit log entry
 //   - Enforces guardrails (last-admin, valid roles, at least one role)
+//
+// Wire format: still sends { roles: [role] } (single-element array) so the
+// Cloud Function signature stays unchanged — only the UI is single-select.
 
 import { useState, useMemo } from "react";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "@/lib/firebase";
 import { useToast } from "@/components/ui/Toast";
-import { ASSIGNABLE_ROLES, getUserRoles } from "@/lib/permissions";
+import { ASSIGNABLE_ROLES } from "@/lib/permissions";
 import { cleanLocName } from "@/store/LocationContext";
 
 export default function EditAccessModal({
@@ -30,7 +33,7 @@ export default function EditAccessModal({
 }) {
   const toast = useToast();
 
-  const [roles, setRoles] = useState(() => getUserRoles(user));
+  const [role, setRole] = useState(user.role || "");
   const [managedRegionIds, setManagedRegionIds] = useState(
     () => Array.isArray(user.managedRegionIds) ? [...user.managedRegionIds] : []
   );
@@ -41,12 +44,9 @@ export default function EditAccessModal({
   const [saving, setSaving] = useState(false);
 
   const isSelf = user.uid === currentUser?.uid;
-  const seesAll = roles.includes("vp") || roles.includes("admin");
-  const needsRegions = !seesAll && (roles.includes("director") || roles.includes("manager"));
+  const seesAll = role === "vp" || role === "admin";
+  const needsRegions = !seesAll && (role === "director" || role === "manager");
 
-  function toggleRole(role) {
-    setRoles(prev => prev.includes(role) ? prev.filter(r => r !== role) : [...prev, role]);
-  }
   function toggleRegion(regionId) {
     setManagedRegionIds(prev => prev.includes(regionId) ? prev.filter(id => id !== regionId) : [...prev, regionId]);
   }
@@ -73,8 +73,8 @@ export default function EditAccessModal({
   }, [allLocations, locationSearch]);
 
   async function handleSave() {
-    if (roles.length === 0) {
-      toast.error("Select at least one role");
+    if (!role) {
+      toast.error("Select a role");
       return;
     }
     setSaving(true);
@@ -83,7 +83,7 @@ export default function EditAccessModal({
       await callable({
         orgId,
         targetUid: user.uid,
-        roles,
+        roles: [role],
         managedRegionIds: seesAll ? [] : managedRegionIds,
         assignedLocations: seesAll ? [] : assignedLocations,
       });
@@ -144,11 +144,11 @@ export default function EditAccessModal({
         <div style={{ padding: "20px 24px", overflowY: "auto", flex: 1 }}>
           <div style={{ marginBottom: 24 }}>
             <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 10 }}>
-              Roles <span style={{ color: "#94a3b8", fontWeight: 400 }}>(can hold multiple)</span>
+              Role
             </label>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {ASSIGNABLE_ROLES.map(r => {
-                const checked = roles.includes(r.value);
+                const checked = role === r.value;
                 return (
                   <label
                     key={r.value}
@@ -161,7 +161,7 @@ export default function EditAccessModal({
                       transition: "all 0.12s",
                     }}
                   >
-                    <input type="checkbox" checked={checked} onChange={() => toggleRole(r.value)} style={{ marginTop: 2, cursor: "pointer" }} />
+                    <input type="radio" name="role" checked={checked} onChange={() => setRole(r.value)} style={{ marginTop: 2, cursor: "pointer" }} />
                     <div style={{ flex: 1 }}>
                       <div style={{ fontSize: 13, fontWeight: 600, color: "#0f172a" }}>{r.label}</div>
                       <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>{r.hint}</div>
@@ -270,7 +270,7 @@ export default function EditAccessModal({
 
           {seesAll && (
             <div style={{ fontSize: 12, color: "#1D9E75", padding: "10px 12px", background: "#f0fdf4", borderRadius: 8, border: "1px solid #bbf7d0" }}>
-              {roles.includes("admin") ? "Admin" : "Vice President"} sees all locations automatically — no region or ad-hoc assignments needed.
+              {role === "admin" ? "Admin" : "Vice President"} sees all locations automatically — no region or ad-hoc assignments needed.
             </div>
           )}
         </div>
@@ -294,12 +294,12 @@ export default function EditAccessModal({
           </button>
           <button
             onClick={handleSave}
-            disabled={saving || roles.length === 0}
+            disabled={saving || !role}
             style={{
               padding: "8px 20px",
-              background: saving || roles.length === 0 ? "#94a3b8" : "#1D9E75",
+              background: saving || !role ? "#94a3b8" : "#1D9E75",
               color: "#fff", border: "none", borderRadius: 8,
-              cursor: saving || roles.length === 0 ? "not-allowed" : "pointer",
+              cursor: saving || !role ? "not-allowed" : "pointer",
               fontSize: 13, fontWeight: 500,
             }}
           >

@@ -1,12 +1,15 @@
 // src/pages/Settings/components/InviteModal.jsx
 //
-// Rewritten for the 4-role RBAC model. Creates a new user with:
-//   - roles[] (manager, director, vp, admin — additive)
+// Creates a new user with:
+//   - role (single: manager, director, vp, admin)
 //   - managedRegionIds[] for region-based access
 //   - assignedLocations[] for ad-hoc location overrides
 //
-// Sends the new-shape payload to the updated inviteUser Cloud Function.
+// Sends the payload to the inviteUser Cloud Function.
 // Uses the same UI patterns as EditAccessModal for consistency.
+//
+// Wire format: still sends { roles: [role] } (single-element array) so the
+// Cloud Function signature stays unchanged — only the UI is single-select.
 
 import { useState, useMemo } from "react";
 import { functions } from "@/lib/firebase";
@@ -19,7 +22,7 @@ export default function InviteModal({ orgId, onClose, onSuccess, prefillEmail, p
 
   const [email, setEmail] = useState(prefillEmail || "");
   const [displayName, setDisplayName] = useState("");
-  const [roles, setRoles] = useState(["manager"]);
+  const [role, setRole] = useState("manager");
   const [managedRegionIds, setManagedRegionIds] = useState([]);
   const [assignedLocations, setAssignedLocations] = useState([]);
   const [locationSearch, setLocationSearch] = useState("");
@@ -27,12 +30,9 @@ export default function InviteModal({ orgId, onClose, onSuccess, prefillEmail, p
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
-  const seesAll = roles.includes("vp") || roles.includes("admin");
-  const needsRegions = !seesAll && (roles.includes("director") || roles.includes("manager"));
+  const seesAll = role === "vp" || role === "admin";
+  const needsRegions = !seesAll && (role === "director" || role === "manager");
 
-  function toggleRole(role) {
-    setRoles(prev => prev.includes(role) ? prev.filter(r => r !== role) : [...prev, role]);
-  }
   function toggleRegion(regionId) {
     setManagedRegionIds(prev => prev.includes(regionId) ? prev.filter(id => id !== regionId) : [...prev, regionId]);
   }
@@ -63,8 +63,8 @@ export default function InviteModal({ orgId, onClose, onSuccess, prefillEmail, p
       setError("Name and email are required.");
       return;
     }
-    if (roles.length === 0) {
-      setError("Select at least one role.");
+    if (!role) {
+      setError("Select a role.");
       return;
     }
     setLoading(true);
@@ -75,7 +75,7 @@ export default function InviteModal({ orgId, onClose, onSuccess, prefillEmail, p
         orgId,
         email: email.trim().toLowerCase(),
         displayName: displayName.trim(),
-        roles,
+        roles: [role],
         managedRegionIds: seesAll ? [] : managedRegionIds,
         assignedLocations: seesAll ? [] : assignedLocations,
       });
@@ -156,11 +156,11 @@ export default function InviteModal({ orgId, onClose, onSuccess, prefillEmail, p
           />
 
           <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#475569", marginBottom: 10 }}>
-            Roles <span style={{ color: "#94a3b8", fontWeight: 400 }}>(can hold multiple)</span>
+            Role
           </label>
           <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 }}>
             {ASSIGNABLE_ROLES.map(r => {
-              const checked = roles.includes(r.value);
+              const checked = role === r.value;
               return (
                 <label
                   key={r.value}
@@ -173,7 +173,7 @@ export default function InviteModal({ orgId, onClose, onSuccess, prefillEmail, p
                     transition: "all 0.12s",
                   }}
                 >
-                  <input type="checkbox" checked={checked} onChange={() => toggleRole(r.value)} style={{ marginTop: 2, cursor: "pointer" }} />
+                  <input type="radio" name="role" checked={checked} onChange={() => setRole(r.value)} style={{ marginTop: 2, cursor: "pointer" }} />
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 13, fontWeight: 600, color: "#0f172a" }}>{r.label}</div>
                     <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>{r.hint}</div>
@@ -281,7 +281,7 @@ export default function InviteModal({ orgId, onClose, onSuccess, prefillEmail, p
 
           {seesAll && (
             <div style={{ fontSize: 12, color: "#1D9E75", padding: "10px 12px", background: "#f0fdf4", borderRadius: 8, border: "1px solid #bbf7d0" }}>
-              {roles.includes("admin") ? "Admin" : "Vice President"} sees all locations automatically — no region or ad-hoc assignments needed.
+              {role === "admin" ? "Admin" : "Vice President"} sees all locations automatically — no region or ad-hoc assignments needed.
             </div>
           )}
         </div>
@@ -305,12 +305,12 @@ export default function InviteModal({ orgId, onClose, onSuccess, prefillEmail, p
           </button>
           <button
             onClick={handleSubmit}
-            disabled={loading || roles.length === 0 || !email.trim() || !displayName.trim()}
+            disabled={loading || !role || !email.trim() || !displayName.trim()}
             style={{
               padding: "8px 20px",
-              background: loading || roles.length === 0 || !email.trim() || !displayName.trim() ? "#94a3b8" : "#1D9E75",
+              background: loading || !role || !email.trim() || !displayName.trim() ? "#94a3b8" : "#1D9E75",
               color: "#fff", border: "none", borderRadius: 8,
-              cursor: loading || roles.length === 0 ? "not-allowed" : "pointer",
+              cursor: loading || !role ? "not-allowed" : "pointer",
               fontSize: 13, fontWeight: 500,
             }}
           >
