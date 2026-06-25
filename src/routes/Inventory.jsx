@@ -461,9 +461,13 @@ export default function Inventory() {
   const saveEditField = useCallback(async (itemId, field, val) => {
     setEditSavingCount(c => c + 1)
     try {
-      const { doc: fbDoc, updateDoc } = await import('firebase/firestore')
+      // setDoc({merge:true}) not updateDoc: items never edited at this location
+      // have no override doc yet, and updateDoc throws "No document to update"
+      // on a missing doc. merge creates-or-patches a single field, leaving every
+      // other field on the doc untouched (no clobber).
+      const { doc: fbDoc, setDoc } = await import('firebase/firestore')
       const locKey = sanitizeDocId(location)
-      await updateDoc(fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', itemId), { [field]: val })
+      await setDoc(fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', itemId), { [field]: val }, { merge: true })
       setEditLastSavedAt(Date.now())
     } finally {
       setEditSavingCount(c => c - 1)
@@ -507,7 +511,57 @@ export default function Inventory() {
     save,
     saveCounts,
     mergeDraft,
+    patchItemFields,
   } = useInventory(orgId, location, periodKey, user)
+
+  // Persist a dropped reorder (Stage 2b). Writes clean sequential 1..N shelf
+  // positions for the affected scope — the dragged item's category group
+  // (catShelfOrder, grouped view) or the whole flat list (flatShelfOrder, flat
+  // view). Only items whose position actually CHANGED are written (diff vs
+  // current), so a small move costs a few writes; the worst case (first-ever
+  // arrangement of a 453-item flat list, or moving to the far end) approaches N.
+  // Batched in chunks of 450 to stay under Firestore's 500-op writeBatch limit.
+  // setDoc({merge:true}) creates-or-patches: master-catalog items with no
+  // override doc yet are created; existing docs keep every other field.
+  const persistReorder = useCallback(async (groupKey, orderedIds) => {
+    if (!orgId || !location || !orderedIds?.length) return
+    const field = viewMode === 'flat' ? 'flatShelfOrder' : 'catShelfOrder'
+    const locKey = sanitizeDocId(location)
+    const curById = new Map(items.map(i => [i.id, i[field]]))
+    const changes = []
+    orderedIds.forEach((id, idx) => {
+      const pos = idx + 1
+      if (curById.get(id) !== pos) changes.push({ id, pos })
+    })
+    if (!changes.length) return
+    try {
+      const { writeBatch, doc: fbDoc } = await import('firebase/firestore')
+      for (let i = 0; i < changes.length; i += 450) {
+        const slice = changes.slice(i, i + 450)
+        const batch = writeBatch(db)
+        slice.forEach(({ id, pos }) => {
+          batch.set(
+            fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', id),
+            { [field]: pos },
+            { merge: true }
+          )
+        })
+        await batch.commit()
+      }
+      // Only AFTER all batches commit: patch the new positions into the
+      // in-memory items so the reorder sticks visually without a reload
+      // (re-entering arrange mode or flipping to Shelf sort shows the new
+      // order). Patches ONLY the changed `field` on the changed ids — qty,
+      // eaches, counts and every other field are left untouched. If the write
+      // failed above, we never reach here: the toast fires and local state
+      // stays as-is (consistent with the un-persisted server state).
+      const patches = {}
+      changes.forEach(({ id, pos }) => { patches[id] = { [field]: pos } })
+      patchItemFields(patches)
+    } catch (err) {
+      toast.error('Failed to save shelf order: ' + (err.message || ''))
+    }
+  }, [orgId, location, viewMode, items, toast, patchItemFields])
 
   // Autosave lifecycle (debounce + page-exit flush + location-switch flush)
   // is owned by the shared useAutosave hook so every tab behaves identically.
@@ -1400,7 +1454,7 @@ export default function Inventory() {
               >Back to counting</button>
             </div>
           )}>
-            <ArrangeList groups={displayGroups} viewMode={viewMode} />
+            <ArrangeList groups={displayGroups} viewMode={viewMode} onReorder={persistReorder} />
           </ErrorBoundary>
         ) : displayGroups.map(cat => (
           <div key={cat.key} className={styles.section}>

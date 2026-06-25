@@ -604,6 +604,17 @@ export function useInventory(orgId, locationId, periodKey, user) {
     }
   }, [items, orgId, locId])
 
+  // Targeted local patch (Stage 2b shelf-order sync). `patches` is a map of
+  // itemId -> partial-fields object; merges each into ONLY that item, leaving
+  // qty/eaches/counts and every other field intact. Lets the caller reflect a
+  // persisted shelf-order reorder in memory WITHOUT a reload — load() would
+  // rebuild items blank and wipe unsaved counts. Pure local state; the caller
+  // owns the Firestore write and should call this only after it succeeds.
+  const patchItemFields = useCallback((patches) => {
+    if (!patches || !Object.keys(patches).length) return
+    setItems(prev => prev.map(i => patches[i.id] ? { ...i, ...patches[i.id] } : i))
+  }, [])
+
   // Hide an item from this location. For master items this sets removed: true
   // on the override doc. For custom items it also sets removed: true (we don't
   // hard-delete, so it can be restored).
@@ -1139,6 +1150,7 @@ export function useInventory(orgId, locationId, periodKey, user) {
     save,
     saveCounts,
     mergeDraft,
+    patchItemFields,
   }
 }
 

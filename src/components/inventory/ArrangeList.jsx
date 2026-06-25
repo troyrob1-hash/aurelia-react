@@ -1,21 +1,27 @@
 import { GripVertical } from 'lucide-react'
+import { useDragReorder } from '@/hooks/useDragReorder'
 
-// Stage 2a: STATIC arrange view. Renders the same `displayGroups` the count
-// table uses (shelf-sorted, because arrange mode forces sortMode='shelf') as a
-// plain div list — a grip handle + item name + current shelf position per row,
-// and NO counting inputs. The handles are inert affordances for now; pointer
-// dragging (useDragReorder) and persist-on-drop land in Stage 2b.
+// Stage 2b: LIVE drag-to-reorder arrange view. Renders the same `displayGroups`
+// the count table uses (shelf-sorted, because arrange mode forces
+// sortMode='shelf') as a plain div list — a grip handle + item name + current
+// shelf position per row, NO counting inputs. All drag mechanics live in
+// useDragReorder; this file is pure presentation. Within-group drag only
+// (grouped view); flat view reorders across the single flat group. On drop the
+// hook calls onReorder(groupKey, orderedIds), which the parent persists.
 //
 // Kept in its own file and wrapped by an ErrorBoundary in the parent so the
-// upcoming drag logic can never take down the counting page.
+// drag logic can never take down the counting page.
 //
 // Props:
-//   groups   — displayGroups (each: {key, label, color, bg, isFlat?, items[]})
-//   viewMode — 'grouped' | 'flat'; selects which shelf field to display
-export default function ArrangeList({ groups, viewMode }) {
+//   groups    — displayGroups (each: {key, label, color, bg, isFlat?, items[]})
+//   viewMode  — 'grouped' | 'flat'; selects which shelf field to display
+//   onReorder — (groupKey, orderedIds) => void|Promise, fired once on drop
+export default function ArrangeList({ groups, viewMode, onReorder }) {
   const field = viewMode === 'flat' ? 'flatShelfOrder' : 'catShelfOrder'
+  const { groups: liveGroups, getHandleProps, registerRow, draggingId } =
+    useDragReorder({ groups, onReorder })
 
-  if (!groups || groups.length === 0) {
+  if (!liveGroups || liveGroups.length === 0) {
     return (
       <div style={{ padding: 24, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>
         No items to arrange.
@@ -32,12 +38,12 @@ export default function ArrangeList({ groups, viewMode }) {
       }}>
         Arrange mode — counting is paused.{' '}
         {viewMode === 'flat'
-          ? 'Set one flat shelf order across all items.'
-          : 'Set shelf order within each category group.'}{' '}
-        Drag-to-reorder arrives next; positions below reflect saved shelf order.
+          ? 'Drag items into one flat shelf order across all items.'
+          : 'Drag items into shelf order within each category group.'}{' '}
+        Order saves automatically when you drop.
       </div>
 
-      {groups.map(g => (
+      {liveGroups.map(g => (
         <div key={g.key} style={{ marginBottom: 16 }}>
           <div style={{
             padding: '8px 14px', fontSize: 13, fontWeight: 600,
@@ -52,29 +58,34 @@ export default function ArrangeList({ groups, viewMode }) {
           <div style={{ border: '1px solid #e2e8f0', borderRadius: '0 0 8px 8px' }}>
             {g.items.map((item, idx) => {
               const pos = item[field]
+              const isDragging = draggingId === item.id
               return (
                 <div
                   key={item.id}
+                  ref={el => registerRow(g.key, item.id, el)}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 10,
                     padding: '10px 12px',
                     borderTop: idx === 0 ? 'none' : '1px solid #f1f5f9',
-                    background: '#fff',
+                    background: isDragging ? '#ecfdf5' : '#fff',
+                    boxShadow: isDragging ? '0 6px 16px rgba(15,23,42,0.12)' : 'none',
+                    borderRadius: isDragging ? 6 : 0,
+                    position: 'relative',
+                    zIndex: isDragging ? 2 : 1,
+                    opacity: isDragging ? 0.95 : 1,
+                    transition: isDragging ? 'none' : 'background 0.12s',
                   }}
                 >
                   <span
-                    // Static handle (no drag in 2a). touchAction:'none' is set
-                    // now so Stage 2b's pointer drag won't be hijacked by touch
-                    // scrolling once the handlers are wired here.
-                    style={{ display: 'flex', color: '#cbd5e1', cursor: 'grab', touchAction: 'none' }}
-                    title="Drag to reorder (coming soon)"
-                    aria-hidden="true"
+                    {...getHandleProps(g.key, item.id)}
+                    title="Drag to reorder"
                   >
-                    <GripVertical size={16} />
+                    <GripVertical size={16} color={isDragging ? '#1D9E75' : '#cbd5e1'} style={{ display: 'block' }} />
                   </span>
                   <span style={{
                     flex: 1, fontSize: 13, color: '#0f172a', minWidth: 0,
                     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    userSelect: 'none',
                   }}>
                     {item.name}
                   </span>
