@@ -84,7 +84,10 @@ async function loadProfile(user) {
     const snap = await getDoc(userRef)
     if (snap.exists()) {
       const profile = snap.data()
-      return { ...user, uid, managedRegionIds: profile.managedRegionIds || [], assignedLocations: profile.assignedLocations || [], roles: (profile.roles && profile.roles.length) ? profile.roles : (user.role && user.role !== 'viewer' ? [user.role] : []), displayName: profile.displayName || user.name }
+      // Note: roles[] intentionally omitted. user.role (singular, Cognito-sourced
+      // via mapUser) is the authoritative permission field. Firestore profile.roles
+      // is a non-authoritative display mirror, not read for permission decisions.
+      return { ...user, uid, managedRegionIds: profile.managedRegionIds || [], assignedLocations: profile.assignedLocations || [], displayName: profile.displayName || user.name }
     }
   } catch(e) { console.warn('[authStore] profile read failed:', e?.message || e) }
   return { ...user, uid }

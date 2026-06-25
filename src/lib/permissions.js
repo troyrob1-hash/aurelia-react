@@ -1,16 +1,29 @@
 /**
  * Aurelia FMS — Role-based access control helpers
  *
- * ROLE MODEL (additive — a user can hold multiple roles):
+ * ROLE MODEL (single role per user — Cognito `custom:role` is authoritative):
  *
  *   staff / manager   Sees only assigned location(s) and/or region(s).
  *                     Cannot approve sales or administer the system.
+ *                     ('staff' is collapsed to 'manager' — same tier.)
  *   director          Sees assigned region(s). Can approve sales.
  *                     Cannot administer the system.
  *   vp                Sees ALL locations in the tenant. Can approve sales.
  *                     Cannot administer the system.
  *   admin             Sees ALL locations. Can approve sales. Full admin powers
  *                     (manage users, roles, regions, locations, API keys, SSO).
+ *
+ * SOURCE OF TRUTH:
+ *
+ *   All predicates in this file read `user.role` (singular string), which
+ *   originates in the Cognito `custom:role` claim and is copied into the
+ *   live React state by authStore.mapUser. Cloud-Function permission gates
+ *   and Firestore rules also read the Cognito claim, so client predicates
+ *   and server gates agree by construction.
+ *
+ *   The Firestore `orgs/{orgId}/users/{uid}` doc still carries `role` and
+ *   `roles[]` fields for display in the Settings user list, but those are
+ *   a non-authoritative mirror — never read for permission decisions.
  *
  * VISIBILITY MODEL:
  *
@@ -30,14 +43,9 @@
  *   ("Troy Robinson", "Jane Smith") but can be renamed freely. Assignment
  *   happens by stable ID, not by name, so renames don't break access.
  *
- * BACKWARDS COMPATIBILITY:
- *
- *   - Legacy user docs have `user.role: 'admin'` (singular string).
- *   - New user docs have `user.roles: ['admin', 'vp']` (array).
- *   - getUserRoles(user) handles both transparently.
- *   - Location docs may still have a legacy `director: "Name"` string — this
- *     is no longer used for access control, only for display. The regions
- *     collection is authoritative for visibility.
+ *   Location docs may still have a legacy `director: "Name"` string — this
+ *   is no longer used for access control, only for display. The regions
+ *   collection is authoritative for visibility.
  */
 
 // ── Role constants ────────────────────────────────────────────
@@ -67,34 +75,31 @@ export const ASSIGNABLE_ROLES = Object.freeze([
 
 // ── Role normalization ────────────────────────────────────────
 /**
- * Returns the user's roles as a normalized, lowercase string array.
- * Handles both the legacy `role: 'admin'` string and the new `roles: ['admin']` array.
- * Returns an empty array for users with no roles (they see nothing).
+ * Internal — read user.role, return a normalized lowercase string.
+ * Returns '' when missing/empty. Collapses 'staff' to 'manager'
+ * (legacy alias for the same tier).
  *
- * Also normalizes 'staff' → 'manager' since they're treated identically.
+ * user.role is Cognito-sourced (custom:role claim) via authStore.mapUser.
+ */
+function singleRole(user) {
+  if (!user || typeof user.role !== 'string') return ''
+  const r = user.role.trim().toLowerCase()
+  return r === 'staff' ? 'manager' : r
+}
+
+/**
+ * Returns the user's role as a single-element array (or empty array if
+ * unassigned). Signature retained for backward compatibility with callers
+ * that use `.includes(...)` to check for a role — those still work
+ * unchanged. Internally derives from `user.role` (Cognito claim).
  */
 export function getUserRoles(user) {
-  if (!user) return []
-
-  let rawRoles = []
-
-  // New format: array of roles
-  if (Array.isArray(user.roles) && user.roles.length > 0) {
-    rawRoles = user.roles
-  }
-  // Legacy format: single role string
-  else if (typeof user.role === 'string' && user.role.trim()) {
-    rawRoles = [user.role]
-  }
-
-  return rawRoles
-    .map(r => String(r).toLowerCase().trim())
-    .filter(Boolean)
-    .map(r => r === 'staff' ? 'manager' : r)  // staff and manager are the same tier
+  const r = singleRole(user)
+  return r ? [r] : []
 }
 
 function hasRole(user, role) {
-  return getUserRoles(user).includes(role)
+  return singleRole(user) === role
 }
 
 // ── Permission predicates ─────────────────────────────────────
@@ -103,8 +108,8 @@ function hasRole(user, role) {
  * True for: VP, Admin
  */
 export function canSeeAllLocations(user) {
-  const roles = getUserRoles(user)
-  return roles.includes('vp') || roles.includes('admin')
+  const r = singleRole(user)
+  return r === 'vp' || r === 'admin'
 }
 
 /**
@@ -112,8 +117,8 @@ export function canSeeAllLocations(user) {
  * True for: Director, VP, Admin
  */
 export function canApproveSales(user) {
-  const roles = getUserRoles(user)
-  return roles.includes('director') || roles.includes('vp') || roles.includes('admin')
+  const r = singleRole(user)
+  return r === 'director' || r === 'vp' || r === 'admin'
 }
 
 /**
@@ -166,8 +171,8 @@ export function getVisibleLocationsForUser(user, allLocations, regionsById = {})
   // Admins and VPs see everything
   if (canSeeAllLocations(user)) return allLocations
 
-  const roles = getUserRoles(user)
-  if (!roles.includes('director') && !roles.includes('manager')) {
+  const r = singleRole(user)
+  if (r !== 'director' && r !== 'manager') {
     return []
   }
 
@@ -216,7 +221,7 @@ export function validateRoleChange({ currentUser, targetUser, newRoles, allAdmin
 
   // Rule 1: cannot remove yourself as admin if you're the last admin
   if (currentUser?.uid === targetUser.uid) {
-    const isCurrentlyAdmin = getUserRoles(currentUser).includes('admin')
+    const isCurrentlyAdmin = singleRole(currentUser) === 'admin'
     const willRemainAdmin  = newRolesArr.includes('admin')
     if (isCurrentlyAdmin && !willRemainAdmin) {
       const otherAdmins = (allAdminUids || []).filter(uid => uid !== currentUser.uid)
@@ -252,8 +257,8 @@ export function summarizeUserAccess(user, allLocations, regionsById = {}) {
     return `All ${total} locations`
   }
 
-  const roles = getUserRoles(user)
-  if (!roles.includes('director') && !roles.includes('manager')) {
+  const r = singleRole(user)
+  if (r !== 'director' && r !== 'manager') {
     return 'No access assigned'
   }
 
