@@ -224,12 +224,16 @@ export function useInventory(orgId, locationId, periodKey, user) {
             return {
               id: String(item.id),
               name: item.name,
-              unitCost: item.unitCost || 0,
-              packSize: item.packSize,
-              qtyPerPack: item.qtyPerPack,
-              packPrice: item.packPrice,
-              vendor: item.vendor,
-              glCode: item.glCode,
+              // Edit-panel writes for these 6 fields land on the per-location
+              // override doc — prefer them over the catalog so edits stick on
+              // reload. ?? respects an explicit override of 0 / "" while
+              // falling back to catalog when the override field is absent.
+              unitCost: override.unitCost ?? item.unitCost ?? 0,
+              packSize: override.packSize ?? item.packSize,
+              qtyPerPack: override.qtyPerPack ?? item.qtyPerPack,
+              packPrice: override.packPrice ?? item.packPrice,
+              vendor: override.vendor ?? item.vendor,
+              glCode: override.glCode ?? item.glCode,
               sellingPrice: item.sellingPrice,
               itemType: item.itemType,
               qty: override.qty ?? null,
