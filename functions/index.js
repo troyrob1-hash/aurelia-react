@@ -851,10 +851,10 @@ exports.updateUserRoles = onCall(
   const primaryRole = TIER_ORDER.find(r => roles.includes(r)) || roles[0];
   updatePayload.role = primaryRole;
 
-  // Write Firestore first — this is the source of truth for the app
-  await db.collection("orgs").doc(orgId).collection("users").doc(targetUid).update(updatePayload);
-
-  // Sync to Cognito custom:role claim (best-effort; don't fail the whole op if Cognito rejects)
+  // Cognito custom:role is the authoritative source of truth for permission
+  // gates — write it FIRST and require it to succeed before mirroring to
+  // Firestore. If Cognito rejects, abort the whole operation so we never
+  // leave Firestore showing a role the gates won't honor.
   try {
     const AWS = require("aws-sdk");
     const cognito = new AWS.CognitoIdentityServiceProvider({ region: "us-east-2" });
@@ -866,8 +866,12 @@ exports.updateUserRoles = onCall(
       ],
     }).promise();
   } catch (e) {
-    console.warn("Cognito sync failed (Firestore already updated):", e.message);
+    console.error("Cognito custom:role update failed for", targetUid, ":", e.message);
+    throw new HttpsError("internal", "Failed to update role in Cognito; change not applied");
   }
+
+  // Mirror to Firestore — display layer only now that Cognito is authoritative.
+  await db.collection("orgs").doc(orgId).collection("users").doc(targetUid).update(updatePayload);
 
   // Revoke refresh tokens so the target user has to re-login and pick up new claims
   try {
