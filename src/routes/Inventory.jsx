@@ -1755,30 +1755,6 @@ export default function Inventory() {
                     ))}
                   </div>
 
-                  {/* Save status + Done — autosave-on-blur stays the data path;
-                      this button reflects aggregate save state so users don't
-                      have to trust the per-field toasts alone. */}
-                  <div style={{ borderTop: '0.5px solid #e2e8f0', padding: '16px 0' }}>
-                    <button
-                      onClick={() => setWhyItem(null)}
-                      disabled={editSaving}
-                      style={{
-                        width: '100%', padding: '10px', fontSize: 13, fontWeight: 600,
-                        background: editSaving ? '#e2e8f0' : '#1D9E75',
-                        color: editSaving ? '#94a3b8' : '#fff',
-                        border: 'none', borderRadius: 8,
-                        cursor: editSaving ? 'wait' : 'pointer',
-                        transition: 'background 0.15s',
-                      }}
-                    >
-                      {editSaving
-                        ? 'Saving…'
-                        : editHasSaved
-                          ? '✓ All changes saved · Done'
-                          : 'Done'}
-                    </button>
-                  </div>
-
                   {/* Remove from count sheet */}
                   <div style={{ borderTop: '0.5px solid #e2e8f0', paddingTop: 16 }}>
                     <button
@@ -1795,6 +1771,31 @@ export default function Inventory() {
                   </div>
 
                   </div>
+                </div>
+
+                {/* Pinned footer — Save status + Done. Sibling of the scrolling
+                    body (not inside it) so it stays fixed at the panel bottom
+                    regardless of content height. Opaque background + top border
+                    so scroll content never bleeds under it. */}
+                <div style={{ borderTop: '0.5px solid #e5e7eb', padding: '16px 24px', background: '#fff' }}>
+                  <button
+                    onClick={() => setWhyItem(null)}
+                    disabled={editSaving}
+                    style={{
+                      width: '100%', padding: '10px', fontSize: 13, fontWeight: 600,
+                      background: editSaving ? '#e2e8f0' : '#1D9E75',
+                      color: editSaving ? '#94a3b8' : '#fff',
+                      border: 'none', borderRadius: 8,
+                      cursor: editSaving ? 'wait' : 'pointer',
+                      transition: 'background 0.15s',
+                    }}
+                  >
+                    {editSaving
+                      ? 'Saving…'
+                      : editHasSaved
+                        ? '✓ All changes saved · Done'
+                        : 'Done'}
+                  </button>
                 </div>
               </aside>
             </>
