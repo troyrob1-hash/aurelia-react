@@ -372,7 +372,11 @@ export default function Inventory() {
   const [showParPanel, setShowParPanel] = useState(false)
   const [countMode, setCountMode] = useState('full')  // 'quick' | 'section' | 'full'
   const [showManage, setShowManage] = useState(false)
-  const [customDraft, setCustomDraft] = useState({ name: '', vendor: '', unitCost: '', packSize: '', glCode: '' })
+  const [customDraft, setCustomDraft] = useState({
+    name: '', vendor: '', packSize: '',
+    qtyPerPack: '', packPrice: '', unitCost: '',
+    glCode: '', category: '',
+  })
   const [manageSearch, setManageSearch] = useState('')
   const [whyItem, setWhyItem] = useState(null)
   const [showBuddySetup, setShowBuddySetup] = useState(false)
@@ -1828,13 +1832,29 @@ export default function Inventory() {
                       placeholder="Vendor"
                       value={customDraft.vendor}
                       onChange={e => setCustomDraft(d => ({ ...d, vendor: e.target.value }))}
-                      style={{ padding: '8px 10px', fontSize: 13, border: '0.5px solid #e2e8f0', borderRadius: 6, fontFamily: 'inherit' }}
+                      style={{ gridColumn: '1 / -1', padding: '8px 10px', fontSize: 13, border: '0.5px solid #e2e8f0', borderRadius: 6, fontFamily: 'inherit' }}
                     />
                     <input
                       type="text"
-                      placeholder="Pack size"
+                      placeholder="Pack size (e.g. case of 12)"
                       value={customDraft.packSize}
                       onChange={e => setCustomDraft(d => ({ ...d, packSize: e.target.value }))}
+                      style={{ padding: '8px 10px', fontSize: 13, border: '0.5px solid #e2e8f0', borderRadius: 6, fontFamily: 'inherit' }}
+                    />
+                    <input
+                      type="number"
+                      step="1"
+                      placeholder="Qty per pack"
+                      value={customDraft.qtyPerPack}
+                      onChange={e => setCustomDraft(d => ({ ...d, qtyPerPack: e.target.value }))}
+                      style={{ padding: '8px 10px', fontSize: 13, border: '0.5px solid #e2e8f0', borderRadius: 6, fontFamily: 'inherit' }}
+                    />
+                    <input
+                      type="number"
+                      step="0.01"
+                      placeholder="Pack price ($)"
+                      value={customDraft.packPrice}
+                      onChange={e => setCustomDraft(d => ({ ...d, packPrice: e.target.value }))}
                       style={{ padding: '8px 10px', fontSize: 13, border: '0.5px solid #e2e8f0', borderRadius: 6, fontFamily: 'inherit' }}
                     />
                     <input
@@ -1843,14 +1863,33 @@ export default function Inventory() {
                       placeholder="Unit cost ($)"
                       value={customDraft.unitCost}
                       onChange={e => setCustomDraft(d => ({ ...d, unitCost: e.target.value }))}
-                      style={{ gridColumn: '1 / -1', padding: '8px 10px', fontSize: 13, border: '0.5px solid #e2e8f0', borderRadius: 6, fontFamily: 'inherit' }}
+                      style={{ padding: '8px 10px', fontSize: 13, border: '0.5px solid #e2e8f0', borderRadius: 6, fontFamily: 'inherit' }}
                     />
+                    <input
+                      type="text"
+                      placeholder="GL code"
+                      value={customDraft.glCode}
+                      onChange={e => setCustomDraft(d => ({ ...d, glCode: e.target.value }))}
+                      style={{ padding: '8px 10px', fontSize: 13, border: '0.5px solid #e2e8f0', borderRadius: 6, fontFamily: 'inherit' }}
+                    />
+                    <select
+                      value={customDraft.category}
+                      onChange={e => setCustomDraft(d => ({ ...d, category: e.target.value }))}
+                      style={{ padding: '8px 10px', fontSize: 13, border: '0.5px solid #e2e8f0', borderRadius: 6, fontFamily: 'inherit', background: '#fff' }}
+                    >
+                      <option value="">— Category —</option>
+                      {categories.map(c => <option key={c.key} value={c.label}>{c.label}</option>)}
+                    </select>
                   </div>
                   <button
                     onClick={async () => {
                       if (!customDraft.name) return
                       await addCustomItem(customDraft)
-                      setCustomDraft({ name: '', vendor: '', unitCost: '', packSize: '' })
+                      setCustomDraft({
+                        name: '', vendor: '', packSize: '',
+                        qtyPerPack: '', packPrice: '', unitCost: '',
+                        glCode: '', category: '',
+                      })
                     }}
                     disabled={!customDraft.name}
                     style={{

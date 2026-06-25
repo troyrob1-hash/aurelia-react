@@ -262,6 +262,8 @@ export function useInventory(orgId, locationId, periodKey, user) {
             qtyPerPack: data.qtyPerPack || 1,
             packPrice: data.packPrice || (data.unitCost || 0),
             vendor: data.vendor || null,
+            glCode: data.glCode || null,
+            category: data.category || inferCategory(data.glCode, null, data.name),
             qty: data.qty ?? null,
             parLevel: data.parLevel || null,
             reorderPoint: data.reorderPoint || null,
@@ -660,8 +662,14 @@ export function useInventory(orgId, locationId, periodKey, user) {
       unitCost: parseFloat(data.unitCost) || 0,
       packSize: data.packSize || null,
       qtyPerPack: parseFloat(data.qtyPerPack) || 1,
-      packPrice: parseFloat(data.packPrice) || (parseFloat(data.unitCost) || 0),
+      // Path (a): if user enters unitCost + qtyPerPack but no packPrice,
+      // derive packPrice = unitCost × qtyPerPack so the case valuation is
+      // correct (not just one unit at unit cost — which would undercount
+      // by qtyPerPack times).
+      packPrice: parseFloat(data.packPrice) || ((parseFloat(data.unitCost) || 0) * (parseFloat(data.qtyPerPack) || 1)),
       vendor:   data.vendor || null,
+      glCode:   (data.glCode || '').trim() || null,
+      category: data.category || null,
       custom:   true,
       removed:  false,
       createdAt: serverTimestamp(),
