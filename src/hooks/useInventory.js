@@ -209,6 +209,11 @@ export function useInventory(orgId, locationId, periodKey, user) {
               lastCountedAt: item.lastCountedAt || null,
               isCatalogItem: true,
               category: (item.category && item.category !== 'General' && item.category !== 'Other') ? item.category : inferCategory(item.glCode, item.itemType, item.name),
+              // Shelf-to-sheet ordering (Stage 1). Location-own catalog doc IS
+              // the per-location record, so read directly off item.X (no
+              // override layer here).
+              catShelfOrder:  item.catShelfOrder  ?? null,
+              flatShelfOrder: item.flatShelfOrder ?? null,
             }
           })
         console.log('Using location-specific catalog:', inventoryItems.length, 'items')
@@ -244,6 +249,12 @@ export function useInventory(orgId, locationId, periodKey, user) {
             lastCountedBy: override.lastCountedBy,
             isKey: override.isKey || false,
             category: override.category || inferCategory(item.glCode, item.itemType, item.name),
+            // Shelf-to-sheet ordering (Stage 1) — per-location physical order.
+            // catShelfOrder sorts within the category group; flatShelfOrder
+            // sorts all items in the location. Same override.X ?? item.X ?? null
+            // pattern as the other edit-panel fields so values stick on reload.
+            catShelfOrder:  override.catShelfOrder  ?? item.catShelfOrder  ?? null,
+            flatShelfOrder: override.flatShelfOrder ?? item.flatShelfOrder ?? null,
           }
         })
       }
@@ -271,6 +282,10 @@ export function useInventory(orgId, locationId, periodKey, user) {
             lastCountedAt: data.lastCountedAt || null,
             lastCountedBy: data.lastCountedBy || null,
             isKey: data.isKey || false,
+            // Shelf-to-sheet ordering (Stage 1). Custom items are fully
+            // self-contained in the location-items doc, so read off data.X.
+            catShelfOrder:  data.catShelfOrder  ?? null,
+            flatShelfOrder: data.flatShelfOrder ?? null,
             custom: true,
           })
         }

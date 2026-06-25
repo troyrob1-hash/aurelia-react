@@ -365,6 +365,10 @@ export default function Inventory() {
   // reload; cross-login persistence is a planned follow-up (CLAUDE.md).
   const viewMode = useUIStore(s => s.inventoryViewMode)
   const setViewMode = useUIStore(s => s.setInventoryViewMode)
+  // Sort within the chosen view: 'alpha' (A-Z) | 'shelf' (custom shelf order).
+  // Same store/persistence story as viewMode.
+  const sortMode = useUIStore(s => s.inventorySortMode)
+  const setSortMode = useUIStore(s => s.setInventorySortMode)
   const [activeCat, setActiveCat] = useState('all')
   const [collapsed, setCollapsed] = useState({})
   const [blindMode, setBlindMode] = useState(false)
@@ -841,32 +845,49 @@ export default function Inventory() {
 
   const keyItemCount = useMemo(() => items.filter(i => i.isKey).length, [items])
 
+  // Shelf-to-sheet sort comparators (Stage 1). byName = current A-Z behavior.
+  // byShelf(field) = arranged items first in ascending shelf position, then
+  // un-arranged (null position) items A-Z among themselves — so toggling to
+  // shelf mode never drops an item that hasn't been placed yet.
+  const byName = (a, b) =>
+    (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
+  const byShelf = (field) => (a, b) => {
+    const av = a[field] ?? Infinity
+    const bv = b[field] ?? Infinity
+    if (av !== bv) return av - bv
+    return byName(a, b)
+  }
+
   const displayGroups = useMemo(() => {
-    // Flat A-Z: one synthetic group, no category header, all items alphabetical.
-    // Returning a single group means the SAME row-rendering code path serves
-    // both views, so flat and grouped can never drift in how counts behave.
+    // Flat view: one synthetic group, no category header. A-Z in alpha mode,
+    // flatShelfOrder in shelf mode. Returning a single group means the SAME
+    // row-rendering code path serves both views, so flat and grouped can never
+    // drift in how counts behave.
     if (viewMode === 'flat') {
-      const sorted = [...displayItems].sort((a, b) =>
-        (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
+      const sorted = [...displayItems].sort(
+        sortMode === 'shelf' ? byShelf('flatShelfOrder') : byName
       )
       if (sorted.length === 0) return []
       return [{ key: '__flat__', label: null, isFlat: true, color: '#0f172a', bg: '#f8fafc', items: sorted }]
     }
     const cats = activeCat === 'all' ? categories : categories.filter(c => c.key === activeCat)
+    // Within-group order: A-Z in alpha mode, catShelfOrder in shelf mode.
     return cats.map(cat => ({
       ...cat,
-      items: displayItems.filter(i => i._cat === cat.key),
+      items: displayItems
+        .filter(i => i._cat === cat.key)
+        .sort(sortMode === 'shelf' ? byShelf('catShelfOrder') : byName),
     })).filter(g => g.items.length > 0)
-  }, [displayItems, activeCat, categories, viewMode])
+  }, [displayItems, activeCat, categories, viewMode, sortMode])
 
-  // Flat A-Z view: every visible item in one alphabetical list, no category
-  // grouping. Derived purely from displayItems (the same source as the grouped
-  // view) so toggling view never touches count data.
+  // Flat view list: every visible item in one list, no category grouping.
+  // Derived purely from displayItems (the same source as the grouped view) so
+  // toggling view never touches count data. Mirrors displayGroups' flat sort.
   const flatItems = useMemo(() =>
-    [...displayItems].sort((a, b) =>
-      (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
+    [...displayItems].sort(
+      sortMode === 'shelf' ? byShelf('flatShelfOrder') : byName
     )
-  , [displayItems])
+  , [displayItems, sortMode])
 
   // Summary for the flat view (replaces per-category subtotals).
   const flatSummary = useMemo(() => {
@@ -1282,7 +1303,31 @@ export default function Inventory() {
               }}
             >A–Z</button>
           </div>
-          <button 
+          {/* Sort toggle (Stage 1): A-Z vs custom shelf order. Orthogonal to the
+              grouped/flat view toggle — shelf mode sorts within groups by
+              catShelfOrder (grouped) or across all by flatShelfOrder (flat). */}
+          <div style={{ display: 'inline-flex', border: '1px solid #cbd5e1', borderRadius: 8, overflow: 'hidden' }}>
+            <button
+              onClick={() => setSortMode('alpha')}
+              title="Sort alphabetically"
+              style={{
+                padding: '6px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer', border: 'none',
+                background: sortMode === 'alpha' ? '#0f172a' : '#fff',
+                color: sortMode === 'alpha' ? '#fff' : '#475569',
+              }}
+            >A-Z</button>
+            <button
+              onClick={() => setSortMode('shelf')}
+              title="Sort by custom shelf order"
+              style={{
+                padding: '6px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer', border: 'none',
+                borderLeft: '1px solid #cbd5e1',
+                background: sortMode === 'shelf' ? '#0f172a' : '#fff',
+                color: sortMode === 'shelf' ? '#fff' : '#475569',
+              }}
+            >Shelf</button>
+          </div>
+          <button
             className={`${styles.btnVariance} ${showVariance ? styles.btnVarianceActive : ''}`}
             onClick={() => setShowVariance(v => !v)}
           >
@@ -1711,6 +1756,12 @@ export default function Inventory() {
                       { label: 'Unit cost', field: 'unitCost', type: 'number', prefix: '$' },
                       { label: 'GL code', field: 'glCode', type: 'text' },
                       { label: 'Par level', field: 'parLevel', type: 'number' },
+                      // Shelf-to-sheet ordering (Stage 1) — TEMPORARY manual
+                      // inputs to prove save+sort before Stage 2's drag UI.
+                      // Route through saveEditField (updateDoc/merge) like every
+                      // other field here. Remove when drag-arrange lands.
+                      { label: 'Shelf order (category)', field: 'catShelfOrder', type: 'number' },
+                      { label: 'Shelf order (flat)', field: 'flatShelfOrder', type: 'number' },
                     ].map(f => (
                       <div key={f.field} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
                         <label style={{ fontSize: 13, color: '#475569', minWidth: 100 }}>{f.label}</label>
