@@ -17,6 +17,9 @@ service cloud.firestore {
     function isAdmin()    { return role() == 'admin'    || role() == 'Admin'; }
     function isDirector() { return role() == 'director' || role() == 'Director' || isAdmin(); }
     function isManager()  { return role() == 'manager'  || role() == 'Manager'  || isDirector(); }
+    // VP is a peer of director (sees all, can't administer) but is NOT in the
+    // isManager chain. Standalone helper so callers can opt VPs in explicitly.
+    function isVp()       { return role() == 'vp'       || role() == 'VP'       || role() == 'Vp'; }
 
     function ownsTenant(tid) {
       return isAuth() && tenantId() == tid;
@@ -58,6 +61,14 @@ service cloud.firestore {
       match /inventory/{locationId}/items/{itemId} {
         allow read:  if ownsTenant(tenantId);
         allow write: if ownsTenant(tenantId) && isManager();
+      }
+
+      // Per-location inventory settings (e.g. the `categories` doc) — any real
+      // operator role manages their own location's category groupings:
+      // manager/director/vp/admin (everyone except plain viewers).
+      match /inventory/{locationId}/settings/{doc} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && (isManager() || isVp());
       }
 
       // Per-week inventory counts (qty/eaches keyed by periodKey).

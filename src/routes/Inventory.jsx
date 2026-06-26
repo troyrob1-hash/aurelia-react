@@ -16,6 +16,8 @@ import { useToast } from '@/components/ui/Toast'
 import AllLocationsGrid from '@/components/AllLocationsGrid'
 import ErrorBoundary from '@/components/ErrorBoundary'
 import ArrangeList from '@/components/inventory/ArrangeList'
+import CategoryManagerModal from '@/components/inventory/CategoryManagerModal'
+import { canEditInventoryCategories } from '@/lib/permissions'
 import styles from './Inventory.module.css'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
@@ -381,6 +383,8 @@ export default function Inventory() {
   const [showParPanel, setShowParPanel] = useState(false)
   const [countMode, setCountMode] = useState('full')  // 'quick' | 'section' | 'full'
   const [showManage, setShowManage] = useState(false)
+  const [showCatManager, setShowCatManager] = useState(false)
+  const canEditCats = canEditInventoryCategories(user)
   const [customDraft, setCustomDraft] = useState({
     name: '', vendor: '', packSize: '',
     qtyPerPack: '', packPrice: '', unitCost: '',
@@ -500,6 +504,7 @@ export default function Inventory() {
     saveCounts,
     mergeDraft,
     patchItemFields,
+    setCategoriesLocal,
   } = useInventory(orgId, location, periodKey, user)
 
   // Persist a dropped reorder (Stage 2b). Writes clean sequential 1..N shelf
@@ -1113,6 +1118,15 @@ export default function Inventory() {
             >
               ⚙ Manage items
             </button>
+            {canEditCats && selectedLocation && selectedLocation !== 'all' && (
+              <button
+                className={styles.btnMode}
+                onClick={() => setShowCatManager(true)}
+                title="Manage this location's inventory categories"
+              >
+                ⚙ Manage categories
+              </button>
+            )}
             <button
               className={`${styles.btnMode} ${buddyMode ? styles.btnModeActive : ''}`}
               onClick={() => {
@@ -1914,6 +1928,17 @@ export default function Inventory() {
             items={items}
             onScan={handleBarcodeMatch}
             onClose={() => setShowScanner(false)}
+          />
+        )}
+
+        {/* ── Manage categories (per-location) ── */}
+        {showCatManager && canEditCats && selectedLocation && selectedLocation !== 'all' && (
+          <CategoryManagerModal
+            orgId={orgId}
+            locationId={selectedLocation}
+            categories={categories}
+            onSaved={(next) => setCategoriesLocal(next)}
+            onClose={() => setShowCatManager(false)}
           />
         )}
 
