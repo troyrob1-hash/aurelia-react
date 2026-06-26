@@ -160,3 +160,74 @@ export async function renameCategoryAcrossLocations(orgId, oldLabel, newLabel, o
 
   return { total, updated: done }
 }
+
+// ── Single-location variants (per-location categories, Phase C) ──────────────
+// Once categories live per-location, rename/delete only ever touch ONE
+// location's items — no enumerateLocations, no cross-location fan-out. These are
+// the lean single-collection versions of the helpers above.
+
+/**
+ * Dry-run for the single-location rename/delete confirm dialog: count items in
+ * THIS location whose stored `category` equals `label`. Read-only.
+ *
+ * @returns {Promise<number>}
+ */
+export async function scanCategoryUsageInLocation(orgId, locationId, label) {
+  if (!orgId || !locationId || !label) return 0
+  const id = locId(locationId) // RAW prefixed name → sanitized doc id (CR_/SO_ preserved)
+  const snap = await getDocs(query(
+    collection(db, 'tenants', orgId, 'inventory', id, 'items'),
+    where('category', '==', label)
+  ))
+  return snap.size
+}
+
+/**
+ * Re-tag items carrying `oldLabel` → `newLabel` in ONE location. Items ONLY —
+ * does NOT flip the per-location categories doc (caller's commit point). Also
+ * serves DELETE: pass newLabel = 'General' to reassign a deleted category's
+ * items. Idempotent: re-scans `oldLabel`, so a retry processes only what's left.
+ *
+ * Writes ONLY { category: newLabel } on docs that exist (query-sourced), so
+ * `update` is safe and no other field (qty/eaches/unitCost/packPrice/glCode/
+ * counts) is altered. Batches are ≤CHUNK and committed sequentially — usually a
+ * single batch (one location's matches < 450).
+ *
+ * @param {(p: { done: number, total: number }) => void} [onProgress]
+ * @returns {Promise<{ total: number, updated: number }>}
+ */
+export async function renameCategoryInLocation(orgId, locationId, oldLabel, newLabel, onProgress) {
+  // Defensive no-op: never write when the label isn't actually changing.
+  if (!orgId || !locationId || !oldLabel || !newLabel || oldLabel === newLabel) {
+    onProgress?.({ done: 0, total: 0 })
+    return { total: 0, updated: 0 }
+  }
+
+  const id = locId(locationId)
+  // Phase 1 — re-scan oldLabel (idempotent: already-renamed items carry newLabel
+  // and won't match, so a retry only picks up the remainder).
+  const snap = await getDocs(query(
+    collection(db, 'tenants', orgId, 'inventory', id, 'items'),
+    where('category', '==', oldLabel)
+  ))
+  const refs = snap.docs.map(d => d.ref)
+  const total = refs.length
+  if (total === 0) {
+    onProgress?.({ done: 0, total: 0 })
+    return { total: 0, updated: 0 }
+  }
+
+  // Phase 2 — commit re-tags in chunked, sequential batches.
+  let done = 0
+  for (let i = 0; i < refs.length; i += CHUNK) {
+    const slice = refs.slice(i, i + CHUNK)
+    const batch = writeBatch(db)
+    // category field ONLY — never qty/eaches/unitCost/packPrice/glCode/counts.
+    slice.forEach(ref => batch.update(ref, { category: newLabel }))
+    await batch.commit()
+    done += slice.length
+    onProgress?.({ done, total })
+  }
+
+  return { total, updated: done }
+}

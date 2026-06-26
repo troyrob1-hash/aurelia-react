@@ -5,11 +5,12 @@ import { doc, setDoc } from 'firebase/firestore'
 import { sanitizeDocId } from '@/hooks/useInventory'
 import { useDragReorder } from '@/hooks/useDragReorder'
 import { PALETTE, slugify, uniqueKey, collidesWithKeyMap } from '@/lib/categoryHelpers'
+import { scanCategoryUsageInLocation, renameCategoryInLocation } from '@/lib/inventoryCategories'
 
-// Lean, LOCATION-SCOPED inventory category editor (Phase B). Handles the SAFE
-// operations only — add / reorder / color / safe-label-edit (session-new
-// categories). The populated-category RENAME migration and DELETE are Phase C
-// (single-location versions) and deliberately absent here.
+// Lean, LOCATION-SCOPED inventory category editor. Handles add / reorder /
+// color / label edit. Renaming a category that already has items re-tags THIS
+// location's items (single-location migration, Phase C) then flips this
+// location's category doc as the commit point. DELETE is Phase C step 3.
 //
 // Writes the per-location doc tenants/{orgId}/inventory/{locId}/settings/categories
 // (locId = sanitizeDocId(locationId)). The FIRST write materializes the doc —
@@ -39,6 +40,11 @@ export default function CategoryManagerModal({ orgId, locationId, categories, on
   const [draftColorIdx, setDraftColorIdx] = useState(0)
   const [editError, setEditError] = useState(null)
 
+  // Rename migration flow (populated, pre-existing categories). null when idle;
+  // otherwise: { phase:'scanning'|'confirm'|'running'|'error', cat, oldLabel,
+  //   newLabel, color, bg, count, progress, error }
+  const [migration, setMigration] = useState(null)
+
   // Persist the full array to the per-location doc, then bubble up on success.
   const persist = useCallback(async (nextArray) => {
     setError(null)
@@ -60,6 +66,20 @@ export default function CategoryManagerModal({ orgId, locationId, categories, on
       setSaving(false)
     }
   }, [cats, orgId, locationId, onSaved])
+
+  // Non-optimistic commit for the rename flow: write the doc, THEN update local
+  // + bubble up. Throws on failure so the caller keeps the doc un-flipped and
+  // offers Retry (the convergence commit point — only AFTER the item re-tag).
+  const commitArray = useCallback(async (nextArray) => {
+    const locId = sanitizeDocId(locationId)
+    await setDoc(
+      doc(db, 'tenants', orgId, 'inventory', locId, 'settings', 'categories'),
+      { categories: nextArray },
+      { merge: true }
+    )
+    setCats(nextArray)
+    onSaved?.(nextArray)
+  }, [orgId, locationId, onSaved])
 
   // ── Drag reorder (reuse the shelf-to-sheet hook) ────────────────────────────
   const dragGroups = useMemo(
@@ -113,15 +133,44 @@ export default function CategoryManagerModal({ orgId, locationId, categories, on
       setEditError(`A category named “${newLabel}” already exists.`)
       return
     }
-    // Only session-new categories may be label-edited here (no items can carry a
-    // just-invented label). Populated rename = Phase C.
-    if (!newKeys.has(cat.key)) {
-      setEditError('Renaming an existing category re-tags its items — coming soon.')
+    // Session-new category → no item can carry this just-invented label, so a
+    // rename is a pure array write (no migration).
+    if (newKeys.has(cat.key)) {
+      persist(cats.map(c => c.key === cat.key ? { ...c, label: newLabel, color, bg } : c))
+      setEditingKey(null)
       return
     }
-    persist(cats.map(c => c.key === cat.key ? { ...c, label: newLabel, color, bg } : c))
-    setEditingKey(null)
+
+    // Pre-existing category → single-location migration: dry-run, then confirm.
+    setEditError(null)
+    setMigration({ phase: 'scanning', cat, oldLabel: cat.label, newLabel, color, bg })
+    scanCategoryUsageInLocation(orgId, locationId, cat.label)
+      .then(count => setMigration(m => m ? { ...m, phase: 'confirm', count } : m))
+      .catch(e => setMigration(m => m ? { ...m, phase: 'error', error: 'Scan failed: ' + (e.message || 'unknown error') } : m))
   }
+
+  // Run (or retry) the rename: re-tag THIS location's items, then flip the
+  // per-location doc as the commit point. Convergence — ALWAYS flip after the
+  // re-tag resolves, even if the re-scan finds 0 (a prior partial run already
+  // migrated every item). A failure leaves the doc un-flipped and offers Retry.
+  const runRename = async () => {
+    const m = migration
+    if (!m) return
+    setMigration({ ...m, phase: 'running', progress: { done: 0, total: m.count || 0 }, error: null })
+    try {
+      const result = await renameCategoryInLocation(orgId, locationId, m.oldLabel, m.newLabel, (p) => {
+        setMigration(prev => (prev ? { ...prev, progress: p } : prev))
+      })
+      // Commit point — flip the per-location categories doc AFTER the re-tag.
+      await commitArray(cats.map(c => c.key === m.cat.key ? { ...c, label: m.newLabel, color: m.color, bg: m.bg } : c))
+      setMigration(null)
+      setEditingKey(null)
+      void result
+    } catch (e) {
+      setMigration(prev => (prev ? { ...prev, phase: 'error', error: e.message || 'Migration failed' } : prev))
+    }
+  }
+  const cancelMigration = () => setMigration(null)
 
   const rows = liveGroups[0]?.items || []
 
@@ -175,7 +224,6 @@ export default function CategoryManagerModal({ orgId, locationId, categories, on
           <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', marginTop: 8 }}>
             {rows.map((cat, idx) => {
               const isEditing = editingKey === cat.key
-              const canLabel = newKeys.has(cat.key)
               const isDragging = draggingId === cat.key
               return (
                 <div key={cat.key} ref={el => registerRow('__cats__', cat.key, el)}
@@ -191,9 +239,7 @@ export default function CategoryManagerModal({ orgId, locationId, categories, on
                         value={draftLabel}
                         onChange={e => { setDraftLabel(e.target.value); setEditError(null) }}
                         onKeyDown={e => { if (e.key === 'Enter') saveEdit(cat) }}
-                        disabled={!canLabel}
-                        title={canLabel ? '' : 'Renaming an existing category re-tags its items — coming soon'}
-                        style={{ flex: 1, padding: '5px 8px', fontSize: 13, borderRadius: 6, border: '1px solid #cbd5e1', background: canLabel ? '#fff' : '#f1f5f9', color: canLabel ? '#0f172a' : '#94a3b8' }}
+                        style={{ flex: 1, padding: '5px 8px', fontSize: 13, borderRadius: 6, border: '1px solid #cbd5e1', background: '#fff', color: '#0f172a' }}
                       />
                     ) : (
                       <span style={{ flex: 1, fontSize: 14, fontWeight: 500, color: cat.color || '#0f172a', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -223,9 +269,9 @@ export default function CategoryManagerModal({ orgId, locationId, categories, on
                             style={{ width: 20, height: 20, borderRadius: 5, cursor: 'pointer', background: p.bg, border: `2px solid ${p.color}`, outline: draftColorIdx === i ? '2px solid #0f172a' : 'none', outlineOffset: 1 }} />
                         ))}
                       </div>
-                      {!canLabel && (
+                      {!newKeys.has(cat.key) && (
                         <div style={{ fontSize: 12, color: '#94a3b8' }}>
-                          Color is editable. Renaming a category that already has items re-tags them across this location — coming soon.
+                          Renaming re-tags every item carrying “{cat.label}” at this location — you’ll see a count to confirm before anything is written.
                         </div>
                       )}
                       {draftCollision && (
@@ -246,8 +292,8 @@ export default function CategoryManagerModal({ orgId, locationId, categories, on
           </div>
 
           <p style={{ fontSize: 12, color: '#94a3b8', margin: '10px 2px 0' }}>
-            {cats.length} categor{cats.length === 1 ? 'y' : 'ies'} for this location. Drag to reorder; pencil to recolor.
-            Renaming a category that already has items, and deleting, arrive in a later update.
+            {cats.length} categor{cats.length === 1 ? 'y' : 'ies'} for this location. Drag to reorder; pencil to recolor or rename.
+            Deleting categories arrives in a later update.
           </p>
         </div>
 
@@ -256,6 +302,64 @@ export default function CategoryManagerModal({ orgId, locationId, categories, on
           <button onClick={onClose} style={{ padding: '8px 16px', fontSize: 13, fontWeight: 600, border: 'none', borderRadius: 8, background: '#1D9E75', color: '#fff', cursor: 'pointer' }}>Done</button>
         </div>
       </div>
+
+      {/* ── Rename migration overlay (above the editor) ── */}
+      {migration && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 4100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div style={{ background: '#fff', borderRadius: 12, boxShadow: '0 20px 60px rgba(15,23,42,0.25)', width: 440, maxWidth: '100%', padding: 22 }}>
+            <h3 style={{ fontSize: 16, fontWeight: 600, color: '#0f172a', margin: '0 0 10px' }}>Rename category</h3>
+            <div style={{ fontSize: 14, color: '#334155', marginBottom: 16, lineHeight: 1.5 }}>
+              <span style={{ fontWeight: 600 }}>“{migration.oldLabel}”</span> →{' '}
+              <span style={{ fontWeight: 600 }}>“{migration.newLabel}”</span>
+            </div>
+
+            {migration.phase === 'scanning' && (
+              <div style={{ fontSize: 13, color: '#64748b' }}>Scanning items at this location…</div>
+            )}
+
+            {migration.phase === 'confirm' && (
+              <>
+                <div style={{ fontSize: 13, color: '#475569', marginBottom: 18, lineHeight: 1.5 }}>
+                  {migration.count > 0 ? (
+                    <>This re-tags <strong>{migration.count}</strong> item{migration.count === 1 ? '' : 's'} at <strong>{locationId}</strong>. This can’t be undone in bulk.</>
+                  ) : (
+                    <>No items carry this label here — this is a <strong>name-only</strong> change.</>
+                  )}
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                  <button onClick={cancelMigration} style={{ padding: '8px 14px', fontSize: 13, fontWeight: 500, border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff', color: '#475569', cursor: 'pointer' }}>Cancel</button>
+                  <button onClick={runRename} style={{ padding: '8px 14px', fontSize: 13, fontWeight: 600, border: 'none', borderRadius: 8, background: '#1D9E75', color: '#fff', cursor: 'pointer' }}>Rename</button>
+                </div>
+              </>
+            )}
+
+            {migration.phase === 'running' && (
+              <div style={{ fontSize: 13, color: '#475569' }}>
+                Re-tagging {migration.progress?.done ?? 0} of {migration.progress?.total ?? 0} item{(migration.progress?.total ?? 0) === 1 ? '' : 's'}…
+                <div style={{ marginTop: 10, height: 6, borderRadius: 3, background: '#e2e8f0', overflow: 'hidden' }}>
+                  <div style={{ height: '100%', background: '#1D9E75', width: `${migration.progress?.total ? Math.round((migration.progress.done / migration.progress.total) * 100) : 0}%`, transition: 'width 0.2s' }} />
+                </div>
+                <div style={{ marginTop: 8, fontSize: 12, color: '#94a3b8' }}>Don’t close this until it finishes.</div>
+              </div>
+            )}
+
+            {migration.phase === 'error' && (
+              <>
+                <div style={{ fontSize: 13, color: '#b91c1c', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <AlertTriangle size={14} /> {migration.error}
+                </div>
+                <div style={{ fontSize: 12, color: '#64748b', marginBottom: 16, lineHeight: 1.5 }}>
+                  The category name was not changed. Retry re-tags only what’s left, then applies the rename. Safe to run again.
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                  <button onClick={cancelMigration} style={{ padding: '8px 14px', fontSize: 13, fontWeight: 500, border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff', color: '#475569', cursor: 'pointer' }}>Cancel</button>
+                  <button onClick={runRename} style={{ padding: '8px 14px', fontSize: 13, fontWeight: 600, border: 'none', borderRadius: 8, background: '#1D9E75', color: '#fff', cursor: 'pointer' }}>Retry</button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
