@@ -633,6 +633,15 @@ export function useInventory(orgId, locationId, periodKey, user) {
     setItems(prev => prev.map(i => patches[i.id] ? { ...i, ...patches[i.id] } : i))
   }, [])
 
+  // Replace the in-memory category list after the inline per-location editor
+  // writes the per-location categories doc. Lets KPI bubbles + grouping reflect
+  // add/reorder/recolor/rename immediately WITHOUT a reload — load() would
+  // rebuild items blank and wipe unsaved counts. Caller owns the Firestore write
+  // and calls this only on success. Same pattern as patchItemFields.
+  const setCategoriesLocal = useCallback((arr) => {
+    if (Array.isArray(arr)) setCategories(arr)
+  }, [])
+
   // Hide an item from this location. For master items this sets removed: true
   // on the override doc. For custom items it also sets removed: true (we don't
   // hard-delete, so it can be restored).
@@ -1169,6 +1178,7 @@ export function useInventory(orgId, locationId, periodKey, user) {
     saveCounts,
     mergeDraft,
     patchItemFields,
+    setCategoriesLocal,
   }
 }
 

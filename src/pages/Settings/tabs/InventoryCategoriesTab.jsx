@@ -6,6 +6,7 @@ import { doc, getDoc, setDoc } from 'firebase/firestore'
 import { getDefaultCategories } from '@/hooks/useInventory'
 import { useDragReorder } from '@/hooks/useDragReorder'
 import { scanCategoryUsage, scanAllCategoryCounts, renameCategoryAcrossLocations } from '@/lib/inventoryCategories'
+import { PALETTE, slugify, uniqueKey, collidesWithKeyMap } from '@/lib/categoryHelpers'
 
 // Category manager — Steps 2 + 3: ADD, REORDER, color/label editing, and the
 // populated-category RENAME migration. Pure settings writes go to
@@ -14,41 +15,9 @@ import { scanCategoryUsage, scanAllCategoryCounts, renameCategoryAcrossLocations
 // ALL locations (src/lib/inventoryCategories.js): items first, then flip the
 // settings label LAST as the single commit point (convergence). Item counts
 // load on demand only (the all-locations scan is expensive).
-
-// Fixed palette of {color, bg} pairs — avoids per-color bg math and matches the
-// default categories' aesthetic. Add auto-picks the next entry; edit lets the
-// user choose any.
-const PALETTE = [
-  { color: '#1e40af', bg: '#dbeafe' },
-  { color: '#7c3aed', bg: '#ede9fe' },
-  { color: '#92400e', bg: '#fef3c7' },
-  { color: '#0369a1', bg: '#e0f2fe' },
-  { color: '#b91c1c', bg: '#fee2e2' },
-  { color: '#15803d', bg: '#dcfce7' },
-  { color: '#be185d', bg: '#fce7f3' },
-  { color: '#0f766e', bg: '#ccfbf1' },
-  { color: '#64748b', bg: '#f1f5f9' },
-  { color: '#374151', bg: '#f3f4f6' },
-]
-
-// Lowercased labels/keys the hardcoded assignCategory keyMap intercepts BEFORE
-// the settings match — naming a category one of these can route its items to a
-// built-in category instead. We warn (not block) on collision.
-const KEYMAP_KEYS = ['barista', 'snacks', 'beverages', 'condiments', 'cafeteria', 'dairy', 'frozen', 'proteins', 'produce']
-
-function slugify(label) {
-  return (label || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'category'
-}
-function uniqueKey(base, existingKeys) {
-  const taken = new Set(existingKeys)
-  if (!taken.has(base)) return base
-  let n = 2
-  while (taken.has(`${base}_${n}`)) n++
-  return `${base}_${n}`
-}
-function collidesWithKeyMap(str) {
-  return KEYMAP_KEYS.includes((str || '').toLowerCase())
-}
+//
+// PALETTE / slugify / uniqueKey / collidesWithKeyMap now live in
+// @/lib/categoryHelpers so the inline per-location editor shares them verbatim.
 
 export default function InventoryCategoriesTab() {
   const user = useAuthStore(s => s.user)

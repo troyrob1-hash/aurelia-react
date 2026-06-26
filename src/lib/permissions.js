@@ -130,6 +130,18 @@ export function canApproveInvoices(user) {
 }
 
 /**
+ * Can this user edit a location's inventory category groupings (add/reorder/
+ * rename/recolor)? True for any real operator role — Manager, Director, VP,
+ * Admin — and false only for plain viewers/unassigned. MUST match the
+ * firestore.rules write gate on inventory/{loc}/settings/{doc}:
+ * `isManager() || isVp()`.
+ */
+export function canEditInventoryCategories(user) {
+  const r = singleRole(user)
+  return r === 'manager' || r === 'director' || r === 'vp' || r === 'admin'
+}
+
+/**
  * Can this user perform administrative actions — manage users, roles, regions,
  * locations, API keys, SSO configuration, billing?
  * True for: Admin only (explicitly NOT VP).
