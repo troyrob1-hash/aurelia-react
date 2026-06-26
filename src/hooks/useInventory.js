@@ -136,19 +136,26 @@ export function useInventory(orgId, locationId, periodKey, user) {
         currentPnlSnap,
         settingsSnap,
         sessionSnap,
-        countsSnap
+        countsSnap,
+        locCatSnap
       ] = await Promise.all([
         getDocs(collection(db, 'tenants', orgId, 'inventoryCatalog')),
         getDocs(collection(db, 'tenants', orgId, 'inventory', locId, 'items')),
         priorKey ? getDoc(doc(db, 'tenants', orgId, 'pnl', locId, 'periods', priorKey)) : Promise.resolve(null),
         getDoc(doc(db, 'tenants', orgId, 'pnl', locId, 'periods', periodKey)),
+        // Org-wide category list — kept as the fallback SEED source for
+        // locations that haven't customized their own (Phase A).
         getDoc(doc(db, 'tenants', orgId, 'settings', 'inventory')),
         getDoc(doc(db, 'tenants', orgId, 'inventorySessions', `${locId}_${periodKey}`)),
         // Per-week counts — the canonical count store. Item DEFINITIONS live on
         // the shared items docs; COUNTS (qty/eaches) live here, keyed by period,
         // so a new week starts blank by design and never inherits last week's
         // numbers.
-        getDoc(doc(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey))
+        getDoc(doc(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey)),
+        // Per-location category list. Absent until this location is customized
+        // (Phase B writes it on first edit); until then locCats is null and the
+        // resolution below falls back to the global list, then defaults.
+        getDoc(doc(db, 'tenants', orgId, 'inventory', locId, 'settings', 'categories'))
       ])
 
       // Read master items from the per-tenant inventoryCatalog collection.
@@ -407,8 +414,19 @@ export function useInventory(orgId, locationId, periodKey, user) {
         setPurchases(0)
       }
 
-      if (settingsSnap?.exists() && settingsSnap.data().categories?.length) {
-        setCategories(settingsSnap.data().categories)
+      // Category source precedence (Phase A — per-location storage):
+      //   1. this location's own list (tenants/{org}/inventory/{loc}/settings/categories)
+      //   2. else the org-wide list (the seed source) — IN MEMORY, no write here
+      //   3. else the built-in defaults
+      // Phase A writes nothing, so locCats is always null today → every location
+      // resolves to (global || defaults) = exactly the prior behavior. The
+      // per-location doc materializes only on first edit (Phase B).
+      const locCats = locCatSnap?.exists() ? locCatSnap.data().categories : null
+      const globalCats = settingsSnap?.exists() ? settingsSnap.data().categories : null
+      if (Array.isArray(locCats) && locCats.length) {
+        setCategories(locCats)
+      } else if (Array.isArray(globalCats) && globalCats.length) {
+        setCategories(globalCats)
       } else {
         setCategories(getDefaultCategories())
       }
