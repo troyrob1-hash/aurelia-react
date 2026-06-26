@@ -7,7 +7,11 @@ import AuditLogTab  from "./tabs/AuditLogTab";
 import SSOTab       from "./tabs/SSOTab";
 import DataBrowserTab from "./tabs/DataBrowserTab";
 import IntegrationMapTab from "./tabs/IntegrationMapTab";
-import InventoryCategoriesTab from "./tabs/InventoryCategoriesTab";
+// InventoryCategoriesTab retired (Phase C): inventory categories are now managed
+// per-location, inline on the Inventory page (CategoryManagerModal). The tab file
+// is left on disk (unregistered, tree-shaken) for easy restore; the global
+// settings/inventory doc stays dormant as the seed source for un-customized
+// locations.
 import SyncStatusPanel from "@/components/SyncStatusPanel";import Breadcrumb   from "@/components/ui/Breadcrumb";
 import { useAuth }  from "@/hooks/useAuth";
 import { canAdministerSystem } from "@/lib/permissions";
@@ -16,7 +20,6 @@ const TABS = [
   { id: "users",     label: "Users & roles",  adminOnly: true  },
   { id: "regions",   label: "Regions",         adminOnly: true  },
   { id: "locations", label: "Locations",       adminOnly: true  },
-  { id: "inventoryCategories", label: "Inventory categories", adminOnly: true },
   { id: "apikeys",   label: "Integrations",    adminOnly: true  },
   { id: "audit",     label: "Activity",        adminOnly: true  },
   { id: "sso",       label: "Single sign-on",  adminOnly: true  },
@@ -60,7 +63,6 @@ export default function Settings() {
         {activeTab === "users"     && <UsersTab />}
         {activeTab === "regions"   && <RegionsTab />}
         {activeTab === "locations" && <LocationsTab />}
-        {activeTab === "inventoryCategories" && <InventoryCategoriesTab />}
         {activeTab === "apikeys"   && (
           <div>
             <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid #e2e8f0', marginBottom: 20 }}>
