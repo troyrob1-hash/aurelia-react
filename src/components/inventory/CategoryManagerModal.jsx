@@ -1,8 +1,8 @@
 import { useState, useMemo, useCallback } from 'react'
-import { GripVertical, Pencil, Plus, AlertTriangle, X } from 'lucide-react'
+import { GripVertical, Pencil, Plus, AlertTriangle, X, Trash2 } from 'lucide-react'
 import { db } from '@/lib/firebase'
 import { doc, setDoc } from 'firebase/firestore'
-import { sanitizeDocId } from '@/hooks/useInventory'
+import { sanitizeDocId, getDefaultCategories } from '@/hooks/useInventory'
 import { useDragReorder } from '@/hooks/useDragReorder'
 import { PALETTE, slugify, uniqueKey, collidesWithKeyMap } from '@/lib/categoryHelpers'
 import { scanCategoryUsageInLocation, renameCategoryInLocation } from '@/lib/inventoryCategories'
@@ -40,9 +40,9 @@ export default function CategoryManagerModal({ orgId, locationId, categories, on
   const [draftColorIdx, setDraftColorIdx] = useState(0)
   const [editError, setEditError] = useState(null)
 
-  // Rename migration flow (populated, pre-existing categories). null when idle;
-  // otherwise: { phase:'scanning'|'confirm'|'running'|'error', cat, oldLabel,
-  //   newLabel, color, bg, count, progress, error }
+  // Single-location migration flow (populated rename + delete). null when idle;
+  // otherwise: { kind:'rename'|'delete', phase:'scanning'|'confirm'|'running'|
+  //   'error', cat, oldLabel, newLabel?, color?, bg?, count, progress, error }
   const [migration, setMigration] = useState(null)
 
   // Persist the full array to the per-location doc, then bubble up on success.
@@ -143,29 +143,55 @@ export default function CategoryManagerModal({ orgId, locationId, categories, on
 
     // Pre-existing category → single-location migration: dry-run, then confirm.
     setEditError(null)
-    setMigration({ phase: 'scanning', cat, oldLabel: cat.label, newLabel, color, bg })
+    setMigration({ kind: 'rename', phase: 'scanning', cat, oldLabel: cat.label, newLabel, color, bg })
     scanCategoryUsageInLocation(orgId, locationId, cat.label)
       .then(count => setMigration(m => m ? { ...m, phase: 'confirm', count } : m))
       .catch(e => setMigration(m => m ? { ...m, phase: 'error', error: 'Scan failed: ' + (e.message || 'unknown error') } : m))
   }
 
-  // Run (or retry) the rename: re-tag THIS location's items, then flip the
-  // per-location doc as the commit point. Convergence — ALWAYS flip after the
-  // re-tag resolves, even if the re-scan finds 0 (a prior partial run already
-  // migrated every item). A failure leaves the doc un-flipped and offers Retry.
-  const runRename = async () => {
+  // Delete a category → reassign its items to General. Guards (can't delete
+  // General or the last category) are enforced at the trash control. Dry-run,
+  // then confirm.
+  const beginDelete = (cat) => {
+    setMigration({ kind: 'delete', phase: 'scanning', cat, oldLabel: cat.label })
+    scanCategoryUsageInLocation(orgId, locationId, cat.label)
+      .then(count => setMigration(m => m ? { ...m, phase: 'confirm', count } : m))
+      .catch(e => setMigration(m => m ? { ...m, phase: 'error', error: 'Scan failed: ' + (e.message || 'unknown error') } : m))
+  }
+
+  // Run (or retry) the migration: re-tag THIS location's items, then flip the
+  // per-location doc as the commit point. Convergence — the doc flip ALWAYS
+  // happens after the re-tag resolves (even if the re-scan finds 0: a prior
+  // partial run already migrated). A failure leaves the doc un-flipped → Retry.
+  const runMigration = async () => {
     const m = migration
     if (!m) return
     setMigration({ ...m, phase: 'running', progress: { done: 0, total: m.count || 0 }, error: null })
+    const onProg = (p) => setMigration(prev => (prev ? { ...prev, progress: p } : prev))
     try {
-      const result = await renameCategoryInLocation(orgId, locationId, m.oldLabel, m.newLabel, (p) => {
-        setMigration(prev => (prev ? { ...prev, progress: p } : prev))
-      })
-      // Commit point — flip the per-location categories doc AFTER the re-tag.
-      await commitArray(cats.map(c => c.key === m.cat.key ? { ...c, label: m.newLabel, color: m.color, bg: m.bg } : c))
+      if (m.kind === 'delete') {
+        // (a) Ensure General exists in the doc BEFORE reassigning, so re-tagged
+        //     items never orphan (only needed when items will actually move).
+        let working = cats
+        if (m.count > 0 && !cats.some(c => (c.label || '').toLowerCase() === 'general')) {
+          const general = getDefaultCategories().find(c => c.key === 'general')
+            || { key: 'general', label: 'General', color: '#374151', bg: '#f3f4f6', keywords: [] }
+          working = [...cats, { ...general }]
+          await commitArray(working)
+        }
+        // (b) Re-tag the deleted category's items → General (skip if none).
+        if (m.count > 0) {
+          await renameCategoryInLocation(orgId, locationId, m.oldLabel, 'General', onProg)
+        }
+        // (c) Commit point — remove the deleted category (General now present).
+        await commitArray(working.filter(c => c.key !== m.cat.key))
+      } else {
+        await renameCategoryInLocation(orgId, locationId, m.oldLabel, m.newLabel, onProg)
+        // Commit point — flip the per-location categories doc AFTER the re-tag.
+        await commitArray(cats.map(c => c.key === m.cat.key ? { ...c, label: m.newLabel, color: m.color, bg: m.bg } : c))
+      }
       setMigration(null)
       setEditingKey(null)
-      void result
     } catch (e) {
       setMigration(prev => (prev ? { ...prev, phase: 'error', error: e.message || 'Migration failed' } : prev))
     }
@@ -255,9 +281,18 @@ export default function CategoryManagerModal({ orgId, locationId, categories, on
                         <button onClick={cancelEdit} style={{ padding: '5px 10px', fontSize: 12, fontWeight: 500, border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff', color: '#475569', cursor: 'pointer' }}>Cancel</button>
                       </div>
                     ) : (
-                      <button onClick={() => startEdit(cat)} title="Edit color / label" style={{ display: 'flex', alignItems: 'center', background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', padding: 4 }}>
-                        <Pencil size={14} />
-                      </button>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                        <button onClick={() => startEdit(cat)} title="Edit color / label" style={{ display: 'flex', alignItems: 'center', background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', padding: 4 }}>
+                          <Pencil size={14} />
+                        </button>
+                        {/* Delete — hidden for General (the reassignment sink) and
+                            when only one category remains. */}
+                        {(cat.label || '').toLowerCase() !== 'general' && cats.length > 1 && (
+                          <button onClick={() => beginDelete(cat)} title="Delete category (items move to General)" style={{ display: 'flex', alignItems: 'center', background: 'none', border: 'none', cursor: 'pointer', color: '#cbd5e1', padding: 4 }}>
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
 
@@ -303,14 +338,24 @@ export default function CategoryManagerModal({ orgId, locationId, categories, on
         </div>
       </div>
 
-      {/* ── Rename migration overlay (above the editor) ── */}
-      {migration && (
+      {/* ── Migration overlay (rename / delete, above the editor) ── */}
+      {migration && (() => {
+        const isDelete = migration.kind === 'delete'
+        return (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 4100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
           <div style={{ background: '#fff', borderRadius: 12, boxShadow: '0 20px 60px rgba(15,23,42,0.25)', width: 440, maxWidth: '100%', padding: 22 }}>
-            <h3 style={{ fontSize: 16, fontWeight: 600, color: '#0f172a', margin: '0 0 10px' }}>Rename category</h3>
+            <h3 style={{ fontSize: 16, fontWeight: 600, color: '#0f172a', margin: '0 0 10px' }}>
+              {isDelete ? 'Delete category' : 'Rename category'}
+            </h3>
             <div style={{ fontSize: 14, color: '#334155', marginBottom: 16, lineHeight: 1.5 }}>
-              <span style={{ fontWeight: 600 }}>“{migration.oldLabel}”</span> →{' '}
-              <span style={{ fontWeight: 600 }}>“{migration.newLabel}”</span>
+              {isDelete ? (
+                <span style={{ fontWeight: 600 }}>“{migration.oldLabel}”</span>
+              ) : (
+                <>
+                  <span style={{ fontWeight: 600 }}>“{migration.oldLabel}”</span> →{' '}
+                  <span style={{ fontWeight: 600 }}>“{migration.newLabel}”</span>
+                </>
+              )}
             </div>
 
             {migration.phase === 'scanning' && (
@@ -321,21 +366,29 @@ export default function CategoryManagerModal({ orgId, locationId, categories, on
               <>
                 <div style={{ fontSize: 13, color: '#475569', marginBottom: 18, lineHeight: 1.5 }}>
                   {migration.count > 0 ? (
-                    <>This re-tags <strong>{migration.count}</strong> item{migration.count === 1 ? '' : 's'} at <strong>{locationId}</strong>. This can’t be undone in bulk.</>
+                    isDelete ? (
+                      <><strong>{migration.count}</strong> item{migration.count === 1 ? '' : 's'} move to <strong>General</strong> at <strong>{locationId}</strong>. This can’t be undone in bulk.</>
+                    ) : (
+                      <>This re-tags <strong>{migration.count}</strong> item{migration.count === 1 ? '' : 's'} at <strong>{locationId}</strong>. This can’t be undone in bulk.</>
+                    )
                   ) : (
-                    <>No items carry this label here — this is a <strong>name-only</strong> change.</>
+                    isDelete ? (
+                      <>No items carry this label here — the category will just be removed.</>
+                    ) : (
+                      <>No items carry this label here — this is a <strong>name-only</strong> change.</>
+                    )
                   )}
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
                   <button onClick={cancelMigration} style={{ padding: '8px 14px', fontSize: 13, fontWeight: 500, border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff', color: '#475569', cursor: 'pointer' }}>Cancel</button>
-                  <button onClick={runRename} style={{ padding: '8px 14px', fontSize: 13, fontWeight: 600, border: 'none', borderRadius: 8, background: '#1D9E75', color: '#fff', cursor: 'pointer' }}>Rename</button>
+                  <button onClick={runMigration} style={{ padding: '8px 14px', fontSize: 13, fontWeight: 600, border: 'none', borderRadius: 8, background: isDelete ? '#dc2626' : '#1D9E75', color: '#fff', cursor: 'pointer' }}>{isDelete ? 'Delete' : 'Rename'}</button>
                 </div>
               </>
             )}
 
             {migration.phase === 'running' && (
               <div style={{ fontSize: 13, color: '#475569' }}>
-                Re-tagging {migration.progress?.done ?? 0} of {migration.progress?.total ?? 0} item{(migration.progress?.total ?? 0) === 1 ? '' : 's'}…
+                {isDelete ? 'Moving' : 'Re-tagging'} {migration.progress?.done ?? 0} of {migration.progress?.total ?? 0} item{(migration.progress?.total ?? 0) === 1 ? '' : 's'}{isDelete ? ' to General' : ''}…
                 <div style={{ marginTop: 10, height: 6, borderRadius: 3, background: '#e2e8f0', overflow: 'hidden' }}>
                   <div style={{ height: '100%', background: '#1D9E75', width: `${migration.progress?.total ? Math.round((migration.progress.done / migration.progress.total) * 100) : 0}%`, transition: 'width 0.2s' }} />
                 </div>
@@ -349,17 +402,20 @@ export default function CategoryManagerModal({ orgId, locationId, categories, on
                   <AlertTriangle size={14} /> {migration.error}
                 </div>
                 <div style={{ fontSize: 12, color: '#64748b', marginBottom: 16, lineHeight: 1.5 }}>
-                  The category name was not changed. Retry re-tags only what’s left, then applies the rename. Safe to run again.
+                  {isDelete
+                    ? 'The category was not deleted. Retry moves only what’s left to General, then removes it. Safe to run again.'
+                    : 'The category name was not changed. Retry re-tags only what’s left, then applies the rename. Safe to run again.'}
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
                   <button onClick={cancelMigration} style={{ padding: '8px 14px', fontSize: 13, fontWeight: 500, border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff', color: '#475569', cursor: 'pointer' }}>Cancel</button>
-                  <button onClick={runRename} style={{ padding: '8px 14px', fontSize: 13, fontWeight: 600, border: 'none', borderRadius: 8, background: '#1D9E75', color: '#fff', cursor: 'pointer' }}>Retry</button>
+                  <button onClick={runMigration} style={{ padding: '8px 14px', fontSize: 13, fontWeight: 600, border: 'none', borderRadius: 8, background: '#1D9E75', color: '#fff', cursor: 'pointer' }}>Retry</button>
                 </div>
               </>
             )}
           </div>
         </div>
-      )}
+        )
+      })()}
     </div>
   )
 }
