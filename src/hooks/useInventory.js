@@ -586,19 +586,26 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
     setItems(prev => prev.map(item => {
       const id = String(item.id)
       if (touched.has(id)) return item                 // local edit wins — skip
+      // Item is UN-touched → the local user isn't mid-typing it, so any
+      // _qtyRaw/_eachesRaw present is a stale leftover from a prior saved edit
+      // (save doesn't clear raw). Clear it to null (NOT '') so the input's
+      // `_qtyRaw ?? qty` fallback shows the merged value, not the stale string.
       if (removed.has(id)) {
         // Remote counter cleared this item.
-        return { ...item, qty: null, eaches: 0, lastCountedAt: null, lastCountedBy: null }
+        return { ...item, qty: null, eaches: 0, lastCountedAt: null, lastCountedBy: null, _qtyRaw: null, _eachesRaw: null }
       }
       const p = patches && patches[id]
       if (!p) return item
-      // Merge ONLY these four fields; preserve name/price/glCode/_qtyRaw/etc.
+      // Merge ONLY these count fields; preserve name/price/glCode/etc. Clear the
+      // raw string only for the field(s) the patch carries.
       return {
         ...item,
         qty: p.qty ?? null,
         eaches: p.eaches ?? 0,
         lastCountedAt: p.lastCountedAt ?? item.lastCountedAt ?? null,
         lastCountedBy: p.lastCountedBy ?? item.lastCountedBy ?? null,
+        ...('qty' in p ? { _qtyRaw: null } : {}),
+        ...('eaches' in p ? { _eachesRaw: null } : {}),
       }
     }))
   }, [])
@@ -1025,6 +1032,13 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       // Remove just-persisted ids from the touched set. Items touched DURING
       // the async writes (rare) stay so the next save can act on them.
       touchedSnapshot.forEach(id => touchedItemsRef.current.delete(id))
+      // Root-cause fix for stale-raw (#7): once committed + un-touched, there's
+      // no in-progress typing to preserve — drop _qtyRaw/_eachesRaw (to null, not
+      // '') so a later remote merge of this item shows the merged qty, not a
+      // sticky old typed string. Only touches raw fields, never qty/eaches.
+      setItems(prev => prev.map(i =>
+        touchedSnapshot.has(String(i.id)) ? { ...i, _qtyRaw: null, _eachesRaw: null } : i
+      ))
       setDirty(false)
       return true
     } catch (err) {
@@ -1184,6 +1198,11 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
 
       // Remove just-persisted ids from the touched set (parallels saveCounts).
       touchedSnapshot2.forEach(id => touchedItemsRef.current.delete(id))
+      // Stale-raw root-cause fix (#7) — drop _qtyRaw/_eachesRaw on the just-
+      // committed, now-un-touched items (null, not ''). Raw fields only.
+      setItems(prev => prev.map(i =>
+        touchedSnapshot2.has(String(i.id)) ? { ...i, _qtyRaw: null, _eachesRaw: null } : i
+      ))
       setDirty(false)
       return true
     } catch (err) {
