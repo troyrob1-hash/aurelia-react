@@ -1,4 +1,12 @@
 import React from 'react'
+import { Lock } from 'lucide-react'
+import { cleanLocName } from '@/store/LocationContext'
+
+// Compact a canonical period key (YYYY-PMM-Wn) → "P6-W4" for display.
+// Non-matching keys (e.g. MONTHLY) fall through mostly intact.
+function shortPeriod(k) {
+  return (k || '').replace(/^\d{4}-P0*(\d+)/, 'P$1')
+}
 
 /**
  * SaveStatusBar — shared floating save/status bar for data-entry tabs.
@@ -35,6 +43,8 @@ export default function SaveStatusBar({
   saving = false,
   hidden = false,
   locked = false,   // period closed/locked → both actions disabled + indicator
+  periodKey,        // for the "…closed" indicator
+  location,         // raw location name (cleanLocName strips CR_/SO_)
 }) {
   if (hidden) return null
 
@@ -64,8 +74,11 @@ export default function SaveStatusBar({
 
       <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.3, minWidth: 150 }}>
         {locked ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: '#fca5a5' }}>\ud83d\udd12 Period closed</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7, color: '#fca5a5' }}>
+            <Lock size={13} style={{ flexShrink: 0 }} />
+            <span style={{ fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap' }}>
+              {([shortPeriod(periodKey), location ? cleanLocName(location) : null].filter(Boolean).join(' - ') || 'Period')} (closed)
+            </span>
           </div>
         ) : (
           <>
@@ -90,7 +103,7 @@ export default function SaveStatusBar({
       )}
 
       {onSaveAndClose && (
-        // Red-outlined destructive \u2014 closing LOCKS the period (director-only reopen).
+        // Red-outlined destructive - closing LOCKS the period (director-only reopen).
         <button onClick={onSaveAndClose} disabled={saving || locked} style={{
           padding: '8px 16px', fontSize: 13, fontWeight: 600,
           background: 'transparent', color: (saving || locked) ? '#fca5a5' : '#f87171',

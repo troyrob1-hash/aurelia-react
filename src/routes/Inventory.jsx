@@ -1690,6 +1690,8 @@ export default function Inventory() {
           saveAndCloseLabel="Save & Close Period"
           saving={saving}
           locked={locked}
+          periodKey={periodKey}
+          location={location}
         />
 
         {/* ── Why panel — item-level explanation drawer ── */}
