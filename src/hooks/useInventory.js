@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
-import { doc, getDoc, setDoc, collection, getDocs, serverTimestamp } from 'firebase/firestore'
+import { doc, getDoc, setDoc, collection, getDocs, serverTimestamp, writeBatch, deleteDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { getPriorKey as getPriorKeyLib, locId as locIdLib } from '@/lib/pnl'
 
@@ -97,6 +97,45 @@ export function mergeCountsWithDeletions(existing, newCounts, deletions) {
   return Object.values(byId)
 }
 
+/**
+ * Per-item count writer (concurrency-safe re-architecture, Phase 1). Writes ONE
+ * doc per counted item to counts/{periodKey}/items/{itemId} and DELETES the doc
+ * for each cleared item. Two counters on different devices touch different item
+ * docs, so writes can never clobber one another — no read-merge-write, no race.
+ *
+ * Each count doc is a complete record (plain `set`, last-write-wins per item)
+ * carrying qty/eaches + attribution + DENORMALIZED pricing (packPrice /
+ * qtyPerPack / unitCost) captured at count time, so the Phase-2 Cloud Function
+ * can value the count without re-joining the catalog. Ops are chunked ≤450 per
+ * writeBatch and committed sequentially (Firestore's 500-op limit).
+ *
+ * Pure Firestore, no React. `colRef` = collection(... 'counts', periodKey, 'items').
+ */
+export async function persistCountItems(colRef, newCounts, deletions, updatedBy) {
+  const ops = [
+    ...(newCounts || []).map(c => ({
+      type: 'set', id: String(c.id),
+      data: {
+        qty: c.qty, eaches: c.eaches,
+        countedAt: c.countedAt ?? null, countedBy: c.countedBy ?? null,
+        packPrice: c.packPrice ?? null, qtyPerPack: c.qtyPerPack ?? null, unitCost: c.unitCost ?? null,
+        updatedAt: serverTimestamp(), updatedBy: updatedBy || 'unknown',
+      },
+    })),
+    ...(deletions || []).map(id => ({ type: 'delete', id: String(id) })),
+  ]
+  for (let i = 0; i < ops.length; i += 450) {
+    const slice = ops.slice(i, i + 450)
+    const batch = writeBatch(db)
+    for (const op of slice) {
+      const ref = doc(colRef, op.id)
+      if (op.type === 'set') batch.set(ref, op.data)   // full record — clean last-write-wins per item
+      else batch.delete(ref)
+    }
+    await batch.commit()
+  }
+}
+
 export function useInventory(orgId, locationId, periodKey, user) {
   const [items, setItems] = useState([])
   const [priorItems, setPriorItems] = useState([])
@@ -137,6 +176,7 @@ export function useInventory(orgId, locationId, periodKey, user) {
         settingsSnap,
         sessionSnap,
         countsSnap,
+        countsItemsSnap,
         locCatSnap
       ] = await Promise.all([
         getDocs(collection(db, 'tenants', orgId, 'inventoryCatalog')),
@@ -147,11 +187,14 @@ export function useInventory(orgId, locationId, periodKey, user) {
         // locations that haven't customized their own (Phase A).
         getDoc(doc(db, 'tenants', orgId, 'settings', 'inventory')),
         getDoc(doc(db, 'tenants', orgId, 'inventorySessions', `${locId}_${periodKey}`)),
-        // Per-week counts — the canonical count store. Item DEFINITIONS live on
-        // the shared items docs; COUNTS (qty/eaches) live here, keyed by period,
-        // so a new week starts blank by design and never inherits last week's
-        // numbers.
+        // Per-week counts — LEGACY single-doc array (pre per-item refactor).
+        // Kept as the fallback read for historical periods; new/current periods
+        // read the per-item subcollection below and this is ignored.
         getDoc(doc(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey)),
+        // Per-ITEM count docs (Phase 1) — the canonical count store now. One doc
+        // per item, concurrency-safe. Preferred over the legacy array when
+        // non-empty; empty means a legacy/never-counted period → array fallback.
+        getDocs(collection(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey, 'items')),
         // Per-location category list. Absent until this location is customized
         // (Phase B writes it on first edit); until then locCats is null and the
         // resolution below falls back to the global list, then defaults.
@@ -316,17 +359,24 @@ export function useInventory(orgId, locationId, periodKey, user) {
       let hydratedItems = [...inventoryItems, ...customItems].map(row => ({
         ...row, qty: null, eaches: 0
       }))
-      let countsArr = countsSnap?.exists() && Array.isArray(countsSnap.data().items)
-        ? countsSnap.data().items
-        : []
+      // ── Dual-read (Phase 1): per-item subcollection first, legacy array next.
+      // If ANY per-item count doc exists, that subcollection is authoritative and
+      // the legacy array is IGNORED (no double-count). An empty subcollection
+      // means a historical/never-counted period → fall back to the legacy single
+      // array doc, then the even-older Path B snapshot below.
+      let countsArr = []
+      if (countsItemsSnap && !countsItemsSnap.empty) {
+        countsArr = countsItemsSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+      } else if (countsSnap?.exists() && Array.isArray(countsSnap.data().items)) {
+        countsArr = countsSnap.data().items
+      }
 
       // ── Legacy snapshot fallback ──────────────────────────────────────
       // Weeks counted before the per-week counts refactor have no counts doc;
       // their data lives in the old snapshot at
-      // locations/{loc}/inventory/{periodKey}. If the new counts doc is empty,
-      // fall back to that snapshot so previously-counted weeks still display.
-      // New saves always write the new counts doc, so this only ever serves
-      // pre-refactor weeks.
+      // locations/{loc}/inventory/{periodKey}. If neither the per-item
+      // subcollection nor the legacy array has data, fall back to that snapshot
+      // so previously-counted weeks still display.
       if (!countsArr.length) {
         try {
           const legacySnap = await getDoc(doc(db, 'tenants', orgId, 'locations', locId, 'inventory', periodKey))
@@ -380,17 +430,22 @@ export function useInventory(orgId, locationId, periodKey, user) {
       // Best-effort: if no prior snapshot exists, priorItems stays empty.
       try {
         if (priorKey) {
-          // Prefer the prior week's COUNTS doc (carries qty AND eaches). Fall
-          // back to the legacy snapshot for pre-refactor weeks (qty only).
+          // Dual-read the prior week (carries qty AND eaches): per-item
+          // subcollection first, then legacy array counts doc, then the even
+          // older Path B snapshot for pre-refactor weeks (qty only).
           let priorArr = []
-          const priorCountsRef = doc(db, 'tenants', orgId, 'inventory', locId, 'counts', priorKey)
-          const priorCounts = await getDoc(priorCountsRef)
-          if (priorCounts.exists() && Array.isArray(priorCounts.data().items) && priorCounts.data().items.length) {
-            priorArr = priorCounts.data().items
+          const priorItemsSnap = await getDocs(collection(db, 'tenants', orgId, 'inventory', locId, 'counts', priorKey, 'items'))
+          if (!priorItemsSnap.empty) {
+            priorArr = priorItemsSnap.docs.map(d => ({ id: d.id, ...d.data() }))
           } else {
-            const priorSnap = await getDoc(doc(db, 'tenants', orgId, 'locations', locId, 'inventory', priorKey))
-            if (priorSnap.exists() && Array.isArray(priorSnap.data().items)) {
-              priorArr = priorSnap.data().items
+            const priorCounts = await getDoc(doc(db, 'tenants', orgId, 'inventory', locId, 'counts', priorKey))
+            if (priorCounts.exists() && Array.isArray(priorCounts.data().items) && priorCounts.data().items.length) {
+              priorArr = priorCounts.data().items
+            } else {
+              const priorSnap = await getDoc(doc(db, 'tenants', orgId, 'locations', locId, 'inventory', priorKey))
+              if (priorSnap.exists() && Array.isArray(priorSnap.data().items)) {
+                priorArr = priorSnap.data().items
+              }
             }
           }
           setPriorItems(priorArr)
@@ -678,18 +733,17 @@ export function useInventory(orgId, locationId, periodKey, user) {
   const restoreItem = useCallback(async (itemId) => {
     try {
       // Persist in-progress counts before the reload below, so restoring an
-      // item mid-count never wipes unsaved counts. Use hasCount so eaches-only
-      // entries persist too.
-      const countsItems = items
+      // item mid-count never wipes unsaved counts. Per-item docs (Phase 1) —
+      // must write the subcollection, since the dual-read prefers it and would
+      // ignore a legacy array write here. Use hasCount so eaches-only persist.
+      const preserveCounts = items
         .filter(hasCount)
-        .map(i => ({ id: i.id, qty: i.qty, eaches: i.eaches || 0,
-          countedAt: i.lastCountedAt || null, countedBy: i.lastCountedBy || null }))
-      if (countsItems.length) {
-        await setDoc(
-          doc(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey),
-          { items: countsItems, period: periodKey, updatedAt: serverTimestamp(), updatedBy: user?.email || 'unknown' },
-          { merge: false }
-        )
+        .map(i => ({ id: i.id, qty: i.qty ?? null, eaches: i.eaches || 0,
+          countedAt: i.lastCountedAt || null, countedBy: i.lastCountedBy || null,
+          packPrice: i.packPrice ?? null, qtyPerPack: i.qtyPerPack ?? null, unitCost: i.unitCost ?? null }))
+      if (preserveCounts.length) {
+        const itemsCol = collection(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey, 'items')
+        await persistCountItems(itemsCol, preserveCounts, [], user?.email)
       }
       await setDoc(
         doc(db, 'tenants', orgId, 'inventory', locId, 'items', itemId),
@@ -733,31 +787,26 @@ export function useInventory(orgId, locationId, periodKey, user) {
         doc(db, 'tenants', orgId, 'inventory', locId, 'items', customId),
         newItem
       )
-      // Persist any in-progress counts to the per-week counts doc BEFORE the
-      // optimistic insert, so adding an item can never discard unsaved counts
-      // (a reload would otherwise rebuild items blank and wipe them). Use
-      // hasCount so eaches-only entries persist too.
+      // Persist any in-progress counts BEFORE the optimistic insert, so adding
+      // an item can never discard unsaved counts (a reload would otherwise
+      // rebuild items blank and wipe them). Per-item docs (Phase 1) — must write
+      // the subcollection, which the dual-read prefers. hasCount → eaches-only persist.
       try {
-        const countsItems = items
+        const preserveCounts = items
           .filter(hasCount)
           .map(i => ({
             id: i.id,
-            qty: i.qty,
+            qty: i.qty ?? null,
             eaches: i.eaches || 0,
             countedAt: i.lastCountedAt || null,
             countedBy: i.lastCountedBy || null,
+            packPrice: i.packPrice ?? null,
+            qtyPerPack: i.qtyPerPack ?? null,
+            unitCost: i.unitCost ?? null,
           }))
-        if (countsItems.length) {
-          await setDoc(
-            doc(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey),
-            {
-              items:     countsItems,
-              period:    periodKey,
-              updatedAt: serverTimestamp(),
-              updatedBy: user?.email || 'unknown',
-            },
-            { merge: false }
-          )
+        if (preserveCounts.length) {
+          const itemsCol = collection(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey, 'items')
+          await persistCountItems(itemsCol, preserveCounts, [], user?.email)
         }
       } catch (persistErr) {
         console.error('Failed to persist counts before adding item:', persistErr)
@@ -846,6 +895,10 @@ export function useInventory(orgId, locationId, periodKey, user) {
           eaches: num(i.eaches),
           countedAt: i.lastCountedAt || null,
           countedBy: i.lastCountedBy || null,
+          // Denormalized pricing for the Phase-2 CF valuation (price-at-count-time).
+          packPrice: i.packPrice ?? null,
+          qtyPerPack: i.qtyPerPack ?? null,
+          unitCost: i.unitCost ?? null,
         }))
       // Deletions: items the user explicitly cleared (no qty, no eaches) AND
       // touched in this session. Excluding hasCount items here is critical —
@@ -857,19 +910,11 @@ export function useInventory(orgId, locationId, periodKey, user) {
       const deletions = items
         .filter(i => !hasCount(i) && touchedSnapshot.has(String(i.id)))
         .map(i => String(i.id))
-      // Merge new counts OVER existing saved counts by id, so a partial save
-      // never wipes counts already saved (Tracy's 'enter 5-6 times' bug:
-      // merge:false overwrote the whole array with a subset). Deletions
-      // remove cleared ids from the result. See mergeCountsWithDeletions.
-      const countsRef = doc(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey)
-      let existing = []
-      try { const snap = await getDoc(countsRef); if (snap.exists()) existing = snap.data().items || [] } catch (e) {}
-      const countsItems = mergeCountsWithDeletions(existing, newCounts, deletions)
-      await setDoc(
-        countsRef,
-        { items: countsItems, period: periodKey, updatedAt: serverTimestamp(), updatedBy: user?.email || 'unknown' },
-        { merge: false }
-      )
+      // Per-item count docs (Phase 1) — one doc per touched item, cleared items
+      // deleted. Concurrency-safe: two devices write different item docs and
+      // can't clobber. Replaces the old read-merge-write on a single array doc.
+      const itemsCol = collection(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey, 'items')
+      await persistCountItems(itemsCol, newCounts, deletions, user?.email)
       const closingValue = items.reduce((sum, item) => {
         const pp = item.packPrice || ((item.qtyPerPack || 1) * (item.unitCost || 0))
         const packVal = (item.qty || 0) * pp
@@ -942,7 +987,7 @@ export function useInventory(orgId, locationId, periodKey, user) {
       }
       await Promise.all(batch)
 
-      // ── Per-week counts doc — canonical count store ───────────────────
+      // ── Per-ITEM count docs (Phase 1) — canonical count store ─────────
       const num2 = (v) => { const x = Number(v); return Number.isFinite(x) ? x : 0 }
       // Same hasCount predicate as saveCounts — include eaches-only entries.
       const newCounts2 = items
@@ -953,6 +998,10 @@ export function useInventory(orgId, locationId, periodKey, user) {
           eaches: num2(i.eaches),
           countedAt: i.lastCountedAt || null,
           countedBy: i.lastCountedBy || null,
+          // Denormalized pricing for the Phase-2 CF valuation (price-at-count-time).
+          packPrice: i.packPrice ?? null,
+          qtyPerPack: i.qtyPerPack ?? null,
+          unitCost: i.unitCost ?? null,
         }))
       // Deletions: only items with NEITHER qty NOR eaches that the user
       // touched. Same rationale as saveCounts.
@@ -960,21 +1009,9 @@ export function useInventory(orgId, locationId, periodKey, user) {
       const deletions2 = items
         .filter(i => !hasCount(i) && touchedSnapshot2.has(String(i.id)))
         .map(i => String(i.id))
-      // Merge over existing saved counts by id (no clobber), with deletions.
-      const countsRef2 = doc(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey)
-      let existing2 = []
-      try { const snap2 = await getDoc(countsRef2); if (snap2.exists()) existing2 = snap2.data().items || [] } catch (e) {}
-      const countsItems = mergeCountsWithDeletions(existing2, newCounts2, deletions2)
-      await setDoc(
-        countsRef2,
-        {
-          items:     countsItems,
-          period:    periodKey,
-          updatedAt: serverTimestamp(),
-          updatedBy: user?.email || 'unknown',
-        },
-        { merge: false }
-      )
+      // One doc per touched item; cleared items deleted. Concurrency-safe.
+      const itemsCol2 = collection(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey, 'items')
+      await persistCountItems(itemsCol2, newCounts2, deletions2, user?.email)
 
       const closingValue = items.reduce((sum, item) => {
         const pp = item.packPrice || ((item.qtyPerPack || 1) * (item.unitCost || 0))

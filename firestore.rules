@@ -77,6 +77,14 @@ service cloud.firestore {
         allow write: if ownsTenant(tenantId) && isManager();
       }
 
+      // Per-ITEM count docs (concurrency-safe re-architecture). Two counters on
+      // two devices write different item docs — structurally clobber-proof.
+      // Rules don't cascade to subcollections, so this needs its own match.
+      match /inventory/{locationId}/counts/{periodKey}/items/{itemId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isManager();
+      }
+
       match /inventorySessions/{sessionId} {
         allow read:  if ownsTenant(tenantId);
         allow write: if ownsTenant(tenantId) && isManager();
