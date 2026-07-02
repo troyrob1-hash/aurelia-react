@@ -528,6 +528,7 @@ export default function Inventory() {
     setCategoriesLocal,
     periodLocked,
     markPeriodLocked,
+    applyUploadedCounts,
   } = useInventory(orgId, location, periodKey, user, isCurrentPeriod)
 
   // Effective locked state for the count UI: the canonical periodLocks doc
@@ -760,6 +761,28 @@ export default function Inventory() {
       toast.error('Failed to close period: ' + (err.message || ''))
     }
   }, [save, toast, orgId, location, periodKey, user, periodLocked, markPeriodLocked])
+
+  // Apply the previewed count upload: bulk-apply to local items (touched-scoped)
+  // then reuse save() — the audited persistCountItems + closingValue/P&L/Path B
+  // path. save() is the lock backstop (aborts + toasts if the period locked
+  // between preview and Apply). No new write logic.
+  const handleApplyUpload = useCallback(async () => {
+    const preview = countUploadPreview
+    if (!preview) return
+    try {
+      applyUploadedCounts(preview.countsById, user?.email)
+      const ok = await save()
+      if (ok !== false) {
+        toast.success(`Uploaded ${preview.toCount.length} count${preview.toCount.length === 1 ? '' : 's'} to ${periodKey}`)
+        setCountUploadPreview(null)
+      }
+      // ok === false → save() already toasted (e.g. "Period is closed"); keep the
+      // preview open so the user can retry after a reopen.
+    } catch (e) {
+      console.error('Count upload apply failed:', e)
+      toast.error('Upload failed — no counts written. ' + (e.message || ''))
+    }
+  }, [countUploadPreview, applyUploadedCounts, save, user, toast, periodKey])
 
   const toggleCollapse = useCallback((key) => {
     setCollapsed(prev => ({ ...prev, [key]: !prev[key] }))
@@ -2211,13 +2234,7 @@ export default function Inventory() {
                 <div style={{ padding: '12px 22px', borderTop: '1px solid #e5e7eb', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
                   <button onClick={() => setCountUploadPreview(null)} style={{ padding: '8px 16px', fontSize: 13, fontWeight: 500, border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff', color: '#475569', cursor: 'pointer' }}>Cancel</button>
                   <button
-                    onClick={() => {
-                      // STEP 1 STUB — no write. Logs the payload that step 2 will
-                      // apply via applyUploadedCounts + save().
-                      console.log('[count-upload STUB] countsById:', p.countsById, 'uploaderEmail:', user?.email)
-                      toast.info(`Preview only (step 1) — ${N} count(s) NOT written yet.`)
-                      setCountUploadPreview(null)
-                    }}
+                    onClick={handleApplyUpload}
                     disabled={N === 0}
                     style={{ padding: '8px 16px', fontSize: 13, fontWeight: 600, border: 'none', borderRadius: 8, background: N === 0 ? '#e2e8f0' : '#1D9E75', color: N === 0 ? '#94a3b8' : '#fff', cursor: N === 0 ? 'not-allowed' : 'pointer' }}
                   >Apply {N} count{N === 1 ? '' : 's'}</button>

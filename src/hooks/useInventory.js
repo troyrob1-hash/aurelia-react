@@ -144,6 +144,8 @@ export async function persistCountItems(colRef, newCounts, deletions, updatedBy)
           countedAt: c.countedAt ?? null, countedBy: c.countedBy ?? null,
           packPrice: c.packPrice ?? null, qtyPerPack: c.qtyPerPack ?? null, unitCost: c.unitCost ?? null,
           updatedAt: serverTimestamp(), updatedBy: updatedBy || 'unknown',
+          // Audit marker for file-uploaded counts; manual entry stays unmarked.
+          ...(c.countedViaUpload ? { countedViaUpload: true } : {}),
         },
       })),
     ...(deletions || [])
@@ -800,6 +802,35 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
     setItems(prev => prev.map(i => patches[i.id] ? { ...i, ...patches[i.id] } : i))
   }, [])
 
+  // Bulk-apply file-uploaded counts to local items, then mark them touched so the
+  // NEXT save() persists exactly these items via the audited touched-scoped
+  // persistCountItems path (no new write logic). countsById = { [id]: {qty,eaches} }.
+  // Sets attribution to the uploader + a countedViaUpload marker for audit.
+  // Clears _qtyRaw/_eachesRaw (to null) so the input reflects the uploaded value,
+  // never a stale typed string (same guard as the live-merge fix). Caller awaits
+  // save() itself.
+  const applyUploadedCounts = useCallback((countsById, uploaderEmail) => {
+    if (!countsById || !Object.keys(countsById).length) return
+    const at = new Date().toISOString()
+    const by = uploaderEmail || user?.email || 'unknown'
+    setItems(prev => prev.map(item => {
+      const c = countsById[String(item.id)]
+      if (!c) return item
+      return {
+        ...item,
+        qty: c.qty ?? null,
+        eaches: c.eaches ?? 0,
+        lastCountedAt: at,
+        lastCountedBy: by,
+        countedViaUpload: true,
+        _qtyRaw: null,
+        _eachesRaw: null,
+      }
+    }))
+    Object.keys(countsById).forEach(id => touchedItemsRef.current.add(String(id)))
+    setDirty(true)
+  }, [user])
+
   // Replace the in-memory category list after the inline per-location editor
   // writes the per-location categories doc. Lets KPI bubbles + grouping reflect
   // add/reorder/recolor/rename immediately WITHOUT a reload — load() would
@@ -1023,6 +1054,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
           packPrice: i.packPrice ?? null,
           qtyPerPack: i.qtyPerPack ?? null,
           unitCost: i.unitCost ?? null,
+          countedViaUpload: i.countedViaUpload,   // carries the upload audit flag through
         }))
       // Deletions: items the user explicitly cleared (no qty, no eaches) AND
       // touched in this session. Excluding hasCount items here is critical —
@@ -1143,6 +1175,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
           packPrice: i.packPrice ?? null,
           qtyPerPack: i.qtyPerPack ?? null,
           unitCost: i.unitCost ?? null,
+          countedViaUpload: i.countedViaUpload,   // carries the upload audit flag through
         }))
       // Deletions: only items with NEITHER qty NOR eaches that the user
       // touched. Same rationale as saveCounts.
@@ -1375,6 +1408,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
     setCategoriesLocal,
     periodLocked,
     markPeriodLocked,
+    applyUploadedCounts,
   }
 }
 
