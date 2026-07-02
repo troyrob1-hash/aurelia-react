@@ -180,11 +180,6 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
   const priorKey = getPriorKey(periodKey)
   const locId = sanitizeDocId(locationId)
 
-  // Phase 3, step 1: wire the live-merge listener lifecycle (current period
-  // only) with a NO-OP onRemote — verifies subscribe/teardown without touching
-  // counts. The touched-guarded merge (onRemote) lands in step 2.
-  useCountsListener({ orgId, locId, periodKey, enabled: liveSync, onRemote: undefined })
-
   const load = useCallback(async () => {
     if (!locationId || !periodKey || !orgId) {
       setItems([])
@@ -573,6 +568,42 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
   //     the counts doc (the W1 $61K-reappear fix)
   // Cleared per-save (only the just-persisted ids) and on context change.
   const touchedItemsRef = useRef(new Set())
+
+  // Phase 3 step 2: live-merge the OTHER counter's counts into local `items`.
+  // Applied per snapshot delta from useCountsListener (current period only).
+  // Invariants (see the guards below):
+  //   • touchedItemsRef.has(id) → SKIP on EVERY change type — a remote change
+  //     never touches an item the local user is editing this session.
+  //   • Only qty / eaches / lastCountedAt / lastCountedBy are merged. _qtyRaw /
+  //     _eachesRaw (the in-progress typing state) are NEVER touched — and can't
+  //     be, since any typed item is in touchedItemsRef and thus skipped.
+  //   • Never sets dirty and never adds to touchedItemsRef → cannot schedule the
+  //     debounced autosave (no cross-counter autosave-echo loop). Display only;
+  //     closingValue converges naturally because it derives from `items`.
+  const handleRemoteCounts = useCallback(({ patches, removedIds }) => {
+    const touched = touchedItemsRef.current
+    const removed = new Set((removedIds || []).map(String))
+    setItems(prev => prev.map(item => {
+      const id = String(item.id)
+      if (touched.has(id)) return item                 // local edit wins — skip
+      if (removed.has(id)) {
+        // Remote counter cleared this item.
+        return { ...item, qty: null, eaches: 0, lastCountedAt: null, lastCountedBy: null }
+      }
+      const p = patches && patches[id]
+      if (!p) return item
+      // Merge ONLY these four fields; preserve name/price/glCode/_qtyRaw/etc.
+      return {
+        ...item,
+        qty: p.qty ?? null,
+        eaches: p.eaches ?? 0,
+        lastCountedAt: p.lastCountedAt ?? item.lastCountedAt ?? null,
+        lastCountedBy: p.lastCountedBy ?? item.lastCountedBy ?? null,
+      }
+    }))
+  }, [])
+
+  useCountsListener({ orgId, locId, periodKey, enabled: liveSync, onRemote: handleRemoteCounts })
 
   // Reset the touched-items tracker when location/period changes — otherwise
   // a cleared id from W1 would carry into W2 and could falsely trigger a
