@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { doc, getDoc, setDoc, collection, getDocs, serverTimestamp, writeBatch, deleteDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
-import { getPriorKey as getPriorKeyLib, locId as locIdLib } from '@/lib/pnl'
+import { getPriorKey as getPriorKeyLib, locId as locIdLib, isPeriodLocked } from '@/lib/pnl'
 import { useCountsListener } from '@/hooks/useCountsListener'
+import { useToast } from '@/components/ui/Toast'
 
 // getPriorKey + sanitizeDocId moved to @/lib/pnl as the canonical source.
 // Re-exported here so existing call sites (Inventory.jsx imports sanitizeDocId
@@ -176,6 +177,37 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
   // get both names persisted to lastCountedBy + counterNames.
   const [buddyMode, setBuddyMode] = useState(false)
   const [buddyNames, setBuddyNames] = useState({ caller: '', marker: '' })
+
+  const toast = useToast()
+
+  // Period lock — the canonical enforcement gate (periodLocks/{loc}__{period}).
+  // When locked, ALL count writes early-return with a toast (never silent), and
+  // Inventory disables the actual inputs. Fixes a latent gap: today a closed
+  // period only blocks writes routed through writePnL — inventory count docs +
+  // the direct P&L setDoc bypass it. periodLockedRef mirrors the state so the
+  // save callbacks read the current value without being re-created.
+  const [periodLocked, setPeriodLocked] = useState(false)
+  const periodLockedRef = useRef(false)
+  periodLockedRef.current = periodLocked
+  useEffect(() => {
+    let cancelled = false
+    if (!orgId || !locationId || !periodKey) { setPeriodLocked(false); return }
+    isPeriodLocked(locationId, periodKey)
+      .then(l => { if (!cancelled) setPeriodLocked(!!l) })
+      .catch(() => { /* fail open on read error — enforcement is best-effort client-side */ })
+    return () => { cancelled = true }
+  }, [orgId, locationId, periodKey])
+  // Optimistic flip so the UI locks instantly after a successful close, without
+  // waiting for a re-read.
+  const markPeriodLocked = useCallback(() => setPeriodLocked(true), [])
+  // Shared guard for every count-write path.
+  const blockedByLock = useCallback(() => {
+    if (periodLockedRef.current) {
+      toast.error('Period is closed — a director must reopen it to make changes.')
+      return true
+    }
+    return false
+  }, [toast])
 
   const priorKey = getPriorKey(periodKey)
   const locId = sanitizeDocId(locationId)
@@ -811,6 +843,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
 
   // Restore a previously removed item.
   const restoreItem = useCallback(async (itemId) => {
+    if (blockedByLock()) return
     try {
       // Persist in-progress counts before the reload below, so restoring an
       // item mid-count never wipes unsaved counts. Per-item docs (Phase 1) —
@@ -847,6 +880,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
   // Add a custom item that exists only at this location.
   const addCustomItem = useCallback(async (data) => {
     if (!data.name) return
+    if (blockedByLock()) return
     const customId = `custom_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
     const newItem = {
       name:     data.name,
@@ -964,6 +998,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
   // completed or closing the period. Safe to call repeatedly (debounced).
   const saveCounts = useCallback(async () => {
     if (!locationId || !periodKey) return false
+    if (blockedByLock()) return false   // period closed — no count writes
     // Guard: if items haven't loaded yet (transition / reload), do NOT write —
     // saving an empty/partial set here would clobber real counts.
     if (!Array.isArray(items) || items.length === 0) return false
@@ -1059,6 +1094,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
 
   const save = useCallback(async () => {
     if (!locationId || !periodKey) return false
+    if (blockedByLock()) return false   // period closed — no count writes
 
     setSaving(true)
     setError(null)
@@ -1337,6 +1373,8 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
     mergeDraft,
     patchItemFields,
     setCategoriesLocal,
+    periodLocked,
+    markPeriodLocked,
   }
 }
 

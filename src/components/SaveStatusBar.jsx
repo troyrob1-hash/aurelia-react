@@ -34,6 +34,7 @@ export default function SaveStatusBar({
   saveAndCloseLabel = 'Save & Close Period',
   saving = false,
   hidden = false,
+  locked = false,   // period closed/locked → both actions disabled + indicator
 }) {
   if (hidden) return null
 
@@ -62,30 +63,40 @@ export default function SaveStatusBar({
       )}
 
       <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.3, minWidth: 150 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-          <span style={{ width: 9, height: 9, borderRadius: '50%', background: dot, flexShrink: 0, boxShadow: isSaving ? 'none' : '0 0 6px ' + dot }} />
-          <span style={{ fontSize: 13, fontWeight: 600, color: '#fff' }}>{label}</span>
-        </div>
-        <span style={{ fontSize: 11, opacity: 0.65, marginTop: 2 }}>
-          {ts ? 'Saved automatically at ' + ts : (reassurance || 'Changes save automatically')}
-        </span>
+        {locked ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: '#fca5a5' }}>\ud83d\udd12 Period closed</span>
+          </div>
+        ) : (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+              <span style={{ width: 9, height: 9, borderRadius: '50%', background: dot, flexShrink: 0, boxShadow: isSaving ? 'none' : '0 0 6px ' + dot }} />
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#fff' }}>{label}</span>
+            </div>
+            <span style={{ fontSize: 11, opacity: 0.65, marginTop: 2 }}>
+              {ts ? 'Saved automatically at ' + ts : (reassurance || 'Changes save automatically')}
+            </span>
+          </>
+        )}
       </div>
 
       {onSave && (
-        <button onClick={onSave} disabled={saving || !dirty} style={{
+        <button onClick={onSave} disabled={saving || !dirty || locked} style={{
           padding: '8px 14px', fontSize: 13, fontWeight: 600,
           background: '#fff', color: '#0f172a', border: 'none',
-          borderRadius: 8, cursor: (saving || !dirty) ? 'default' : 'pointer',
-          opacity: (saving || !dirty) ? 0.5 : 1, whiteSpace: 'nowrap',
+          borderRadius: 8, cursor: (saving || !dirty || locked) ? 'default' : 'pointer',
+          opacity: (saving || !dirty || locked) ? 0.5 : 1, whiteSpace: 'nowrap',
         }}>{saveLabel}</button>
       )}
 
       {onSaveAndClose && (
-        <button onClick={onSaveAndClose} disabled={saving} style={{
+        // Red-outlined destructive \u2014 closing LOCKS the period (director-only reopen).
+        <button onClick={onSaveAndClose} disabled={saving || locked} style={{
           padding: '8px 16px', fontSize: 13, fontWeight: 600,
-          background: '#2563eb', color: '#fff', border: 'none',
-          borderRadius: 8, cursor: saving ? 'default' : 'pointer',
-          opacity: saving ? 0.6 : 1, whiteSpace: 'nowrap',
+          background: 'transparent', color: (saving || locked) ? '#fca5a5' : '#f87171',
+          border: '1px solid ' + ((saving || locked) ? '#7f1d1d' : '#ef4444'),
+          borderRadius: 8, cursor: (saving || locked) ? 'default' : 'pointer',
+          opacity: (saving || locked) ? 0.6 : 1, whiteSpace: 'nowrap',
         }}>{saving ? 'Saving\u2026' : saveAndCloseLabel}</button>
       )}
     </div>

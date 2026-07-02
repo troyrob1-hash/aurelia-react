@@ -5,7 +5,7 @@ import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { usePeriod } from '@/store/PeriodContext'
-import { readPeriodClose, getPriorKey } from '@/lib/pnl'
+import { readPeriodClose, getPriorKey, writePeriodClose, lockPeriod } from '@/lib/pnl'
 import { db } from '@/lib/firebase'
 import { useInventory, fmt$, sanitizeDocId, hasCount } from '@/hooks/useInventory'
 import { useAutosave } from '@/hooks/useAutosave'
@@ -505,7 +505,13 @@ export default function Inventory() {
     mergeDraft,
     patchItemFields,
     setCategoriesLocal,
+    periodLocked,
+    markPeriodLocked,
   } = useInventory(orgId, location, periodKey, user, isCurrentPeriod)
+
+  // Effective locked state for the count UI: the canonical periodLocks doc
+  // (periodLocked, the enforcement gate) OR the P&L periodStatus (periodClosed).
+  const locked = periodLocked || periodClosed
 
   // Persist a dropped reorder (Stage 2b). Writes clean sequential 1..N shelf
   // positions for the affected scope — the dragged item's category group
@@ -691,24 +697,48 @@ export default function Inventory() {
     }
   }
 
-  const handleSave = useCallback(async () => {
-    if (!orgId) {
-      toast.error('No organization found. Please log in again.')
-      return
-    }
-    
+  // "Save" — commit current counts, period stays OPEN. The common/safe case.
+  const handleSaveOnly = useCallback(async () => {
+    if (!orgId) { toast.error('No organization found. Please log in again.'); return }
     try {
       const success = await save()
-      if (success) {
-        toast.success('Inventory saved — period closed')
-      } else {
-        toast.error('Save failed. Please try again.')
-      }
+      if (success) toast.success('Saved')
+      // On a locked period save() early-returns false AND toasts "Period is
+      // closed" itself, so no generic "Save failed" here for that case.
+      else if (!periodLocked) toast.error('Save failed. Please try again.')
     } catch (err) {
       console.error('Save error:', err)
       toast.error('Save failed: ' + err.message)
     }
-  }, [save, toast, orgId])
+  }, [save, toast, orgId, periodLocked])
+
+  // "Save and Close Period" — commit, then LOCK the period via the canonical
+  // model (writePeriodClose + lockPeriod). Any counter can close (mgr/dir/vp/
+  // admin); only a director+ can reopen. One-way from a manager's end — the
+  // confirm text says so.
+  const handleSaveAndClose = useCallback(async () => {
+    if (!orgId || !location) { toast.error('No organization / location.'); return }
+    const ok = window.confirm(
+      `Close Period? This locks all counts for ${periodKey} at ${cleanLocName(location)} and prevents further changes. ` +
+      `Only a director can reopen it later.`
+    )
+    if (!ok) return
+    try {
+      const success = await save()
+      if (!success) {
+        if (!periodLocked) toast.error('Save failed — period not closed. Try again.')
+        return
+      }
+      const actor = user?.name || user?.email || 'unknown'
+      await writePeriodClose(location, periodKey, { status: 'closed', actor })
+      await lockPeriod(location, periodKey, user)
+      markPeriodLocked()  // optimistic flip → inputs/buttons lock immediately
+      toast.success(`Period closed for ${periodKey}`)
+    } catch (err) {
+      console.error('Close period error:', err)
+      toast.error('Failed to close period: ' + (err.message || ''))
+    }
+  }, [save, toast, orgId, location, periodKey, user, periodLocked, markPeriodLocked])
 
   const toggleCollapse = useCallback((key) => {
     setCollapsed(prev => ({ ...prev, [key]: !prev[key] }))
@@ -1122,7 +1152,9 @@ export default function Inventory() {
               <button
                 className={styles.btnMode}
                 onClick={() => setShowCatManager(true)}
-                title="Manage this location's inventory categories"
+                disabled={locked}
+                title={locked ? 'Period closed — reopen to edit' : "Manage this location's inventory categories"}
+                style={locked ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
               >
                 ⚙ Manage categories
               </button>
@@ -1150,12 +1182,9 @@ export default function Inventory() {
               <AlertTriangle size={14} />
               Par ({totals.belowPar || 0})
             </button>
-            {dirty && (
-              <button className={styles.btnSave} onClick={handleSave} disabled={saving}>
-                {saving ? 'Saving...' : 'Save & Close Period'}
-              </button>
-            )}
-            
+            {/* Save / Save & Close moved to the SaveStatusBar (bottom) — single
+                source of truth for both actions. */}
+
             <button onClick={() => setShowScanner(true)} style={{
               padding: '8px 14px', fontSize: 12, fontWeight: 600,
               background: '#F15D3B18', color: '#F15D3B', borderRadius: 8,
@@ -1379,12 +1408,14 @@ export default function Inventory() {
               immediately in whichever view you're in. */}
           <button
             onClick={() => (arrangeMode ? exitArrangeMode() : enterArrangeMode())}
-            title="Drag items into physical shelf order"
+            disabled={locked && !arrangeMode}
+            title={locked ? 'Period closed — reopen to rearrange' : 'Drag items into physical shelf order'}
             style={{
-              padding: '6px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer',
+              padding: '6px 14px', fontSize: 13, fontWeight: 600, cursor: (locked && !arrangeMode) ? 'not-allowed' : 'pointer',
               border: '1px solid #cbd5e1', borderRadius: 8,
               background: arrangeMode ? '#1D9E75' : '#fff',
               color: arrangeMode ? '#fff' : '#475569',
+              opacity: (locked && !arrangeMode) ? 0.5 : 1,
             }}
           >{arrangeMode ? 'Done arranging' : 'Arrange'}</button>
           <button
@@ -1580,32 +1611,37 @@ export default function Inventory() {
                           </div>
                         </td>}
                         <td className={styles.tdCount} >
+                          {/* When the period is locked, the actual inputs are
+                              disabled — not just the buttons — so a user can't
+                              type into a closed period (the lock isn't theater). */}
                           <div className={styles.countRow}>
-                            <button className={styles.adjBtn} onClick={() => { const st = window.scrollY; adjust(item.id, -1); requestAnimationFrame(() => window.scrollTo(0, st)) }}>−</button>
-                            <input 
-                              type="text" 
-                              inputMode="decimal"
-                              value={item._qtyRaw ?? (item.qty ?? '')}
-                              onChange={e => setQty(item.id, e.target.value)}
-                              onDoubleClick={() => !blindMode && copyPrior(item.id)}
-                              className={`${styles.countInput} ${isCounted ? styles['counted_' + (item._varClass || 'neutral')] : ''}`}
-                              placeholder={blindMode ? '0' : (item._priorQty || 0) > 0 ? String(item._priorQty) : '0'}
-                              title="Cases — decimals OK (.5 = half a case). Double-click to copy prior count."
-                            />
-                            <button className={styles.adjBtn} onClick={() => { const st = window.scrollY; adjust(item.id, 1); requestAnimationFrame(() => window.scrollTo(0, st)) }}>+</button>
-                          </div>
-                          <div className={styles.countRow} style={{ marginTop: 2 }}>
-                            <button className={styles.adjBtn} onClick={() => { const st = window.scrollY; adjustEaches(item.id, -1); requestAnimationFrame(() => window.scrollTo(0, st)) }}>−</button>
+                            <button className={styles.adjBtn} disabled={locked} onClick={() => { const st = window.scrollY; adjust(item.id, -1); requestAnimationFrame(() => window.scrollTo(0, st)) }}>−</button>
                             <input
                               type="text"
                               inputMode="decimal"
+                              disabled={locked}
+                              value={item._qtyRaw ?? (item.qty ?? '')}
+                              onChange={e => setQty(item.id, e.target.value)}
+                              onDoubleClick={() => !blindMode && !locked && copyPrior(item.id)}
+                              className={`${styles.countInput} ${isCounted ? styles['counted_' + (item._varClass || 'neutral')] : ''}`}
+                              placeholder={blindMode ? '0' : (item._priorQty || 0) > 0 ? String(item._priorQty) : '0'}
+                              title={locked ? 'Period closed — reopen to edit' : 'Cases — decimals OK (.5 = half a case). Double-click to copy prior count.'}
+                            />
+                            <button className={styles.adjBtn} disabled={locked} onClick={() => { const st = window.scrollY; adjust(item.id, 1); requestAnimationFrame(() => window.scrollTo(0, st)) }}>+</button>
+                          </div>
+                          <div className={styles.countRow} style={{ marginTop: 2 }}>
+                            <button className={styles.adjBtn} disabled={locked} onClick={() => { const st = window.scrollY; adjustEaches(item.id, -1); requestAnimationFrame(() => window.scrollTo(0, st)) }}>−</button>
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              disabled={locked}
                               value={item._eachesRaw ?? (item.eaches || '')}
                               onChange={e => setEaches(item.id, e.target.value)}
                               placeholder="ea"
                               className={`${styles.countInput} ${(parseFloat(item.eaches) || 0) > 0 ? styles.counted_neutral : ''}`}
-                              title="Eaches - loose units from open case"
+                              title={locked ? 'Period closed — reopen to edit' : 'Eaches - loose units from open case'}
                             />
-                            <button className={styles.adjBtn} onClick={() => { const st = window.scrollY; adjustEaches(item.id, 1); requestAnimationFrame(() => window.scrollTo(0, st)) }}>+</button>
+                            <button className={styles.adjBtn} disabled={locked} onClick={() => { const st = window.scrollY; adjustEaches(item.id, 1); requestAnimationFrame(() => window.scrollTo(0, st)) }}>+</button>
                           </div>
                         </td>
 
@@ -1648,9 +1684,12 @@ export default function Inventory() {
           lastSavedAt={lastSavedAt}
           dirty={dirty}
           reassurance="Counts save automatically"
-          onSaveAndClose={handleSave}
+          onSave={handleSaveOnly}
+          saveLabel="Save"
+          onSaveAndClose={handleSaveAndClose}
           saveAndCloseLabel="Save & Close Period"
           saving={saving}
+          locked={locked}
         />
 
         {/* ── Why panel — item-level explanation drawer ── */}
@@ -2069,13 +2108,14 @@ export default function Inventory() {
                         glCode: '', category: '',
                       })
                     }}
-                    disabled={!customDraft.name}
+                    disabled={!customDraft.name || locked}
+                    title={locked ? 'Period closed — reopen to add items' : undefined}
                     style={{
                       padding: '8px 16px', fontSize: 13, fontWeight: 500,
-                      background: customDraft.name ? '#0f172a' : '#e2e8f0',
-                      color: customDraft.name ? '#fff' : '#94a3b8',
+                      background: (customDraft.name && !locked) ? '#0f172a' : '#e2e8f0',
+                      color: (customDraft.name && !locked) ? '#fff' : '#94a3b8',
                       border: 'none', borderRadius: 6,
-                      cursor: customDraft.name ? 'pointer' : 'not-allowed',
+                      cursor: (customDraft.name && !locked) ? 'pointer' : 'not-allowed',
                       fontFamily: 'inherit',
                     }}
                   >
