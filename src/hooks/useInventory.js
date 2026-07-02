@@ -111,24 +111,48 @@ export function mergeCountsWithDeletions(existing, newCounts, deletions) {
  *
  * Pure Firestore, no React. `colRef` = collection(... 'counts', periodKey, 'items').
  */
+
+/**
+ * Collision-safe Firestore document id for a count doc, derived from the item
+ * id. Catalog item ids are arbitrary FIELD values (SKUs with '/', empty, etc.)
+ * that are ILLEGAL as raw doc ids — so keying by String(id) threw and aborted
+ * the whole write (the Phase-1 COGS=0 regression).
+ *
+ * We do NOT use the locId-style sanitizer ([^a-zA-Z0-9]→_) here: it is LOSSY, so
+ * distinct ids ("A/B" and "A-B") collapse to the same doc id and one count
+ * would clobber another — unacceptable on a money path. encodeURIComponent is
+ * INJECTIVE (reversible), so distinct ids always map to distinct doc ids. The
+ * "id_" prefix guarantees the result is never empty / "." / ".." / a reserved
+ * "__…__" id, and encodeURIComponent removes "/". The RAW id is also stored in
+ * the doc data (itemId) so the read matches on the raw id directly.
+ */
+export function countDocId(id) {
+  return 'id_' + encodeURIComponent(String(id ?? ''))
+}
+
 export async function persistCountItems(colRef, newCounts, deletions, updatedBy) {
   const ops = [
-    ...(newCounts || []).map(c => ({
-      type: 'set', id: String(c.id),
-      data: {
-        qty: c.qty, eaches: c.eaches,
-        countedAt: c.countedAt ?? null, countedBy: c.countedBy ?? null,
-        packPrice: c.packPrice ?? null, qtyPerPack: c.qtyPerPack ?? null, unitCost: c.unitCost ?? null,
-        updatedAt: serverTimestamp(), updatedBy: updatedBy || 'unknown',
-      },
-    })),
-    ...(deletions || []).map(id => ({ type: 'delete', id: String(id) })),
+    ...(newCounts || [])
+      .filter(c => c && c.id != null && String(c.id) !== '')
+      .map(c => ({
+        type: 'set', docId: countDocId(c.id),
+        data: {
+          itemId: String(c.id),   // RAW id — read matches on this (encoding-independent)
+          qty: c.qty, eaches: c.eaches,
+          countedAt: c.countedAt ?? null, countedBy: c.countedBy ?? null,
+          packPrice: c.packPrice ?? null, qtyPerPack: c.qtyPerPack ?? null, unitCost: c.unitCost ?? null,
+          updatedAt: serverTimestamp(), updatedBy: updatedBy || 'unknown',
+        },
+      })),
+    ...(deletions || [])
+      .filter(id => id != null && String(id) !== '')
+      .map(id => ({ type: 'delete', docId: countDocId(id) })),
   ]
   for (let i = 0; i < ops.length; i += 450) {
     const slice = ops.slice(i, i + 450)
     const batch = writeBatch(db)
     for (const op of slice) {
-      const ref = doc(colRef, op.id)
+      const ref = doc(colRef, op.docId)   // encoded id → always a legal doc reference
       if (op.type === 'set') batch.set(ref, op.data)   // full record — clean last-write-wins per item
       else batch.delete(ref)
     }
@@ -366,7 +390,10 @@ export function useInventory(orgId, locationId, periodKey, user) {
       // array doc, then the even-older Path B snapshot below.
       let countsArr = []
       if (countsItemsSnap && !countsItemsSnap.empty) {
-        countsArr = countsItemsSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+        // Match on the RAW itemId stored in the doc (encoding-independent), so
+        // the sanitized doc id never has to be reversed. Falls back to d.id for
+        // any pre-fix docs that predate the itemId field.
+        countsArr = countsItemsSnap.docs.map(d => { const data = d.data(); return { ...data, id: data.itemId ?? d.id } })
       } else if (countsSnap?.exists() && Array.isArray(countsSnap.data().items)) {
         countsArr = countsSnap.data().items
       }
@@ -389,7 +416,16 @@ export function useInventory(orgId, locationId, periodKey, user) {
       }
 
       if (countsArr.length) {
-        const byId = new Map(countsArr.map(c => [String(c.id), c]))
+        // Build the id→count map preferring NEW-style docs (those carrying an
+        // `itemId` field) over any legacy orphan for the same item. A location
+        // that successfully wrote docs during buggy Phase 1 has old-style docs
+        // keyed by String(id); after the doc-id fix its re-saves add new-style
+        // docs (keyed id_<enc>) for the same item — the new one is authoritative.
+        const byId = new Map()
+        for (const c of countsArr) {
+          const key = String(c.id)
+          if (!byId.has(key) || c.itemId != null) byId.set(key, c)
+        }
         hydratedItems = hydratedItems.map(row => {
           const c = byId.get(String(row.id))
           if (!c) return row
@@ -436,7 +472,7 @@ export function useInventory(orgId, locationId, periodKey, user) {
           let priorArr = []
           const priorItemsSnap = await getDocs(collection(db, 'tenants', orgId, 'inventory', locId, 'counts', priorKey, 'items'))
           if (!priorItemsSnap.empty) {
-            priorArr = priorItemsSnap.docs.map(d => ({ id: d.id, ...d.data() }))
+            priorArr = priorItemsSnap.docs.map(d => { const data = d.data(); return { ...data, id: data.itemId ?? d.id } })
           } else {
             const priorCounts = await getDoc(doc(db, 'tenants', orgId, 'inventory', locId, 'counts', priorKey))
             if (priorCounts.exists() && Array.isArray(priorCounts.data().items) && priorCounts.data().items.length) {
@@ -912,9 +948,16 @@ export function useInventory(orgId, locationId, periodKey, user) {
         .map(i => String(i.id))
       // Per-item count docs (Phase 1) — one doc per touched item, cleared items
       // deleted. Concurrency-safe: two devices write different item docs and
-      // can't clobber. Replaces the old read-merge-write on a single array doc.
+      // can't clobber. In its OWN try so a counts-write failure can NEVER skip
+      // the closingValue/P&L write below — COGS is computed from local `items`
+      // and must persist regardless (the Phase-1 COGS=0 regression).
       const itemsCol = collection(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey, 'items')
-      await persistCountItems(itemsCol, newCounts, deletions, user?.email)
+      try {
+        await persistCountItems(itemsCol, newCounts, deletions, user?.email)
+      } catch (countErr) {
+        console.error('Per-item count write failed (P&L still written from local items):', countErr)
+        setError('Some counts failed to save; totals were still updated.')
+      }
       const closingValue = items.reduce((sum, item) => {
         const pp = item.packPrice || ((item.qtyPerPack || 1) * (item.unitCost || 0))
         const packVal = (item.qty || 0) * pp
@@ -1009,9 +1052,14 @@ export function useInventory(orgId, locationId, periodKey, user) {
       const deletions2 = items
         .filter(i => !hasCount(i) && touchedSnapshot2.has(String(i.id)))
         .map(i => String(i.id))
-      // One doc per touched item; cleared items deleted. Concurrency-safe.
+      // One doc per touched item; cleared items deleted. In its OWN try so a
+      // counts-write failure can NEVER skip the closingValue/P&L write below.
       const itemsCol2 = collection(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey, 'items')
-      await persistCountItems(itemsCol2, newCounts2, deletions2, user?.email)
+      try {
+        await persistCountItems(itemsCol2, newCounts2, deletions2, user?.email)
+      } catch (countErr) {
+        console.error('Per-item count write failed (P&L still written from local items):', countErr)
+      }
 
       const closingValue = items.reduce((sum, item) => {
         const pp = item.packPrice || ((item.qtyPerPack || 1) * (item.unitCost || 0))
@@ -1065,18 +1113,24 @@ export function useInventory(orgId, locationId, periodKey, user) {
           category: i._cat || null,
           vendor: i.vendor || null,
         }))
-      await setDoc(
-        doc(db, 'tenants', orgId, 'locations', locId, 'inventory', periodKey),
-        {
-          items:        snapshotItems,
-          closingValue,
-          period:       periodKey,
-          locationName: locationId,
-          updatedAt:    serverTimestamp(),
-          updatedBy:    user?.email || 'unknown',
-        },
-        { merge: true }
-      )
+      // Own try — Path B failure must not abort the save (P&L is already
+      // written above; Waste/Why read Path B best-effort).
+      try {
+        await setDoc(
+          doc(db, 'tenants', orgId, 'locations', locId, 'inventory', periodKey),
+          {
+            items:        snapshotItems,
+            closingValue,
+            period:       periodKey,
+            locationName: locationId,
+            updatedAt:    serverTimestamp(),
+            updatedBy:    user?.email || 'unknown',
+          },
+          { merge: true }
+        )
+      } catch (pathBErr) {
+        console.error('Path B snapshot write failed (P&L already written):', pathBErr)
+      }
 
       if (session) {
         await setDoc(
