@@ -817,7 +817,11 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       // must write the subcollection, since the dual-read prefers it and would
       // ignore a legacy array write here. Use hasCount so eaches-only persist.
       const preserveCounts = items
-        .filter(hasCount)
+        // Touched-scope (Phase 3 step 3): preserve only THIS session's unsaved
+        // edits. Remote-merged / already-saved items are in the subcollection
+        // and survive the load() — re-writing them here would clobber the other
+        // counter's attribution.
+        .filter(i => touchedItemsRef.current.has(String(i.id)) && hasCount(i))
         .map(i => ({ id: i.id, qty: i.qty ?? null, eaches: i.eaches || 0,
           countedAt: i.lastCountedAt || null, countedBy: i.lastCountedBy || null,
           packPrice: i.packPrice ?? null, qtyPerPack: i.qtyPerPack ?? null, unitCost: i.unitCost ?? null }))
@@ -873,7 +877,9 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       // the subcollection, which the dual-read prefers. hasCount → eaches-only persist.
       try {
         const preserveCounts = items
-          .filter(hasCount)
+          // Touched-scope (Phase 3 step 3): only THIS session's unsaved edits;
+          // remote/already-saved items survive the reload from the subcollection.
+          .filter(i => touchedItemsRef.current.has(String(i.id)) && hasCount(i))
           .map(i => ({
             id: i.id,
             qty: i.qty ?? null,
@@ -968,7 +974,10 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       // never landed on the counts doc even though they contributed to
       // closingValue (W1 $3.83 divergence, 2026-06-18).
       const newCounts = items
-        .filter(hasCount)
+        // Touched-scope (Phase 3 step 3): persist ONLY items the local user
+        // touched this session — never re-write another counter's merged items
+        // under our attribution. closingValue (below) stays FULL-set.
+        .filter(i => touchedItemsRef.current.has(String(i.id)) && hasCount(i))
         .map(i => ({
           id: i.id,
           qty: i.qty == null ? null : num(i.qty),
@@ -1085,7 +1094,9 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       const num2 = (v) => { const x = Number(v); return Number.isFinite(x) ? x : 0 }
       // Same hasCount predicate as saveCounts — include eaches-only entries.
       const newCounts2 = items
-        .filter(hasCount)
+        // Touched-scope (Phase 3 step 3): persist only this session's edits.
+        // closingValue + the Path B snapshot below stay FULL-set.
+        .filter(i => touchedItemsRef.current.has(String(i.id)) && hasCount(i))
         .map(i => ({
           id: i.id,
           qty: i.qty == null ? null : num2(i.qty),
