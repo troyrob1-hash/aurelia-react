@@ -62,6 +62,9 @@ export default function Inventory() {
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
   const [dragging, setDragging] = useState(false)
   const [showScanner, setShowScanner] = useState(false)
+  // Count-upload preview (step 1). null = closed; otherwise the parsed+matched
+  // payload shown in the mandatory preview modal BEFORE any write.
+  const [countUploadPreview, setCountUploadPreview] = useState(null)
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768)
     window.addEventListener('resize', onResize)
@@ -770,6 +773,99 @@ export default function Inventory() {
   })
 
 
+  // ── Count upload: parse + slug-match → preview (step 1; NO writes) ──────────
+  // Same name-slug transform the catalog uses to key item docs, so a count file
+  // matches items exactly the way they were imported.
+  const nameSlug = (n) => String(n || '').trim()
+    .replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_').toLowerCase().slice(0, 80)
+
+  const parseCountFile = async (file) => {
+    if (!file) return
+    if (!location) { toast.error('Select a location first'); return }
+    // Defense-in-depth: the button already blocks on a locked period, but never
+    // parse/preview a locked period either.
+    if (locked) { toast.error('Period is closed — a director must reopen it to make changes.'); return }
+    toast.info('Reading ' + (file.name || 'file') + '…')
+    try {
+      const XLSX = (await import('xlsx')).default || await import('xlsx')
+      const buf = await file.arrayBuffer()
+      const wb = XLSX.read(buf)
+      const sheetName = wb.SheetNames.find(s => /count|item|inv/i.test(s)) || wb.SheetNames[0]
+      const ws = wb.Sheets[sheetName]
+
+      // Find the header row: first row (within 20) carrying an item identifier.
+      const allRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+      let headerRowIdx = 0
+      for (let i = 0; i < Math.min(allRows.length, 20); i++) {
+        const vals = allRows[i].map(v => String(v || '').toLowerCase().trim())
+        if (vals.some(v => /^(item|name|description|item name|product)$/.test(v))) { headerRowIdx = i; break }
+      }
+      const rows = XLSX.utils.sheet_to_json(ws, { range: headerRowIdx, defval: '' })
+      if (!rows.length) { toast.error('No rows found in the file.'); return }
+      const headers = Object.keys(rows[0])
+
+      const nameCol = headers.find(h => /^(item|name|description|item name|product)$/i.test(h.trim()))
+      const casesCol = headers.find(h => /^(cases|qty|quantity|count)$/i.test(h.trim()))
+      const eachesCol = headers.find(h => /^(eaches|units|loose|each)$/i.test(h.trim()))
+      if (!nameCol) { toast.error('No item column found. Add a header named "Item", "Name", or "Description".'); return }
+      if (!casesCol && !eachesCol) { toast.error('No count column found. Add "Cases" (or "Qty") and/or "Eaches".'); return }
+
+      // Lookups from the CURRENT location's loaded items.
+      const bySlug = {}, byName = {}
+      for (const it of items) {
+        bySlug[nameSlug(it.name)] = it
+        byName[String(it.name || '').toLowerCase().trim()] = it
+      }
+      const num = (v) => { const n = parseFloat(String(v).replace(/[$,\s]/g, '')); return Number.isFinite(n) ? n : null }
+      const valueOf = (it, qty, eaches) => {
+        const pp = it.packPrice || ((it.qtyPerPack || 1) * (it.unitCost || 0))
+        const ep = (it.qtyPerPack || 1) > 0 ? pp / (it.qtyPerPack || 1) : (it.unitCost || 0)
+        return (qty || 0) * pp + (eaches || 0) * ep
+      }
+
+      const toCount = [], unmatched = [], noCount = [], duplicates = []
+      const countsById = {}
+      const seen = new Set()
+      for (const row of rows) {
+        const rawName = String(row[nameCol] ?? '').trim()
+        if (!rawName) continue // blank row
+        const item = bySlug[nameSlug(rawName)] || byName[rawName.toLowerCase()]
+        if (!item) { unmatched.push({ name: rawName }); continue }
+        const cases = casesCol ? num(row[casesCol]) : null
+        const eaches = eachesCol ? num(row[eachesCol]) : null
+        const qty = cases            // null (blank) or a number (incl. 0)
+        const ea = eaches == null ? 0 : eaches
+        const wouldCount = (qty != null) || (ea > 0)   // same rule as hasCount
+        if (!wouldCount) { noCount.push({ name: rawName, itemName: item.name }); continue }
+        const id = String(item.id)
+        if (seen.has(id)) duplicates.push({ name: rawName, itemName: item.name })
+        seen.add(id)
+        countsById[id] = { qty, eaches: ea }   // last non-empty wins on duplicates
+        const entry = {
+          id, itemName: item.name, qty, eaches: ea,
+          value: valueOf(item, qty, ea),
+          prevQty: item.qty, prevEaches: item.eaches,
+          isOverwrite: item.qty != null,
+        }
+        // Keep the LAST entry for a duplicate id (mirrors countsById).
+        const existingIdx = toCount.findIndex(e => e.id === id)
+        if (existingIdx >= 0) toCount[existingIdx] = entry
+        else toCount.push(entry)
+      }
+
+      setCountUploadPreview({
+        fileName: file.name,
+        toCount,
+        overwrites: toCount.filter(e => e.isOverwrite),
+        unmatched, noCount, duplicates,
+        countsById,
+      })
+    } catch (e) {
+      console.error('Count file parse failed:', e)
+      toast.error('Could not read the file: ' + (e.message || 'unknown error'))
+    }
+  }
+
   // Export inventory count
   const exportInventory = async (format) => {
     if (!items || items.length === 0) { toast.error('No inventory data to export'); return }
@@ -1214,6 +1310,33 @@ export default function Inventory() {
               border: '1px solid #F15D3B40', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
             }}>
               <Search size={14} /> Scan &amp; count
+            </button>
+
+            {/* Upload COUNTS (quantities) — green, visually distinct from the
+                amber "Item list" (catalog/definitions) upload. Blocks on a locked
+                period BEFORE opening the file dialog (fail fast). */}
+            <input
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              style={{ display: 'none' }}
+              id="counts-upload"
+              onChange={e => { if (e.target.files[0]) { parseCountFile(e.target.files[0]); e.target.value = '' } }}
+            />
+            <button
+              onClick={() => {
+                if (locked) { toast.error('Period is closed — a director must reopen it to make changes.'); return }
+                document.getElementById('counts-upload')?.click()
+              }}
+              disabled={locked}
+              title="Upload counted quantities (.xlsx, .csv) for this period — matched by item name. Previews before writing."
+              style={{
+                padding: '8px 14px', fontSize: 12, fontWeight: 600,
+                background: locked ? '#e2e8f0' : '#1D9E7518', color: locked ? '#94a3b8' : '#1D9E75',
+                borderRadius: 8, border: '1px solid ' + (locked ? '#e2e8f0' : '#1D9E7540'),
+                cursor: locked ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: 6,
+              }}
+            >
+              <Upload size={14} /> Upload counts
             </button>
             <label
               htmlFor="catalog-upload"
@@ -1999,6 +2122,110 @@ export default function Inventory() {
             onClose={() => setShowScanner(false)}
           />
         )}
+
+        {/* ── Count-upload preview (MANDATORY before any write) ── */}
+        {countUploadPreview && (() => {
+          const p = countUploadPreview
+          const N = p.toCount.length, K = p.overwrites.length, M = p.unmatched.length
+          const sec = { marginTop: 14 }
+          const th = { textAlign: 'left', fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.04em', fontWeight: 600, padding: '4px 8px' }
+          const td = { fontSize: 13, color: '#334155', padding: '4px 8px', borderTop: '1px solid #f1f5f9' }
+          return (
+            <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 4000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+              <div style={{ background: '#fff', borderRadius: 12, boxShadow: '0 20px 60px rgba(15,23,42,0.25)', width: 720, maxWidth: '100%', maxHeight: '88vh', display: 'flex', flexDirection: 'column' }}>
+                {/* Header */}
+                <div style={{ padding: '18px 22px 12px', borderBottom: '1px solid #e5e7eb' }}>
+                  <h3 style={{ fontSize: 16, fontWeight: 600, color: '#0f172a', margin: 0 }}>Upload counts — preview</h3>
+                  <div style={{ fontSize: 13, color: '#475569', marginTop: 4 }}>
+                    To <strong>{periodKey}</strong> · <strong>{cleanLocName(location)}</strong> — {N} counted, {K} overwritten, {M} unmatched
+                    <span style={{ color: '#94a3b8' }}> · {p.fileName}</span>
+                  </div>
+                </div>
+
+                {/* Body */}
+                <div style={{ padding: '10px 22px 18px', overflowY: 'auto' }}>
+                  {/* Matched */}
+                  <div style={sec}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: '#166534' }}>✅ {N} item{N === 1 ? '' : 's'} to be counted</div>
+                    {N > 0 && (
+                      <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 6 }}>
+                        <thead><tr><th style={th}>Item</th><th style={{ ...th, textAlign: 'right' }}>Cases</th><th style={{ ...th, textAlign: 'right' }}>Eaches</th><th style={{ ...th, textAlign: 'right' }}>Value</th></tr></thead>
+                        <tbody>
+                          {p.toCount.map(e => (
+                            <tr key={e.id}>
+                              <td style={td}>{e.itemName}{e.isOverwrite && <span style={{ color: '#b45309', fontSize: 11, marginLeft: 6 }}>(overwrite)</span>}</td>
+                              <td style={{ ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{e.qty == null ? '—' : e.qty}</td>
+                              <td style={{ ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{e.eaches || 0}</td>
+                              <td style={{ ...td, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{fmt$(e.value)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+
+                  {/* Overwrites */}
+                  {K > 0 && (
+                    <div style={sec}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: '#b45309' }}>↻ {K} existing count{K === 1 ? '' : 's'} will be replaced</div>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 6 }}>
+                        <thead><tr><th style={th}>Item</th><th style={{ ...th, textAlign: 'right' }}>Old (cases · ea)</th><th style={{ ...th, textAlign: 'right' }}>New (cases · ea)</th></tr></thead>
+                        <tbody>
+                          {p.overwrites.map(e => (
+                            <tr key={e.id}>
+                              <td style={td}>{e.itemName}</td>
+                              <td style={{ ...td, textAlign: 'right', color: '#94a3b8' }}>{(e.prevQty ?? '—')} · {e.prevEaches || 0}</td>
+                              <td style={{ ...td, textAlign: 'right', fontWeight: 600 }}>{(e.qty ?? '—')} · {e.eaches || 0}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {/* Unmatched */}
+                  {M > 0 && (
+                    <div style={sec}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: '#b91c1c' }}>⚠️ {M} row{M === 1 ? '' : 's'} won’t be counted (no matching item)</div>
+                      <div style={{ fontSize: 12, color: '#64748b', margin: '4px 0 6px' }}>Fix the names in the file, or add these to the catalog first.</div>
+                      <div style={{ fontSize: 13, color: '#334155', maxHeight: 140, overflowY: 'auto', border: '1px solid #f1f5f9', borderRadius: 6, padding: '6px 8px' }}>
+                        {p.unmatched.map((u, i) => <div key={i} style={{ padding: '2px 0' }}>{u.name}</div>)}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Duplicates + no-count (compact notes) */}
+                  {p.duplicates.length > 0 && (
+                    <div style={{ ...sec, fontSize: 12, color: '#b45309' }}>
+                      ⚠️ {p.duplicates.length} duplicate row{p.duplicates.length === 1 ? '' : 's'} (same item counted twice) — the last value was kept: {p.duplicates.map(d => d.itemName).join(', ')}
+                    </div>
+                  )}
+                  {p.noCount.length > 0 && (
+                    <div style={{ ...sec, fontSize: 12, color: '#94a3b8' }}>
+                      {p.noCount.length} row{p.noCount.length === 1 ? '' : 's'} had an item but no count value — skipped.
+                    </div>
+                  )}
+                </div>
+
+                {/* Footer */}
+                <div style={{ padding: '12px 22px', borderTop: '1px solid #e5e7eb', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+                  <button onClick={() => setCountUploadPreview(null)} style={{ padding: '8px 16px', fontSize: 13, fontWeight: 500, border: '1px solid #cbd5e1', borderRadius: 8, background: '#fff', color: '#475569', cursor: 'pointer' }}>Cancel</button>
+                  <button
+                    onClick={() => {
+                      // STEP 1 STUB — no write. Logs the payload that step 2 will
+                      // apply via applyUploadedCounts + save().
+                      console.log('[count-upload STUB] countsById:', p.countsById, 'uploaderEmail:', user?.email)
+                      toast.info(`Preview only (step 1) — ${N} count(s) NOT written yet.`)
+                      setCountUploadPreview(null)
+                    }}
+                    disabled={N === 0}
+                    style={{ padding: '8px 16px', fontSize: 13, fontWeight: 600, border: 'none', borderRadius: 8, background: N === 0 ? '#e2e8f0' : '#1D9E75', color: N === 0 ? '#94a3b8' : '#fff', cursor: N === 0 ? 'not-allowed' : 'pointer' }}
+                  >Apply {N} count{N === 1 ? '' : 's'}</button>
+                </div>
+              </div>
+            </div>
+          )
+        })()}
 
         {/* ── Manage categories (per-location) ── */}
         {showCatManager && canEditCats && selectedLocation && selectedLocation !== 'all' && (
