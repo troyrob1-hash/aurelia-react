@@ -1506,3 +1506,133 @@ async function handleNetSuiteWebhook(orgId, payload) {
     console.log("Marked", ids.length, "JEs as synced to NetSuite");
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Inventory valuation aggregation — Phase 2, SHADOW-FIELD MODE.
+//
+// Recomputes closingValue / cogs_inventory server-side from the per-item count
+// subcollection (the concurrency-safe source of truth) and writes them to
+// SHADOW fields (closingValue_cf / cogs_inventory_cf / openingValue_cf) on the
+// P&L doc. It does NOT touch the live closingValue / cogs_inventory — the
+// client remains the sole authoritative writer this phase. This lets us compare
+// cf-vs-live across real counts before ever letting the dashboard trust the CF
+// (a later phase swaps the writer once the shadow values are proven equal).
+//
+// Reads: whole counts/{periodKey}/items subcollection; the current P&L doc for
+// cogs_purchases; the PRIOR period's P&L closingValue for openingValue.
+// Valuation uses the DENORMALIZED pricing on each count doc (packPrice /
+// qtyPerPack / unitCost, written in Phase 1) — no catalog join.
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Fiscal-calendar helpers — DUPLICATED from src/lib/pnl.js (weeksInPeriod /
+// getPriorKey) because functions can't import the frontend module. They MUST
+// stay in lockstep: if the Fooda fiscal calendar logic changes in pnl.js, update
+// these copies too, or the CF's opening value will drift from the client's.
+function cfWeeksInPeriod(year, period) {
+  const firstDay = new Date(year, period - 1, 1);
+  const lastDay = new Date(year, period, 0);
+  const daysInMonth = lastDay.getDate();
+  const firstSunday = firstDay.getDay() === 0 ? 1 : (7 - firstDay.getDay() + 1);
+  const remainingDays = daysInMonth - firstSunday;
+  const fullWeeks = Math.floor(remainingDays / 7);
+  const leftover = remainingDays % 7;
+  return 1 + fullWeeks + (leftover > 0 ? 1 : 0);
+}
+function cfGetPriorKey(key) {
+  const parts = key && key.match(/(\d+)-P(\d+)-W(\d+)/);
+  if (!parts) return null;
+  const [, yr, p, w] = parts.map(Number);
+  if (w > 1) return `${yr}-P${String(p).padStart(2, "0")}-W${w - 1}`;
+  if (p > 1) {
+    const priorWeeks = cfWeeksInPeriod(yr, p - 1);
+    return `${yr}-P${String(p - 1).padStart(2, "0")}-W${priorWeeks}`;
+  }
+  const decWeeks = cfWeeksInPeriod(yr - 1, 12);
+  return `${yr - 1}-P12-W${decWeeks}`;
+}
+
+exports.aggregateInventoryValuationShadow = onDocumentWritten(
+  "tenants/{orgId}/inventory/{locId}/counts/{periodKey}/items/{itemId}",
+  async (event) => {
+    const { orgId, locId, periodKey } = event.params || {};
+    if (!orgId || !locId || !periodKey) return;
+
+    // Trailing debounce: let a burst of per-item writes settle before we read
+    // the subcollection, so we aggregate consistent data instead of a partial
+    // mid-burst state. Combined with the monotonic guard below, redundant
+    // invocations from the same burst either read the settled set or skip.
+    await new Promise((r) => setTimeout(r, 2500));
+
+    const pnlRef = db
+      .collection("tenants").doc(orgId)
+      .collection("pnl").doc(locId)
+      .collection("periods").doc(periodKey);
+
+    // Monotonic guard: key off the EVENT time (not the max child updatedAt — a
+    // deletion removes the newest child and would lower that max, wrongly
+    // skipping the recompute). Skip only if a strictly newer/equal event has
+    // already aggregated. Deletions carry a later event time, so they always run.
+    const eventMillis = event.time ? new Date(event.time).getTime() : Date.now();
+    const pnlSnap = await pnlRef.get();
+    const pnl = pnlSnap.exists ? pnlSnap.data() : {};
+    if (pnl.cf_lastEventTime != null && pnl.cf_lastEventTime >= eventMillis) {
+      return; // a newer/equal aggregation already ran for this loc/period
+    }
+
+    // Closing = Σ per-item, using the client's EXACT formula over denormalized
+    // pricing. packPrice falls back to qtyPerPack*unitCost; each price is the
+    // per-unit share of the pack price.
+    const itemsSnap = await db
+      .collection("tenants").doc(orgId)
+      .collection("inventory").doc(locId)
+      .collection("counts").doc(periodKey)
+      .collection("items").get();
+    let closingValue = 0;
+    itemsSnap.forEach((d) => {
+      const c = d.data() || {};
+      const qty = Number(c.qty) || 0;
+      const eaches = Number(c.eaches) || 0;
+      const qpp = Number(c.qtyPerPack) || 1;
+      const uc = Number(c.unitCost) || 0;
+      const pp = Number(c.packPrice) || (qpp * uc);
+      const packVal = qty * pp;
+      const eachPrice = qpp > 0 ? pp / qpp : uc;
+      const eachVal = eaches * eachPrice;
+      closingValue += packVal + eachVal;
+    });
+
+    // Opening = PRIOR period's CURRENT (live) closingValue — read exactly as the
+    // client does at write time (prevents the stale-opening discrepancy we fixed
+    // this session). Reads the live `closingValue`, not the shadow field.
+    const priorKey = cfGetPriorKey(periodKey);
+    let openingValue = 0;
+    if (priorKey) {
+      const priorSnap = await db
+        .collection("tenants").doc(orgId)
+        .collection("pnl").doc(locId)
+        .collection("periods").doc(priorKey)
+        .get();
+      openingValue = priorSnap.exists ? (Number(priorSnap.data().closingValue) || 0) : 0;
+    }
+
+    const purchases = Number(pnl.cogs_purchases) || 0;
+    const cogsInventory = Math.max(0, openingValue + purchases - closingValue);
+
+    // SHADOW write only — never the live closingValue / cogs_inventory.
+    await pnlRef.set(
+      {
+        closingValue_cf: closingValue,
+        cogs_inventory_cf: cogsInventory,
+        openingValue_cf: openingValue,
+        cf_countDocCount: itemsSnap.size,
+        cf_computedAt: admin.firestore.FieldValue.serverTimestamp(),
+        cf_lastEventTime: eventMillis,
+      },
+      { merge: true }
+    );
+    console.log(
+      `[valuation-shadow] ${orgId}/${locId}/${periodKey}: closing_cf=${closingValue.toFixed(2)} ` +
+      `cogs_cf=${cogsInventory.toFixed(2)} opening_cf=${openingValue.toFixed(2)} docs=${itemsSnap.size}`
+    );
+  }
+);
