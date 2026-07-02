@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { doc, getDoc, setDoc, collection, getDocs, serverTimestamp, writeBatch, deleteDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { getPriorKey as getPriorKeyLib, locId as locIdLib } from '@/lib/pnl'
+import { useCountsListener } from '@/hooks/useCountsListener'
 
 // getPriorKey + sanitizeDocId moved to @/lib/pnl as the canonical source.
 // Re-exported here so existing call sites (Inventory.jsx imports sanitizeDocId
@@ -160,7 +161,7 @@ export async function persistCountItems(colRef, newCounts, deletions, updatedBy)
   }
 }
 
-export function useInventory(orgId, locationId, periodKey, user) {
+export function useInventory(orgId, locationId, periodKey, user, liveSync = false) {
   const [items, setItems] = useState([])
   const [priorItems, setPriorItems] = useState([])
   const [openingValue, setOpeningValue] = useState(0)
@@ -178,6 +179,11 @@ export function useInventory(orgId, locationId, periodKey, user) {
 
   const priorKey = getPriorKey(periodKey)
   const locId = sanitizeDocId(locationId)
+
+  // Phase 3, step 1: wire the live-merge listener lifecycle (current period
+  // only) with a NO-OP onRemote — verifies subscribe/teardown without touching
+  // counts. The touched-guarded merge (onRemote) lands in step 2.
+  useCountsListener({ orgId, locId, periodKey, enabled: liveSync, onRemote: undefined })
 
   const load = useCallback(async () => {
     if (!locationId || !periodKey || !orgId) {

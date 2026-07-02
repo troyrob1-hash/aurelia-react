@@ -335,7 +335,7 @@ export default function Inventory() {
     }
   }
 
-  const { periodKey } = usePeriod()
+  const { periodKey, isCurrentPeriod } = usePeriod()
 
   // ─── Local UI State ────────────────────────────────────────────────────────
   // ESC key closes any open panel
@@ -505,7 +505,7 @@ export default function Inventory() {
     mergeDraft,
     patchItemFields,
     setCategoriesLocal,
-  } = useInventory(orgId, location, periodKey, user)
+  } = useInventory(orgId, location, periodKey, user, isCurrentPeriod)
 
   // Persist a dropped reorder (Stage 2b). Writes clean sequential 1..N shelf
   // positions for the affected scope — the dragged item's category group
