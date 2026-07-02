@@ -150,6 +150,24 @@ export default function Inventory() {
 
       // Fuzzy column finder — matches partial, case-insensitive
       const headers = Object.keys(rows[0])
+
+      // Fail-loud: this upload imports item DEFINITIONS only, never counts. If a
+      // column looks like counted quantities, warn BEFORE any write so a user
+      // doesn't silently lose count data (real incident: counts uploaded here
+      // were dropped silently). Anchored ^...$ so "Qty Per Pack" / "Case Qty"
+      // (legit pack-size definitions) don't false-positive.
+      const COUNT_COL_RE = /^(qty|quantity|count|counted|on[\s-]?hand|onhand|cases|units)$/i
+      const countCol = headers.find(h => COUNT_COL_RE.test(String(h).trim()))
+      if (countCol) {
+        const proceed = window.confirm(
+          `This file has a "${countCol}" column that looks like counts.\n\n` +
+          `This upload imports item definitions only (name, vendor, pack size, pack price, ` +
+          `unit cost, GL code, category) — the "${countCol}" column will be IGNORED and no ` +
+          `counts will be entered.\n\nEnter counts by hand in the count sheet.\n\nContinue anyway?`
+        )
+        if (!proceed) { toast.info('Upload cancelled — no changes made.'); return }
+      }
+
       function findCol(row, aliases) {
         for (const alias of aliases) {
           const match = headers.find(h => h.toLowerCase().trim() === alias.toLowerCase().trim())
@@ -1044,8 +1062,13 @@ export default function Inventory() {
             boxShadow: '0 8px 32px rgba(0,0,0,0.1)', textAlign: 'center',
           }}>
             <div style={{ fontSize: 40, marginBottom: 8 }}>📋</div>
-            <div style={{ fontSize: 18, fontWeight: 600, color: '#0f172a' }}>Drop your inventory sheet</div>
+            <div style={{ fontSize: 18, fontWeight: 600, color: '#0f172a' }}>Drop your item list</div>
             <div style={{ fontSize: 13, color: '#64748b', marginTop: 4 }}>Excel (.xlsx) or CSV</div>
+            <div style={{ fontSize: 12, color: '#b45309', marginTop: 10, maxWidth: 320, lineHeight: 1.5 }}>
+              Imports <strong>item definitions only</strong> — name, vendor, pack size, pack price,
+              unit cost, GL code, category. <strong>Does NOT import counted quantities</strong>;
+              enter counts by hand in the count sheet.
+            </div>
           </div>
         </div>
       )}
@@ -1192,8 +1215,13 @@ export default function Inventory() {
             }}>
               <Search size={14} /> Scan &amp; count
             </button>
-            <label htmlFor="catalog-upload" className={styles.btnIcon} style={{ cursor: 'pointer' }} title="Upload inventory sheet">
-              <Upload size={15} />
+            <label
+              htmlFor="catalog-upload"
+              className={styles.btnIcon}
+              style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600 }}
+              title="Upload item list (.xlsx, .csv) — item definitions only (name, vendor, pack size, price, GL, category). Does NOT import counts."
+            >
+              <Upload size={15} /> Item list
             </label>
             <button className={styles.btnIcon} onClick={() => exportInventory('csv')} title="Export CSV">
               <Download size={15} />
