@@ -82,7 +82,16 @@ service cloud.firestore {
       // Rules don't cascade to subcollections, so this needs its own match.
       match /inventory/{locationId}/counts/{periodKey}/items/{itemId} {
         allow read:  if ownsTenant(tenantId);
-        allow write: if ownsTenant(tenantId) && isManager();
+        // Server-side lock gate (belt-and-suspenders on the client-side check in
+        // useInventory). Reject writes to a closed period. The lock doc id is
+        // locId(location) + '__' + period == locationId + '__' + periodKey here.
+        // Missing lock doc (the common case — most periods never locked) short-
+        // circuits on exists() so get() is never evaluated -> no read, no 403.
+        allow write: if ownsTenant(tenantId) && isManager()
+          && (
+            !exists(/databases/$(database)/documents/tenants/$(tenantId)/periodLocks/$(locationId + '__' + periodKey))
+            || get(/databases/$(database)/documents/tenants/$(tenantId)/periodLocks/$(locationId + '__' + periodKey)).data.locked != true
+          );
       }
 
       match /inventorySessions/{sessionId} {
