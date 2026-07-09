@@ -164,6 +164,48 @@ export async function persistCountItems(colRef, newCounts, deletions, updatedBy)
   }
 }
 
+/**
+ * Decide which touched ids are SAFE to clear after a persist. An id is safe to
+ * clear IFF its CURRENT local value still matches what we just persisted — i.e.
+ * the user did NOT re-type it during the await window. Ids re-edited mid-await
+ * (a count typed after newCounts was built, or a new count on a just-deleted
+ * item) are KEPT touched so the next save persists them.
+ *
+ * Fixes the eaches-stranding race: values typed during the persist's await were
+ * written to local `items` (→ Path B + closingValue) but excluded from the
+ * already-built newCounts, then wrongly cleared from touched by the pre-await
+ * snapshot — so they never reached the per-item subcollection the CF reads.
+ *
+ * `touchedSnapshot` = Set of ids captured pre-await. `persistedCounts` = the
+ * newCounts array actually written. `latestItems` = itemsRef.current (CURRENT
+ * local items, NOT the stale save-closure copy).
+ */
+export function touchedIdsToClear(touchedSnapshot, persistedCounts, latestItems) {
+  const persistedById = new Map((persistedCounts || []).map(c => [String(c.id), c]))
+  const latestById = new Map((latestItems || []).map(i => [String(i.id), i]))
+  // Null-aware numeric equality: qty can be null (uncounted); eaches is numeric.
+  const eqNum = (a, b) => {
+    const na = a == null ? null : Number(a)
+    const nb = b == null ? null : Number(b)
+    return na === nb
+  }
+  const cleared = new Set()
+  touchedSnapshot.forEach(id => {
+    const key = String(id)
+    const cur = latestById.get(key)
+    const persisted = persistedById.get(key)
+    if (persisted) {
+      // Persisted a count — clear only if the local value is UNCHANGED.
+      if (cur && eqNum(cur.qty, persisted.qty) && eqNum(cur.eaches, persisted.eaches)) cleared.add(key)
+    } else {
+      // Persisted a delete (or the item is gone) — clear only if it's STILL not
+      // a real count locally (no new count typed during the await).
+      if (!cur || !hasCount(cur)) cleared.add(key)
+    }
+  })
+  return cleared
+}
+
 export function useInventory(orgId, locationId, periodKey, user, liveSync = false) {
   const [items, setItems] = useState([])
   const [priorItems, setPriorItems] = useState([])
@@ -1105,15 +1147,18 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         { closingValue, openingValue: freshOpening, cogs_inventory: cogs, inventoryCountedAt: serverTimestamp(), inventoryCountedBy: user?.email },
         { merge: true }
       )
-      // Remove just-persisted ids from the touched set. Items touched DURING
-      // the async writes (rare) stay so the next save can act on them.
-      touchedSnapshot.forEach(id => touchedItemsRef.current.delete(id))
-      // Root-cause fix for stale-raw (#7): once committed + un-touched, there's
-      // no in-progress typing to preserve — drop _qtyRaw/_eachesRaw (to null, not
-      // '') so a later remote merge of this item shows the merged qty, not a
-      // sticky old typed string. Only touches raw fields, never qty/eaches.
+      // Scope the touched-clear to ids whose CURRENT local value still matches
+      // what we persisted. Ids re-typed during the await (or newly-counted after
+      // a delete) stay touched so the next save persists them — fixes the
+      // eaches-stranding race. itemsRef.current = latest items (closure is stale).
+      const cleared = touchedIdsToClear(touchedSnapshot, newCounts, itemsRef.current)
+      cleared.forEach(id => touchedItemsRef.current.delete(id))
+      // Root-cause fix for stale-raw (#7): drop _qtyRaw/_eachesRaw (to null, not
+      // '') on the just-cleared ids so a later remote merge shows the merged qty,
+      // not a sticky old typed string. Only the CLEARED ids — items kept touched
+      // may be mid-typing, so their raw display is preserved.
       setItems(prev => prev.map(i =>
-        touchedSnapshot.has(String(i.id)) ? { ...i, _qtyRaw: null, _eachesRaw: null } : i
+        cleared.has(String(i.id)) ? { ...i, _qtyRaw: null, _eachesRaw: null } : i
       ))
       setDirty(false)
       return true
@@ -1276,12 +1321,15 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         )
       }
 
-      // Remove just-persisted ids from the touched set (parallels saveCounts).
-      touchedSnapshot2.forEach(id => touchedItemsRef.current.delete(id))
-      // Stale-raw root-cause fix (#7) — drop _qtyRaw/_eachesRaw on the just-
-      // committed, now-un-touched items (null, not ''). Raw fields only.
+      // Scope the touched-clear to ids whose CURRENT local value still matches
+      // what we persisted — ids re-typed during the await stay touched for the
+      // next save (fixes the eaches-stranding race; parallels saveCounts).
+      const cleared2 = touchedIdsToClear(touchedSnapshot2, newCounts2, itemsRef.current)
+      cleared2.forEach(id => touchedItemsRef.current.delete(id))
+      // Stale-raw root-cause fix (#7) — drop _qtyRaw/_eachesRaw (null, not '') on
+      // the just-cleared ids only. Kept-touched items may be mid-typing.
       setItems(prev => prev.map(i =>
-        touchedSnapshot2.has(String(i.id)) ? { ...i, _qtyRaw: null, _eachesRaw: null } : i
+        cleared2.has(String(i.id)) ? { ...i, _qtyRaw: null, _eachesRaw: null } : i
       ))
       setDirty(false)
       return true
