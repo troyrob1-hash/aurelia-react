@@ -329,6 +329,19 @@ service cloud.firestore {
         allow delete: if ownsTenant(tenantId) && (isDirector() || isVp());
       }
 
+      // Valuation authority per location (Phase-2 cutover kill switch). Doc id is
+      // the sanitized locId; { authoritative: 'cf' | 'client', ... }. The client's
+      // saveCounts/save READ this on EVERY save (as whatever user is saving —
+      // managers included) to decide who writes the live P&L, so read must be
+      // tenant-wide: a director-gated read would make every manager save hit the
+      // fail-safe and warn forever. WRITE flips the money-writer for a location —
+      // an authority action, same tier as period unlock: director/vp/admin only
+      // (isDirector() already includes isAdmin()).
+      match /valuationMode/{locId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && (isDirector() || isVp());
+      }
+
       // Client-side audit trail (src/lib/audit.js). Many manager-tier actions
       // append entries — invoice approve, JE post, sales import, period close,
       // etc. Read by Settings → Audit Log (admin-gated route). Append-only.
