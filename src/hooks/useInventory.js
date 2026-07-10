@@ -1033,6 +1033,24 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
   // override collection separately because removed items are filtered out
   // of the main items list during load.
   const [removedItems, setRemovedItems] = useState([])
+
+  // GL code catalog (VF #4) — read settings/glCodes ONCE per hook mount and cache
+  // (not per panel-open). Stays null on missing/unreadable so the GL dropdowns
+  // fail-open to free text. Seeded shape: { codes: [{code,label,restricted,inventoryItem}] }.
+  const [glCodes, setGlCodes] = useState(null)
+  useEffect(() => {
+    if (!orgId) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const snap = await getDoc(doc(db, 'tenants', orgId, 'settings', 'glCodes'))
+        if (!cancelled) setGlCodes(snap.exists() && Array.isArray(snap.data().codes) ? snap.data().codes : null)
+      } catch (e) {
+        if (!cancelled) { console.warn('glCodes load failed — GL fields fall back to free text:', e); setGlCodes(null) }
+      }
+    })()
+    return () => { cancelled = true }
+  }, [orgId])
   const loadRemovedItems = useCallback(async () => {
     if (!orgId || !locId) return
     try {
@@ -1556,6 +1574,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
     addCustomItem,
     removedItems,
     loadRemovedItems,
+    glCodes,
     buddyMode,
     setBuddyMode,
     buddyNames,

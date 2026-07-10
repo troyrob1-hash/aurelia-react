@@ -21,6 +21,21 @@ import { canEditInventoryCategories } from '@/lib/permissions'
 import styles from './Inventory.module.css'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
+// GL code catalog (VF #4): the item dropdowns show ONLY inventoryItem && !restricted
+// codes (the 9-code inventory set). Single source for the render decision from the
+// session-cached settings list:
+//   failOpen    → settings missing/unreadable → caller renders free-text (today's behavior).
+//   options     → the selectable {code,label} set.
+//   legacyValue → the item's current glCode when it's NOT in the list — kept selectable and
+//                 flagged "(not in list)" so an edit never silently blanks an existing value.
+function glCodeOptions(glCodes, value) {
+  if (!Array.isArray(glCodes)) return { failOpen: true, options: [], legacyValue: null }
+  const options = glCodes.filter(c => c.inventoryItem && !c.restricted)
+  const cur = value == null ? '' : String(value)
+  const legacyValue = (cur !== '' && !options.some(o => o.code === cur)) ? cur : null
+  return { failOpen: false, options, legacyValue }
+}
+
 function formatLastCounted(iso) {
   if (!iso) return null
   const then = new Date(iso)
@@ -524,6 +539,7 @@ export default function Inventory() {
     addCustomItem,
     removedItems,
     loadRemovedItems,
+    glCodes,
     buddyMode,
     setBuddyMode,
     buddyNames,
@@ -2077,7 +2093,27 @@ export default function Inventory() {
                           >
                             {f.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                           </select>
-                        ) : (
+                        ) : f.field === 'glCode' ? (() => {
+                          // GL code (VF #4): <select> of the 9 inventory codes only. Legacy
+                          // off-list value stays selectable "(not in list)"; fail-open to free text.
+                          const gl = glCodeOptions(glCodes, item.glCode)
+                          const glStyle = { width: 220, padding: '5px 8px', fontSize: 13, borderRadius: 6, border: '0.5px solid #e2e8f0' }
+                          const commit = async (v) => {
+                            if (v === (item.glCode ?? '')) return
+                            await saveEditField(item.id, 'glCode', v)
+                            toast.success('GL code updated')
+                          }
+                          if (gl.failOpen) {
+                            return <input type="text" defaultValue={item.glCode ?? ''} onBlur={e => commit(e.target.value.trim())} style={glStyle} />
+                          }
+                          return (
+                            <select defaultValue={item.glCode ?? ''} onChange={e => commit(e.target.value)} style={glStyle}>
+                              <option value="">— none —</option>
+                              {gl.options.map(o => <option key={o.code} value={o.code}>{o.code} — {o.label}</option>)}
+                              {gl.legacyValue && <option value={gl.legacyValue}>{gl.legacyValue} (not in list)</option>}
+                            </select>
+                          )
+                        })() : (
                           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                             {f.prefix && <span style={{ fontSize: 13, color: '#94a3b8' }}>{f.prefix}</span>}
                             <input
@@ -2386,13 +2422,25 @@ export default function Inventory() {
                       onChange={e => setCustomDraft(d => ({ ...d, unitCost: e.target.value }))}
                       style={{ padding: '8px 10px', fontSize: 13, border: '0.5px solid #e2e8f0', borderRadius: 6, fontFamily: 'inherit' }}
                     />
-                    <input
-                      type="text"
-                      placeholder="GL code"
-                      value={customDraft.glCode}
-                      onChange={e => setCustomDraft(d => ({ ...d, glCode: e.target.value }))}
-                      style={{ padding: '8px 10px', fontSize: 13, border: '0.5px solid #e2e8f0', borderRadius: 6, fontFamily: 'inherit' }}
-                    />
+                    {(() => {
+                      // GL code (VF #4): controlled <select> of the 9 inventory codes only.
+                      // Legacy off-list value stays selectable; fail-open to free text.
+                      const gl = glCodeOptions(glCodes, customDraft.glCode)
+                      const glStyle = { padding: '8px 10px', fontSize: 13, border: '0.5px solid #e2e8f0', borderRadius: 6, fontFamily: 'inherit' }
+                      if (gl.failOpen) {
+                        return (
+                          <input type="text" placeholder="GL code" value={customDraft.glCode}
+                            onChange={e => setCustomDraft(d => ({ ...d, glCode: e.target.value }))} style={glStyle} />
+                        )
+                      }
+                      return (
+                        <select value={customDraft.glCode || ''} onChange={e => setCustomDraft(d => ({ ...d, glCode: e.target.value }))} style={glStyle}>
+                          <option value="">GL code —</option>
+                          {gl.options.map(o => <option key={o.code} value={o.code}>{o.code} — {o.label}</option>)}
+                          {gl.legacyValue && <option value={gl.legacyValue}>{gl.legacyValue} (not in list)</option>}
+                        </select>
+                      )
+                    })()}
                     <select
                       value={customDraft.category}
                       onChange={e => setCustomDraft(d => ({ ...d, category: e.target.value }))}
