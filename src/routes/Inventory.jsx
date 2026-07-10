@@ -419,6 +419,7 @@ export default function Inventory() {
     glCode: '', category: '',
   })
   const [manageSearch, setManageSearch] = useState('')
+  const [removedSearch, setRemovedSearch] = useState('')
   const [whyItem, setWhyItem] = useState(null)
   const [showBuddySetup, setShowBuddySetup] = useState(false)
   const [buddyDraft, setBuddyDraft] = useState({ caller: '', marker: '' })
@@ -2525,13 +2526,36 @@ export default function Inventory() {
                   <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500, marginBottom: 10 }}>
                     Removed from this location ({removedItems.length})
                   </div>
+                  {removedItems.length > 0 && (
+                    <input
+                      type="text"
+                      value={removedSearch}
+                      onChange={e => setRemovedSearch(e.target.value)}
+                      placeholder="Search removed items…"
+                      style={{ width: '100%', padding: '6px 10px', fontSize: 13, borderRadius: 6, border: '0.5px solid #e2e8f0', marginBottom: 10, boxSizing: 'border-box', fontFamily: 'inherit' }}
+                    />
+                  )}
                   {removedItems.length === 0 ? (
                     <div style={{ fontSize: 12, color: '#cbd5e1', padding: '12px 0', fontStyle: 'italic' }}>
                       No removed items.
                     </div>
-                  ) : (
+                  ) : (() => {
+                    const rs = removedSearch.trim().toLowerCase()
+                    const filtered = rs
+                      ? removedItems.filter(ri =>
+                          (ri.name || '').toLowerCase().includes(rs) ||
+                          (ri.vendor || '').toLowerCase().includes(rs))
+                      : removedItems
+                    if (filtered.length === 0) {
+                      return (
+                        <div style={{ fontSize: 12, color: '#cbd5e1', padding: '12px 0', fontStyle: 'italic' }}>
+                          No removed items match &ldquo;{removedSearch}&rdquo;.
+                        </div>
+                      )
+                    }
+                    return (
                     <div>
-                      {removedItems.map(ri => (
+                      {filtered.map(ri => (
                         <div key={ri.id} style={{
                           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                           padding: '8px 10px',
@@ -2561,7 +2585,8 @@ export default function Inventory() {
                         </div>
                       ))}
                     </div>
-                  )}
+                    )
+                  })()}
                 </div>
               </div>
             </aside>

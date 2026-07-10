@@ -903,13 +903,16 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
           removed:   true,
           removedAt: serverTimestamp(),
           removedBy: user?.email || 'unknown',
-          // For custom items, preserve the data fields so we can restore
+          // Persist name + vendor for ALL items (master too, not just custom) so
+          // the removed-items list is self-describing — no catalog join needed to
+          // show what was removed. (VF #3.)
+          name:      target.name ?? null,
+          vendor:    target.vendor ?? null,
+          // For custom items, also preserve the pricing/data fields so we can restore.
           ...(target.custom ? {
             custom:   true,
-            name:     target.name,
             unitCost: target.unitCost,
             packSize: target.packSize,
-            vendor:   target.vendor,
           } : {}),
         },
         { merge: true }
@@ -1034,17 +1037,36 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
     if (!orgId || !locId) return
     try {
       const snap = await getDocs(collection(db, 'tenants', orgId, 'inventory', locId, 'items'))
-      const removed = []
+      const rawRemoved = []
       snap.forEach(d => {
-        const data = d.data()
-        if (data.removed) {
-          removed.push({
-            id:       d.id,
-            name:     data.name || (data.custom ? 'Untitled custom item' : `Master item ${d.id}`),
-            vendor:   data.vendor || null,
-            custom:   data.custom || false,
-            removedAt: data.removedAt || null,
-          })
+        if (d.data().removed) rawRemoved.push({ id: d.id, data: d.data() })
+      })
+
+      // Retroactive name resolution (VF #3): docs removed BEFORE name-on-removal
+      // shipped carry no name. Resolve those from the master catalog by id — but
+      // ONLY fetch the catalog when there's a nameless doc to resolve, so the
+      // common case (all docs self-describing via part 1) skips the read entirely.
+      let catalogById = null
+      if (rawRemoved.some(r => !r.data.name)) {
+        const catSnap = await getDocs(collection(db, 'tenants', orgId, 'inventoryCatalog'))
+        catalogById = new Map()
+        catSnap.forEach(c => {
+          const cd = c.data() || {}
+          catalogById.set(c.id, { name: cd.name, vendor: cd.vendor })
+          if (cd.id != null) catalogById.set(String(cd.id), { name: cd.name, vendor: cd.vendor })
+        })
+      }
+
+      const removed = rawRemoved.map(({ id, data }) => {
+        const cat = catalogById ? catalogById.get(id) : null
+        return {
+          id,
+          // doc name → catalog name → fallback. `Master item ${id}` remains ONLY
+          // for docs missing from BOTH the override and the catalog (orphaned).
+          name:      data.name || (cat && cat.name) || (data.custom ? 'Untitled custom item' : `Master item ${id}`),
+          vendor:    data.vendor || (cat && cat.vendor) || null,
+          custom:    data.custom || false,
+          removedAt: data.removedAt || null,
         }
       })
       setRemovedItems(removed)
