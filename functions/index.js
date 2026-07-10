@@ -1568,26 +1568,43 @@ exports.aggregateInventoryValuationShadow = onDocumentWritten(
       .collection("pnl").doc(locId)
       .collection("periods").doc(periodKey);
 
-    // Monotonic guard: key off the EVENT time (not the max child updatedAt — a
+    // Monotonic guard, key off the EVENT time (not the max child updatedAt — a
     // deletion removes the newest child and would lower that max, wrongly
-    // skipping the recompute). Skip only if a strictly newer/equal event has
-    // already aggregated. Deletions carry a later event time, so they always run.
+    // skipping the recompute). Deletions carry a later event time, so they run.
     const eventMillis = event.time ? new Date(event.time).getTime() : Date.now();
-    const pnlSnap = await pnlRef.get();
-    const pnl = pnlSnap.exists ? pnlSnap.data() : {};
-    if (pnl.cf_lastEventTime != null && pnl.cf_lastEventTime >= eventMillis) {
+
+    // Cheap NON-transactional pre-check (fast path): if a strictly newer/equal
+    // event already aggregated, skip before the expensive subcollection scan.
+    // The AUTHORITATIVE guard is re-checked INSIDE the transaction below (atomic).
+    const preSnap = await pnlRef.get();
+    if (preSnap.exists && preSnap.data().cf_lastEventTime != null &&
+        preSnap.data().cf_lastEventTime >= eventMillis) {
       return; // a newer/equal aggregation already ran for this loc/period
     }
 
+    // ── Expensive aggregation reads — OUTSIDE the transaction (keeps the txn
+    //    short: reading the whole items subcollection inside it would invite
+    //    contention/retries on a 200+ doc location). ──────────────────────────
+
     // Closing = Σ per-item, using the client's EXACT formula over denormalized
     // pricing. packPrice falls back to qtyPerPack*unitCost; each price is the
-    // per-unit share of the pack price.
+    // per-unit share of the pack price. Same pass collects the Path B item set,
+    // the location display name, and per-doc attribution for inventoryCountedBy.
+    const tsMillis = (t) => {
+      if (!t) return 0;
+      if (typeof t.toMillis === "function") return t.toMillis();
+      if (t._seconds != null) return t._seconds * 1000;
+      return 0;
+    };
     const itemsSnap = await db
       .collection("tenants").doc(orgId)
       .collection("inventory").doc(locId)
       .collection("counts").doc(periodKey)
       .collection("items").get();
     let closingValue = 0;
+    let resolvedLocationName = null;
+    const pathBItems = [];
+    const countMeta = [];
     itemsSnap.forEach((d) => {
       const c = d.data() || {};
       const qty = Number(c.qty) || 0;
@@ -1595,15 +1612,33 @@ exports.aggregateInventoryValuationShadow = onDocumentWritten(
       const qpp = Number(c.qtyPerPack) || 1;
       const uc = Number(c.unitCost) || 0;
       const pp = Number(c.packPrice) || (qpp * uc);
-      const packVal = qty * pp;
       const eachPrice = qpp > 0 ? pp / qpp : uc;
-      const eachVal = eaches * eachPrice;
-      closingValue += packVal + eachVal;
+      closingValue += qty * pp + eaches * eachPrice;
+
+      // locationName from any count doc that carries the denormalized field.
+      if (!resolvedLocationName && c.locationName) resolvedLocationName = c.locationName;
+      // Attribution candidates (backfill-* actors filtered out later).
+      countMeta.push({ updatedBy: c.updatedBy, updatedAtMs: tsMillis(c.updatedAt) });
+
+      // Path B item set — hasCount filter (qty != null OR eaches > 0), same shape
+      // the client writes. Null fallbacks cover old docs missing denorm fields.
+      if (c.qty != null || eaches > 0) {
+        pathBItems.push({
+          id: c.itemId != null ? c.itemId : d.id,
+          name: c.name ?? null,
+          qty: c.qty ?? null,
+          eaches: eaches,
+          qtyPerPack: c.qtyPerPack || 1,
+          packPrice: c.packPrice || null,
+          unitCost: c.unitCost || 0,
+          category: c.category || null,
+          vendor: c.vendor || null,
+        });
+      }
     });
 
     // Opening = PRIOR period's CURRENT (live) closingValue — read exactly as the
-    // client does at write time (prevents the stale-opening discrepancy we fixed
-    // this session). Reads the live `closingValue`, not the shadow field.
+    // client does at write time. Reads the live `closingValue`, not the shadow.
     const priorKey = cfGetPriorKey(periodKey);
     let openingValue = 0;
     if (priorKey) {
@@ -1615,24 +1650,109 @@ exports.aggregateInventoryValuationShadow = onDocumentWritten(
       openingValue = priorSnap.exists ? (Number(priorSnap.data().closingValue) || 0) : 0;
     }
 
-    const purchases = Number(pnl.cogs_purchases) || 0;
-    const cogsInventory = Math.max(0, openingValue + purchases - closingValue);
+    // valuationMode flag — read OUTSIDE the txn. FAIL-SAFE INVERTED vs the client:
+    // on ANY read failure default to shadow-only (cfAuthoritative=false). A CF
+    // that can't read the flag must NOT write live fields — the client may still
+    // be writing them, and two writers on the live fields would clobber.
+    let cfAuthoritative = false;
+    try {
+      const modeSnap = await db
+        .collection("tenants").doc(orgId)
+        .collection("valuationMode").doc(locId).get();
+      cfAuthoritative = modeSnap.exists && modeSnap.data().authoritative === "cf";
+    } catch (modeErr) {
+      console.error(
+        `[valuation-shadow] valuationMode read failed for ${orgId}/${locId} — staying SHADOW-ONLY:`,
+        modeErr
+      );
+      cfAuthoritative = false;
+    }
 
-    // SHADOW write only — never the live closingValue / cogs_inventory.
-    await pnlRef.set(
-      {
+    // inventoryCountedBy for the live write: most-recent count doc's updatedBy,
+    // EXCLUDING backfill-* actors (fall back to the next-most-recent real user;
+    // last resort the most recent overall — never blank).
+    let inventoryCountedBy = null;
+    if (cfAuthoritative) {
+      const byRecency = countMeta.slice().sort((a, b) => (b.updatedAtMs || 0) - (a.updatedAtMs || 0));
+      const realActor = byRecency.find(
+        (m) => m.updatedBy && !/^backfill-/.test(String(m.updatedBy))
+      );
+      inventoryCountedBy = (realActor && realActor.updatedBy) ||
+        (byRecency[0] && byRecency[0].updatedBy) || null;
+    }
+
+    // ── Guard-check + P&L write INSIDE the transaction (atomic — closes the
+    //    concurrent-invocation race where two invocations both pass the guard
+    //    and clobber). cogs_purchases read FRESH from the txn snapshot. ────────
+    const result = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(pnlRef);
+      const pnl = snap.exists ? snap.data() : {};
+      if (pnl.cf_lastEventTime != null && pnl.cf_lastEventTime >= eventMillis) {
+        return { wrote: false }; // a newer/equal aggregation committed first
+      }
+      const purchases = Number(pnl.cogs_purchases) || 0;
+      const cogsInventory = Math.max(0, openingValue + purchases - closingValue);
+
+      // SHADOW fields — written in EVERY mode, forever (the divergence monitor).
+      const writes = {
         closingValue_cf: closingValue,
         cogs_inventory_cf: cogsInventory,
         openingValue_cf: openingValue,
         cf_countDocCount: itemsSnap.size,
         cf_computedAt: admin.firestore.FieldValue.serverTimestamp(),
         cf_lastEventTime: eventMillis,
-      },
-      { merge: true }
-    );
+      };
+      // LIVE fields — ONLY when the flag affirmatively reads 'cf'.
+      if (cfAuthoritative) {
+        writes.closingValue = closingValue;
+        writes.cogs_inventory = cogsInventory;
+        writes.openingValue = openingValue;
+        writes.inventoryCountedAt = admin.firestore.FieldValue.serverTimestamp();
+        if (inventoryCountedBy != null) writes.inventoryCountedBy = inventoryCountedBy;
+      }
+      tx.set(pnlRef, writes, { merge: true });
+      return { wrote: true, cogsInventory };
+    });
+
+    if (!result.wrote) {
+      console.log(
+        `[valuation-shadow] ${orgId}/${locId}/${periodKey}: skipped (newer event already aggregated)`
+      );
+      return;
+    }
+    const cogsInventory = result.cogsInventory;
+
+    // ── Path B rebuild — ONLY when cfAuthoritative, AFTER the txn commits, in its
+    //    OWN try/catch. A Path B failure logs but never fails the invocation. ──
+    if (cfAuthoritative) {
+      try {
+        await db
+          .collection("tenants").doc(orgId)
+          .collection("locations").doc(locId)
+          .collection("inventory").doc(periodKey)
+          .set(
+            {
+              items: pathBItems,
+              closingValue,
+              period: periodKey,
+              locationName: resolvedLocationName || locId,
+              updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+              updatedBy: "cf",
+            },
+            { merge: true }
+          );
+      } catch (pathBErr) {
+        console.error(
+          `[valuation-shadow] Path B rebuild failed for ${orgId}/${locId}/${periodKey}:`,
+          pathBErr
+        );
+      }
+    }
+
     console.log(
       `[valuation-shadow] ${orgId}/${locId}/${periodKey}: closing_cf=${closingValue.toFixed(2)} ` +
-      `cogs_cf=${cogsInventory.toFixed(2)} opening_cf=${openingValue.toFixed(2)} docs=${itemsSnap.size}`
+      `cogs_cf=${cogsInventory.toFixed(2)} opening_cf=${openingValue.toFixed(2)} docs=${itemsSnap.size} ` +
+      `mode=${cfAuthoritative ? "CF-AUTHORITATIVE (live written)" : "shadow-only"}`
     );
   }
 );
