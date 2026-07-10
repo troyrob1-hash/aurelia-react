@@ -1660,7 +1660,7 @@ export default function Inventory() {
                 {cat.label}
                 <span className={styles.catCount} style={{ background: cat.color }}>{cat.items.length}</span>
                 <span className={styles.catCounted}>
-                  {cat.items.filter(i => i.qty != null && i.qty > 0).length} counted
+                  {cat.items.filter(hasCount).length} counted
                 </span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -1711,6 +1711,7 @@ export default function Inventory() {
                         <td className={styles.tdName}>
                           <div className={styles.nameRow} style={isMobile ? {gap:0} : {}}>
                             {!isMobile && <button
+                              tabIndex={-1}
                               onClick={() => toggleKey(item.id)}
                               title={item.isKey ? 'Unmark as key item' : 'Mark as key item (shows in Quick count mode)'}
                               style={{
@@ -1730,6 +1731,7 @@ export default function Inventory() {
                               {item.isKey ? '★' : '☆'}
                             </button>}
                             {!isMobile && <button
+                              tabIndex={-1}
                               onClick={() => {
                                 if (window.confirm(`Remove "${item.name}" from this location's count sheet? You can restore it from Manage Items.`)) {
                                   removeItem(item.id)
@@ -1789,7 +1791,7 @@ export default function Inventory() {
                               disabled — not just the buttons — so a user can't
                               type into a closed period (the lock isn't theater). */}
                           <div className={styles.countRow}>
-                            <button className={styles.adjBtn} disabled={locked} onClick={() => { const st = window.scrollY; adjust(item.id, -1); requestAnimationFrame(() => window.scrollTo(0, st)) }}>−</button>
+                            <button className={styles.adjBtn} tabIndex={-1} disabled={locked} onClick={() => { const st = window.scrollY; adjust(item.id, -1); requestAnimationFrame(() => window.scrollTo(0, st)) }}>−</button>
                             <input
                               type="text"
                               inputMode="decimal"
@@ -1801,10 +1803,10 @@ export default function Inventory() {
                               placeholder={blindMode ? '0' : (item._priorQty || 0) > 0 ? String(item._priorQty) : '0'}
                               title={locked ? 'Period closed — reopen to edit' : 'Cases — decimals OK (.5 = half a case). Double-click to copy prior count.'}
                             />
-                            <button className={styles.adjBtn} disabled={locked} onClick={() => { const st = window.scrollY; adjust(item.id, 1); requestAnimationFrame(() => window.scrollTo(0, st)) }}>+</button>
+                            <button className={styles.adjBtn} tabIndex={-1} disabled={locked} onClick={() => { const st = window.scrollY; adjust(item.id, 1); requestAnimationFrame(() => window.scrollTo(0, st)) }}>+</button>
                           </div>
                           <div className={styles.countRow} style={{ marginTop: 2 }}>
-                            <button className={styles.adjBtn} disabled={locked} onClick={() => { const st = window.scrollY; adjustEaches(item.id, -1); requestAnimationFrame(() => window.scrollTo(0, st)) }}>−</button>
+                            <button className={styles.adjBtn} tabIndex={-1} disabled={locked} onClick={() => { const st = window.scrollY; adjustEaches(item.id, -1); requestAnimationFrame(() => window.scrollTo(0, st)) }}>−</button>
                             <input
                               type="text"
                               inputMode="decimal"
@@ -1815,7 +1817,7 @@ export default function Inventory() {
                               className={`${styles.countInput} ${(parseFloat(item.eaches) || 0) > 0 ? styles.counted_neutral : ''}`}
                               title={locked ? 'Period closed — reopen to edit' : 'Eaches - loose units from open case'}
                             />
-                            <button className={styles.adjBtn} disabled={locked} onClick={() => { const st = window.scrollY; adjustEaches(item.id, 1); requestAnimationFrame(() => window.scrollTo(0, st)) }}>+</button>
+                            <button className={styles.adjBtn} tabIndex={-1} disabled={locked} onClick={() => { const st = window.scrollY; adjustEaches(item.id, 1); requestAnimationFrame(() => window.scrollTo(0, st)) }}>+</button>
                           </div>
                         </td>
 
@@ -1838,7 +1840,7 @@ export default function Inventory() {
                   <tr style={{ background: '#f8fafc', borderTop: '0.5px solid #e2e8f0' }}>
                     <td colSpan={isMobile ? 1 : 6} style={{ padding: '8px 12px' }}></td>
                     <td style={{ padding: '8px 12px', textAlign: 'right', fontSize: 12, color: '#64748b' }}>
-                      {cat.items.filter(i => i.qty != null && i.qty > 0).length}/{cat.items.length}
+                      {cat.items.filter(hasCount).length}/{cat.items.length}
                     </td>
                     <td style={{ padding: '8px 12px' }}></td>
                     {!isMobile && <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 600, fontSize: 12 }}>
