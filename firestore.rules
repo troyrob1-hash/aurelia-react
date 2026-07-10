@@ -58,6 +58,16 @@ service cloud.firestore {
         allow write: if ownsTenant(tenantId) && isDirector();
       }
 
+      // GL code catalog (VF #4) at settings/glCodes — the item-entry dropdowns
+      // read it tenant-wide. The general settings/{doc} rule above already grants
+      // read + director/admin write; this specialization ADDS vp to the write
+      // tier (Firestore OR-evaluates matching rules), so GL-code curation is
+      // director/vp/admin — same money-authority tier as period unlock.
+      match /settings/glCodes {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && (isDirector() || isVp());
+      }
+
       match /inventory/{locationId}/items/{itemId} {
         allow read:  if ownsTenant(tenantId);
         allow write: if ownsTenant(tenantId) && isManager();
