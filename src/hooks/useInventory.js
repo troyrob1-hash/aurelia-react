@@ -1147,6 +1147,46 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         { closingValue, openingValue: freshOpening, cogs_inventory: cogs, inventoryCountedAt: serverTimestamp(), inventoryCountedBy: user?.email },
         { merge: true }
       )
+
+      // Path B snapshot — autosave now writes it too. Previously ONLY save()
+      // did, so with users overwhelmingly autosaving, Path B was near-empty
+      // fleet-wide, blinding WasteLog / the P&L Why panel AND removing the
+      // divergence-audit signal that caught the eaches stranding. Full-set (all
+      // counted items — a view snapshot, same reasoning as closingValue), and
+      // filtered with hasCount so eaches-only items are INCLUDED (closes the
+      // qty!=null TODO that dropped them; the 121-vs-282 Wesley gap). AFTER the
+      // P&L write, in its OWN try — a Path B failure must never abort the counts
+      // or P&L write above.
+      const snapshotItems = items
+        .filter(hasCount)
+        .map(i => ({
+          id: i.id,
+          name: i.name,
+          qty: i.qty,
+          eaches: i.eaches || 0,
+          qtyPerPack: i.qtyPerPack || 1,
+          packPrice: i.packPrice || null,
+          unitCost: i.unitCost || 0,
+          category: i._cat || null,
+          vendor: i.vendor || null,
+        }))
+      try {
+        await setDoc(
+          doc(db, 'tenants', orgId, 'locations', locId, 'inventory', periodKey),
+          {
+            items:        snapshotItems,
+            closingValue,
+            period:       periodKey,
+            locationName: locationId,
+            updatedAt:    serverTimestamp(),
+            updatedBy:    user?.email || 'unknown',
+          },
+          { merge: true }
+        )
+      } catch (pathBErr) {
+        console.error('Path B snapshot write failed in saveCounts (P&L already written):', pathBErr)
+      }
+
       // Scope the touched-clear to ids whose CURRENT local value still matches
       // what we persisted. Ids re-typed during the await (or newly-counted after
       // a delete) stay touched so the next save persists them — fixes the
@@ -1277,7 +1317,9 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       // and the P&L Why panel inventory engine read from. Without this write,
       // those consumers see no data for any period.
       const snapshotItems = items
-        .filter(i => i.qty != null)
+        // hasCount (not qty!=null) so eaches-only items are included — matches
+        // saveCounts' Path B write; closes the TODO that dropped eaches-only rows.
+        .filter(hasCount)
         .map(i => ({
           id: i.id,
           name: i.name,
