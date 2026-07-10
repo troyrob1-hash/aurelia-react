@@ -132,7 +132,7 @@ export function countDocId(id) {
   return 'id_' + encodeURIComponent(String(id ?? ''))
 }
 
-export async function persistCountItems(colRef, newCounts, deletions, updatedBy) {
+export async function persistCountItems(colRef, newCounts, deletions, updatedBy, locationName) {
   const ops = [
     ...(newCounts || [])
       .filter(c => c && c.id != null && String(c.id) !== '')
@@ -143,6 +143,12 @@ export async function persistCountItems(colRef, newCounts, deletions, updatedBy)
           qty: c.qty, eaches: c.eaches,
           countedAt: c.countedAt ?? null, countedBy: c.countedBy ?? null,
           packPrice: c.packPrice ?? null, qtyPerPack: c.qtyPerPack ?? null, unitCost: c.unitCost ?? null,
+          // Denormalized item metadata for the Phase-2 CF Path B rebuild (join-free).
+          // category = i.category (raw items carry it; NOT i._cat, which lives only on
+          // itemsWithMeta). locationName = raw prefixed display name (design option a).
+          // Additive: no reads/filters change; old docs lack these until re-touched.
+          name: c.name ?? null, category: c.category ?? null, vendor: c.vendor ?? null,
+          locationName: locationName ?? null,
           updatedAt: serverTimestamp(), updatedBy: updatedBy || 'unknown',
           // Audit marker for file-uploaded counts; manual entry stays unmarked.
           ...(c.countedViaUpload ? { countedViaUpload: true } : {}),
@@ -930,10 +936,11 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         .filter(i => touchedItemsRef.current.has(String(i.id)) && hasCount(i))
         .map(i => ({ id: i.id, qty: i.qty ?? null, eaches: i.eaches || 0,
           countedAt: i.lastCountedAt || null, countedBy: i.lastCountedBy || null,
-          packPrice: i.packPrice ?? null, qtyPerPack: i.qtyPerPack ?? null, unitCost: i.unitCost ?? null }))
+          packPrice: i.packPrice ?? null, qtyPerPack: i.qtyPerPack ?? null, unitCost: i.unitCost ?? null,
+          name: i.name ?? null, category: i.category ?? null, vendor: i.vendor ?? null }))
       if (preserveCounts.length) {
         const itemsCol = collection(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey, 'items')
-        await persistCountItems(itemsCol, preserveCounts, [], user?.email)
+        await persistCountItems(itemsCol, preserveCounts, [], user?.email, locationId)
       }
       await setDoc(
         doc(db, 'tenants', orgId, 'inventory', locId, 'items', itemId),
@@ -996,10 +1003,11 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
             packPrice: i.packPrice ?? null,
             qtyPerPack: i.qtyPerPack ?? null,
             unitCost: i.unitCost ?? null,
+            name: i.name ?? null, category: i.category ?? null, vendor: i.vendor ?? null,
           }))
         if (preserveCounts.length) {
           const itemsCol = collection(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey, 'items')
-          await persistCountItems(itemsCol, preserveCounts, [], user?.email)
+          await persistCountItems(itemsCol, preserveCounts, [], user?.email, locationId)
         }
       } catch (persistErr) {
         console.error('Failed to persist counts before adding item:', persistErr)
@@ -1096,6 +1104,8 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
           packPrice: i.packPrice ?? null,
           qtyPerPack: i.qtyPerPack ?? null,
           unitCost: i.unitCost ?? null,
+          // Denormalized metadata for the CF Path B rebuild (see persistCountItems).
+          name: i.name ?? null, category: i.category ?? null, vendor: i.vendor ?? null,
           countedViaUpload: i.countedViaUpload,   // carries the upload audit flag through
         }))
       // Deletions: items the user explicitly cleared (no qty, no eaches) AND
@@ -1115,7 +1125,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       // and must persist regardless (the Phase-1 COGS=0 regression).
       const itemsCol = collection(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey, 'items')
       try {
-        await persistCountItems(itemsCol, newCounts, deletions, user?.email)
+        await persistCountItems(itemsCol, newCounts, deletions, user?.email, locationId)
       } catch (countErr) {
         console.error('Per-item count write failed (P&L still written from local items):', countErr)
         setError('Some counts failed to save; totals were still updated.')
@@ -1167,7 +1177,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
           qtyPerPack: i.qtyPerPack || 1,
           packPrice: i.packPrice || null,
           unitCost: i.unitCost || 0,
-          category: i._cat || null,
+          category: i.category || null,   // was i._cat (only on itemsWithMeta) → always null
           vendor: i.vendor || null,
         }))
       try {
@@ -1260,6 +1270,8 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
           packPrice: i.packPrice ?? null,
           qtyPerPack: i.qtyPerPack ?? null,
           unitCost: i.unitCost ?? null,
+          // Denormalized metadata for the CF Path B rebuild (see persistCountItems).
+          name: i.name ?? null, category: i.category ?? null, vendor: i.vendor ?? null,
           countedViaUpload: i.countedViaUpload,   // carries the upload audit flag through
         }))
       // Deletions: only items with NEITHER qty NOR eaches that the user
@@ -1272,7 +1284,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       // counts-write failure can NEVER skip the closingValue/P&L write below.
       const itemsCol2 = collection(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey, 'items')
       try {
-        await persistCountItems(itemsCol2, newCounts2, deletions2, user?.email)
+        await persistCountItems(itemsCol2, newCounts2, deletions2, user?.email, locationId)
       } catch (countErr) {
         console.error('Per-item count write failed (P&L still written from local items):', countErr)
       }
@@ -1328,7 +1340,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
           qtyPerPack: i.qtyPerPack || 1,
           packPrice: i.packPrice || null,
           unitCost: i.unitCost || 0,
-          category: i._cat || null,
+          category: i.category || null,   // was i._cat (only on itemsWithMeta) → always null
           vendor: i.vendor || null,
         }))
       // Own try — Path B failure must not abort the save (P&L is already
