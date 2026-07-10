@@ -1152,7 +1152,25 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         }
       }
       const cogs = Math.max(0, freshOpening + purchases - closingValue)
-      await setDoc(
+
+      // valuationMode gate (cutover build 2) — read the per-location authority
+      // flag at WRITE TIME (design: no listener needed for correctness). The
+      // count docs above ALWAYS persisted (source of truth + CF trigger); only
+      // the LIVE P&L + Path B writes below are skipped when the CF owns this
+      // location. FAIL-SAFE: any read error, missing doc, or 'client' leaves
+      // cfAuthoritative false → we write exactly as today. Only an explicit
+      // authoritative === 'cf' hands the live writes off to the CF.
+      let cfAuthoritative = false
+      try {
+        const modeSnap = await getDoc(doc(db, 'tenants', orgId, 'valuationMode', locId))
+        cfAuthoritative = modeSnap.exists() && modeSnap.data().authoritative === 'cf'
+      } catch (modeErr) {
+        console.warn('valuationMode read failed — defaulting to client-authoritative (writing as today):', modeErr)
+        cfAuthoritative = false
+      }
+
+      // LIVE P&L write — skipped when the CF is authoritative for this location.
+      if (!cfAuthoritative) await setDoc(
         doc(db, 'tenants', orgId, 'pnl', locId, 'periods', periodKey),
         { closingValue, openingValue: freshOpening, cogs_inventory: cogs, inventoryCountedAt: serverTimestamp(), inventoryCountedBy: user?.email },
         { merge: true }
@@ -1180,7 +1198,9 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
           category: i.category || null,   // was i._cat (only on itemsWithMeta) → always null
           vendor: i.vendor || null,
         }))
-      try {
+      // Path B write — also skipped when the CF owns this location (it rebuilds
+      // Path B server-side). Own try so a Path B failure never aborts the save.
+      if (!cfAuthoritative) try {
         await setDoc(
           doc(db, 'tenants', orgId, 'locations', locId, 'inventory', periodKey),
           {
@@ -1311,7 +1331,21 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       }
       const cogs = Math.max(0, freshOpening + purchases - closingValue)
 
-      await setDoc(
+      // valuationMode gate (cutover build 2) — same as saveCounts. Count docs
+      // above always persisted; the LIVE P&L + Path B writes below are skipped
+      // when the CF owns this location. FAIL-SAFE: read error / missing / 'client'
+      // → cfAuthoritative false → write as today. Only 'cf' hands off.
+      let cfAuthoritative = false
+      try {
+        const modeSnap = await getDoc(doc(db, 'tenants', orgId, 'valuationMode', locId))
+        cfAuthoritative = modeSnap.exists() && modeSnap.data().authoritative === 'cf'
+      } catch (modeErr) {
+        console.warn('valuationMode read failed — defaulting to client-authoritative (writing as today):', modeErr)
+        cfAuthoritative = false
+      }
+
+      // LIVE P&L write — skipped when the CF is authoritative for this location.
+      if (!cfAuthoritative) await setDoc(
         doc(db, 'tenants', orgId, 'pnl', locId, 'periods', periodKey),
         {
           closingValue,
@@ -1345,7 +1379,9 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         }))
       // Own try — Path B failure must not abort the save (P&L is already
       // written above; Waste/Why read Path B best-effort).
-      try {
+      // Path B write — also skipped when the CF owns this location (it rebuilds
+      // Path B server-side). Own try so a Path B failure never aborts the save.
+      if (!cfAuthoritative) try {
         await setDoc(
           doc(db, 'tenants', orgId, 'locations', locId, 'inventory', periodKey),
           {
