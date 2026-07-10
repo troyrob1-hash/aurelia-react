@@ -373,6 +373,13 @@ export default function Inventory() {
   }, [])
 
   const mainRef = useRef(null)
+  // VF #1 auto-calc: DOM refs to the edit panel's pricing inputs so a packPrice /
+  // qtyPerPack blur can read their LIVE values and set the unitCost input on screen
+  // immediately (the panel inputs are uncontrolled defaultValue — a ref write is the
+  // least-invasive way to show the derived value without controlling the field).
+  const packPriceInputRef = useRef(null)
+  const qtyPerPackInputRef = useRef(null)
+  const unitCostInputRef = useRef(null)
   if (!mainRef.current) {
     const m = document.querySelector('[class*="main"]')
     if (m && m.scrollHeight > m.clientHeight) mainRef.current = m
@@ -1924,7 +1931,7 @@ export default function Inventory() {
           const factors = [
             { label: 'Current count', detail: `${cur ?? '—'} units`, value: '$' + (value || 0).toFixed(2), sign: cur != null ? 'down' : 'neutral' },
             { label: 'Prior count', detail: `${prior} units`, value: prior > 0 ? '$' + (prior * (item.unitCost || 0)).toFixed(2) : '—', sign: 'neutral' },
-            { label: 'Unit cost', detail: 'from last invoice', value: '$' + (item.unitCost || 0).toFixed(2), sign: 'neutral' },
+            { label: 'Unit cost', detail: 'pack price ÷ qty per pack', value: '$' + (item.unitCost || 0).toFixed(2), sign: 'neutral' },
           ]
           if (item.parLevel) {
             factors.push({ label: 'Par level', detail: 'target on hand', value: String(item.parLevel), sign: 'neutral' })
@@ -2045,7 +2052,7 @@ export default function Inventory() {
                       { label: 'Pack size', field: 'packSize', type: 'text' },
                       { label: 'Qty per pack', field: 'qtyPerPack', type: 'number' },
                       { label: 'Pack price', field: 'packPrice', type: 'number', prefix: '$' },
-                      { label: 'Unit cost', field: 'unitCost', type: 'number', prefix: '$' },
+                      { label: 'Unit cost', field: 'unitCost', type: 'number', prefix: '$', hint: 'Auto-calculated from pack price ÷ qty per pack; edit to override' },
                       { label: 'GL code', field: 'glCode', type: 'text' },
                       { label: 'Par level', field: 'parLevel', type: 'number' },
                     ].map(f => (
@@ -2074,6 +2081,8 @@ export default function Inventory() {
                             {f.prefix && <span style={{ fontSize: 13, color: '#94a3b8' }}>{f.prefix}</span>}
                             <input
                               type={f.type}
+                              ref={f.field === 'packPrice' ? packPriceInputRef : f.field === 'qtyPerPack' ? qtyPerPackInputRef : f.field === 'unitCost' ? unitCostInputRef : undefined}
+                              title={f.hint || undefined}
                               defaultValue={item[f.field] ?? ''}
                               onBlur={async (e) => {
                                 const val = f.type === 'number' ? (parseFloat(e.target.value) || 0) : e.target.value.trim()
@@ -2083,6 +2092,24 @@ export default function Inventory() {
                                 // load() rebuilds items blank and would wipe unsaved in-progress
                                 // counts. The field value is saved; the UI updates on next natural reload.
                                 toast.success(f.label + ' updated')
+                                // VF #1: live-recompute unitCost = packPrice / qtyPerPack when EITHER
+                                // pricing input changes. Reads the LIVE DOM values (always current, so
+                                // it uses this-session edits, not the stale item snapshot). Guard rails:
+                                // derive ONLY when both > 0 (no divide-by-zero, no deriving from blanks).
+                                // Writes ONLY unitCost via the same override path, and sets the unitCost
+                                // input on screen immediately. NOT triggered on a unitCost blur, so a
+                                // manual unit-cost edit sticks (last-blur-wins). unitCost is valuation
+                                // fallback-only when packPrice exists, so this changes no closing value.
+                                if (f.field === 'packPrice' || f.field === 'qtyPerPack') {
+                                  const pp = parseFloat(packPriceInputRef.current?.value) || 0
+                                  const qpp = parseFloat(qtyPerPackInputRef.current?.value) || 0
+                                  if (pp > 0 && qpp > 0) {
+                                    const derived = Math.round((pp / qpp) * 10000) / 10000
+                                    if (unitCostInputRef.current) unitCostInputRef.current.value = derived
+                                    await saveEditField(item.id, 'unitCost', derived)
+                                    toast.success('Unit cost auto-calculated')
+                                  }
+                                }
                               }}
                               style={{ width: f.wide ? 220 : (f.type === 'number' ? 100 : 160), padding: '5px 8px', fontSize: 13, borderRadius: 6, border: '0.5px solid #e2e8f0' }}
                             />
