@@ -1469,7 +1469,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       const catItems = itemsWithMeta.filter(i => i._cat === cat.key)
       stats[cat.key] = {
         total: catItems.length,
-        counted: catItems.filter(i => i.qty != null && i.qty > 0).length,
+        counted: catItems.filter(hasCount).length,
         value: catItems.reduce((sum, i) => sum + i._value, 0)
       }
     })
@@ -1478,7 +1478,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
 
   const totals = useMemo(() => {
     const closingValue = itemsWithMeta.reduce((sum, i) => sum + i._value, 0)
-    const counted = itemsWithMeta.filter(i => i.qty != null && i.qty > 0).length
+    const counted = itemsWithMeta.filter(hasCount).length
     const liveCOGS = Math.max(0, openingValue + purchases - closingValue)
     const belowPar = itemsWithMeta.filter(i => i._belowPar).length
     const atReorder = itemsWithMeta.filter(i => i._atReorder).length

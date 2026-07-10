@@ -868,7 +868,7 @@ export default function Inventory() {
           id, itemName: item.name, qty, eaches: ea,
           value: valueOf(item, qty, ea),
           prevQty: item.qty, prevEaches: item.eaches,
-          isOverwrite: item.qty != null,
+          isOverwrite: hasCount(item),
         }
         // Keep the LAST entry for a duplicate id (mirrors countsById).
         const existingIdx = toCount.findIndex(e => e.id === id)
@@ -1033,7 +1033,7 @@ export default function Inventory() {
   // Close inventory count for the period
   async function closeInventoryCount() {
     if (!items || items.length === 0) { toast.error('No items counted'); return }
-    const uncounted = items.filter(i => !i.qty && i.qty !== 0).length
+    const uncounted = items.filter(i => !hasCount(i)).length
     if (uncounted > 0 && !window.confirm(uncounted + ' items have no count. Close anyway?')) return
     
     const closingValue = items.reduce((s, i) => s + ((i.qty || 0) * (i.unitCost || 0)), 0)
@@ -1120,7 +1120,7 @@ export default function Inventory() {
 
   // Summary for the flat view (replaces per-category subtotals).
   const flatSummary = useMemo(() => {
-    const counted = flatItems.filter(i => i.qty != null && i.qty > 0).length
+    const counted = flatItems.filter(hasCount).length
     const value = flatItems.reduce((s, i) => s + (i._value || 0), 0)
     return { counted, total: flatItems.length, value }
   }, [flatItems])
@@ -1691,7 +1691,7 @@ export default function Inventory() {
                 </thead>
                 <tbody>
                   {cat.items.map((item, idx) => {
-                    const isCounted = item.qty != null && item.qty > 0
+                    const isCounted = hasCount(item)
                     const varDir = (item._variance || 0) > 0 ? 'up' : (item._variance || 0) < 0 ? 'down' : 'neutral'
 
                     return (
