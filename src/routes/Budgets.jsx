@@ -567,7 +567,15 @@ export default function Budgets() {
       const ab   = await file.arrayBuffer()
       const wb   = XLSX.read(new Uint8Array(ab), { type:'array', cellDates:true })
       setRawWb({ wb, XLSX })
-      if (wb.SheetNames.length === 1) {
+      // Managers upload the whole company workbook (2026_Fooda_Cafe_Budgets_Live.xlsm);
+      // the data lives on the "Budget_Load" tab, which may not be first. Prefer it by
+      // name. When it's absent, keep the existing behavior: single sheet → parse it;
+      // multi-sheet → parse the first and offer the picker (don't remove that UX).
+      const budgetLoad = wb.SheetNames.find(s => /budget[_ ]?load/i.test(s))
+      if (budgetLoad) {
+        if (wb.SheetNames.length > 1) { setSheetNames(wb.SheetNames); setActiveSheet(budgetLoad) }
+        doParseSheet(wb, budgetLoad, XLSX)
+      } else if (wb.SheetNames.length === 1) {
         doParseSheet(wb, wb.SheetNames[0], XLSX)
       } else {
         setSheetNames(wb.SheetNames)
@@ -581,7 +589,15 @@ export default function Budgets() {
     const ws     = wb.Sheets[sheetName]
     const rows   = XLSX.utils.sheet_to_json(ws, { header:1, defval:'' })
     const result = parseExcel(rows, year)
-    if (!result || result.schema.length === 0) { toast.error('No data found. Make sure the file has month columns (Jan–Dec).'); return }
+    // Fail loud on a wrong sheet: name the sheet actually read and list the file's
+    // tabs, rather than parsing garbage. (No line items / no month columns → empty schema.)
+    if (!result || result.schema.length === 0) {
+      toast.error(
+        `Couldn't find budget data on sheet "${sheetName}". Sheets in this file: ${wb.SheetNames.join(', ')}. ` +
+        `Aurelia looks for a "Budget_Load" sheet with a Line Item column and month columns (Jan–Dec).`
+      )
+      return
+    }
     // Every value-bearing line whose slug resolves to no P&L key will NOT be imported.
     // Surface these in the preview BEFORE the user confirms — no silent drops.
     const unmatched = result.schema.flatMap(s => s.lines)
@@ -959,7 +975,7 @@ export default function Budgets() {
           <div className={styles.previewBar}>
             <div className={styles.previewInfo}>
               <span className={styles.previewCheck}>✓</span>
-              Parsed <strong>{preview.lineCount} line items</strong> across <strong>{preview.schema.length} sections</strong> from <strong>"{preview.sheetName}"</strong>
+              Reading sheet <strong>"{preview.sheetName}"</strong> — parsed <strong>{preview.lineCount} line items</strong> across <strong>{preview.schema.length} sections</strong>
             </div>
             <div style={{display:'flex',gap:8}}>
               <button className={styles.btnCancel} onClick={()=>{setPreview(null);setSheetNames([])}}>Cancel</button>

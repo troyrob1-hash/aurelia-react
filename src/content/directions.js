@@ -5,14 +5,11 @@
  * is a dumb renderer that maps over this data — do not put copy in the JSX.
  *
  * Conventions:
- *   - Anywhere the answer depends on Fooda PROCESS rather than the code (which
- *     report to download, which vendor, a chart-of-accounts question), write it
- *     inline as `[TROY: ...]`. The renderer highlights those as a visible callout
- *     so gaps are obvious, not buried. You can also put process gaps in a tab's
- *     `troy: [...]` array to render them as standalone callouts.
+ *   - `[TROY: ...]` markers are process questions only Troy can answer. As of this
+ *     revision they are all filled in — if you add a new one, the renderer will
+ *     highlight it as a visible callout so it doesn't get buried.
  *   - `workflow` is an ordered list (rendered 1., 2., 3.).
- *   - `uploads[].columns` are the EXACT header names the parser looks for. Keep
- *     them exact — they are matched against the spreadsheet you upload.
+ *   - `uploads[].columns` are the EXACT header / report names Aurelia looks for.
  *   - `gotchas` are the sharp edges we've hit; keep them blunt and specific.
  */
 
@@ -22,7 +19,7 @@ export const INTRO = {
     'Aurelia is the operations suite for running a cafe P&L: enter what happened this week ' +
     '(sales, counts, invoices, labor), and the Dashboard assembles it into an income statement. ' +
     'This page explains each tab — what it is for, the main workflow, what files it accepts (with the ' +
-    'exact column names), and the traps we have already hit.',
+    'exact report/column names), and the traps we have already hit.',
   blocks: [
     {
       h: 'Two controls sit on top of everything',
@@ -43,8 +40,8 @@ export const INTRO = {
       h: 'The Dashboard is read-only — it just reports',
       body:
         'You never type numbers into the P&L (Dashboard) tab. It pulls from the operational tabs: Sales feeds ' +
-        'revenue, Inventory feeds COGS, Purchasing feeds purchases, Labor feeds labor, Shrinkage feeds ' +
-        'shrinkage, Budgets feeds the budget column. Fix a number on its source tab and the Dashboard follows.',
+        'revenue, Inventory feeds COGS, Purchasing feeds purchases, Labor feeds labor, Budgets feeds the budget ' +
+        'column. Fix a number on its source tab and the Dashboard follows.',
     },
     {
       h: 'Submit → Approve locks the week (Sales & Labor)',
@@ -52,6 +49,19 @@ export const INTRO = {
         'Weekly Sales and Labor use a submit/approve flow. A manager submits (status "pending"); a director ' +
         'approves (status "approved") which locks that week. "Rejected" or "reopened" puts it back to editable.',
     },
+  ],
+}
+
+// Prominent, rendered ABOVE the per-tab sections — the first thing a new manager does.
+export const START_HERE = {
+  heading: 'Start here: upload your item list',
+  body: [
+    'Upload your item list first. Everything in Aurelia keys off your location’s item catalog — counting, ' +
+      'ordering, valuation, invoicing. The unit manager owns this list; nobody sets it up for you.',
+    'Get the workbook from the company OneDrive and upload it whole — Aurelia reads the INVItems tab ' +
+      'automatically and tells you which sheet it used.',
+    'Inventory → "Item list" (amber button). This loads item DEFINITIONS — names, pack sizes, prices, ' +
+      'vendors, GL codes. NOT counts. You enter counts after, by typing them or using the green "Upload counts" button.',
   ],
 }
 
@@ -74,10 +84,10 @@ export const TABS = [
     uploads: [],
     gotchas: [
       'This tab has no inputs. If a line is zero, the source tab has not been filled in (or you are on the wrong location/period).',
+      'Prime cost (COGS + Labor as a % of revenue) is the core efficiency metric. Aurelia shows the number and its ' +
+        'trend — there is no invented "target %" to grade yourself against. Judge it against your own budget and prior weeks.',
     ],
-    troy: [
-      '[TROY: Is the prime-cost target (labor + COGS ÷ revenue ≤ 60%) and the "pace forecast" a Fooda-official benchmark, or just a UI default we picked?]',
-    ],
+    troy: [],
   },
 
   // ── 2. Order Hub ───────────────────────────────────────────────────────────
@@ -105,10 +115,9 @@ export const TABS = [
     gotchas: [
       'An Order Hub "Pending" order is a COMMITMENT — goods not received. It is intentionally NOT counted as a cost. It becomes a cost only when you approve/pay its invoice in Purchasing. (Purchasing "Pending" means the opposite — see the Purchasing tab.)',
       'Placing an order auto-creates the invoice for you. Do not also hand-create an invoice for the same order in Purchasing, or it double-counts.',
+      'Your catalog and PAR levels come from the item list the unit manager uploads (see "Start here"). Items below their PAR are flagged so you know what to reorder.',
     ],
-    troy: [
-      '[TROY: Where does the item catalog / order guide / PAR levels come from — who maintains them, and how does a new item get added?]',
-    ],
+    troy: [],
   },
 
   // ── 3. Weekly Sales ────────────────────────────────────────────────────────
@@ -118,42 +127,32 @@ export const TABS = [
     urlName: 'Weekly Sales',
     url: '/sales',
     purpose:
-      'Enter or import the week’s sales by category (Popup, Catering, Retail), then submit them for director ' +
-      'sign-off. Feeds Gross Food Sales and Revenue on the P&L.',
+      'Get the week’s sales into the P&L — you do NOT have to hand-key them. Import the two Fooda reports and ' +
+      'Aurelia fills in Gross Food Sales and Revenue for you, then a director signs off.',
     workflow: [
       'Pick the location; the week comes from the period selector.',
-      'Enter sales per operating day by category (Popup / Catering / Retail) — or import a Fooda export (below).',
-      'Entries autosave as a draft while you work.',
-      'Submit for approval (status becomes "pending").',
-      'A director approves (status "approved") — this signs off and LOCKS the week. "Rejected"/"reopened" makes it editable again.',
+      'Click Import Events and select BOTH Fooda reports together (see below). Aurelia routes the revenue automatically.',
+      'Preview the summary, then Confirm & Post to P&L.',
+      '(Optional) Hand-key a day by category if you ever need to — but the import is the normal path.',
+      'Submit for approval; a director approves ("approved"), which LOCKS the week. "Rejected"/"reopened" makes it editable again.',
     ],
     uploads: [
       {
-        name: 'Popup / retail Fooda export',
-        note: 'Auto-detected on upload. Required columns:',
+        name: 'Import Events — upload BOTH Fooda reports together',
+        note:
+          'Click Import Events and select both files at once. Aurelia auto-detects each and routes revenue: anything ' +
+          'under 11 Dining (Cafeteria/Barista) → Retail; every other vendor → Popup. Preview, then Confirm & Post to P&L.',
         columns: [
-          { col: 'Event Date', desc: 'the sales date (also accepts "event_date" / "Date")' },
-          { col: 'Gross Food Sales', desc: 'the day’s gross food sales' },
-          { col: 'Restaurant Internal Name / Partner Internal Name', desc: 'used to tell retail from popup' },
-        ],
-      },
-      {
-        name: 'Catering line-item export',
-        note: 'Auto-detected when the file has an "Event accounting site" column. Required columns:',
-        columns: [
-          { col: 'Event date', desc: 'the event date' },
-          { col: 'Total Price', desc: 'the catering total (also accepts "Gross Food Sales")' },
-          { col: 'Entity name', desc: 'the site/entity the event belongs to' },
+          { col: 'Event Line Items - Catering', desc: '→ catering revenue' },
+          { col: 'Vendor_Partner Financials - Popup Event Summary', desc: '→ popup + retail revenue' },
         ],
       },
     ],
     gotchas: [
-      'Once a director approves the week, it is locked. Get a director to reopen it before re-uploading or editing.',
-      'The importer keys off the exact column names above; a renamed header will silently skip rows.',
+      'Upload BOTH reports — catering comes from one file, popup + retail from the other. Missing one means that stream reads zero.',
+      'Once a director approves the week, it is locked. Get a director to reopen it before re-importing or editing.',
     ],
-    troy: [
-      '[TROY: Exactly which Fooda / Tableau report does a manager download for (a) popup/retail and (b) catering, and where do they get it? Name the report and the menu path.]',
-    ],
+    troy: [],
   },
 
   // ── 4. Inventory ───────────────────────────────────────────────────────────
@@ -163,9 +162,11 @@ export const TABS = [
     urlName: 'Inventory',
     url: '/inventory',
     purpose:
-      'Count on-hand inventory for the week. The counted value drives COGS (opening + purchases − closing) on the P&L.',
+      'Count on-hand inventory for the week. The counted value drives COGS (opening + purchases − closing) on the P&L. ' +
+      'This is also where you FIRST load your item list (see "Start here").',
     workflow: [
       'Pick a location ("Select a location to begin counting").',
+      'Load the item list once with the amber "Item list" button (the whole OneDrive workbook — Aurelia reads INVItems).',
       'For each item, enter the count: cases in the first box, loose units in the "eaches" box.',
       'Counts autosave; use Save, or Save & Close Period when the week’s count is final.',
     ],
@@ -174,8 +175,9 @@ export const TABS = [
         name: 'Item list (amber button) — item DEFINITIONS only',
         note:
           'Builds this location’s catalog: names, vendors, pack sizes, prices, GL, category. It does NOT import counts. ' +
-          'If the file has a counts-looking column (qty/quantity/count/on hand/cases/units) it warns you loudly that ' +
-          'the column will be IGNORED — enter counts by hand. Columns it reads:',
+          'Upload the whole workbook — Aurelia finds the INVItems tab and tells you which sheet it used. If the file has a ' +
+          'counts-looking column (qty/quantity/count/on hand/cases/units) it warns you that the column will be IGNORED. ' +
+          'Columns it reads:',
         columns: [
           { col: 'Description / Item / Name', desc: 'item name' },
           { col: 'Pack Size', desc: 'case/unit size' },
@@ -190,8 +192,8 @@ export const TABS = [
       {
         name: 'Upload counts (green button) — actual COUNTS',
         note:
-          'Imports counted quantities for this period, matched to items by name, and always shows a preview before ' +
-          'writing. Columns (matched case-insensitively):',
+          'Imports counted quantities for this period, matched to items by name, and always shows a preview (naming the ' +
+          'sheet it read) before writing. Columns (matched case-insensitively):',
         columns: [
           { col: 'item / name / description / item name / product', desc: 'the item name to match' },
           { col: 'cases / qty / quantity / count', desc: 'number of cases' },
@@ -214,31 +216,18 @@ export const TABS = [
     urlName: 'Waste Log',
     url: '/waste',
     purpose:
-      'Two jobs on one tab. Shrinkage: measure inventory lost (Opening + Purchased − Sold − Closing) per item and ' +
-      'post it to the P&L as cogs_shrinkage. Waste Log: record what you threw out and track diversion (compost/recycle/donate).',
+      'Not fully set up yet. The Waste Log works — log discards as they happen. The full shrinkage calculation is not ' +
+      'built, so do not rely on the shrinkage number until it is.',
     workflow: [
-      'Shrinkage sub-tab: import the POS/register sales file (below). The tab pairs it with opening/closing counts and purchases to compute loss per item and writes cogs_shrinkage.',
-      'Waste Log sub-tab: click "+ Log waste", pick a category (landfill / compost / recycle / donate), enter item, qty, unit and reason.',
-      'Review the shrinkage table (sorted by dollar loss) and the diversion percentage.',
+      'Waste Log (ready): click "+ Log waste", pick a category (landfill / compost / recycle / donate), enter item, qty, unit and reason. Log discards as they happen.',
+      'Shrinkage (not ready): the Opening + Purchased − Sold − Closing calculation needs a sales-item feed matched to your ' +
+        'inventory by name, which is not built yet. Treat the shrinkage number as not-yet-reliable.',
     ],
-    uploads: [
-      {
-        name: 'POS / register sales import (Shrinkage)',
-        note: 'Matched to the catalog by SKU or by name. Columns:',
-        columns: [
-          { col: 'SKU / sku / Item Code / UPC', desc: 'the product code to match' },
-          { col: 'Item / Name / Description', desc: 'item name (fallback match)' },
-          { col: 'Qty Sold / Quantity / Units / Count', desc: 'units sold' },
-        ],
-      },
-    ],
+    uploads: [],
     gotchas: [
-      'Shrinkage needs both the prior period’s closing count (as this period’s opening) and this period’s closing count — if inventory is not counted, shrinkage cannot be computed.',
+      'The full shrinkage number is not trustworthy yet — the sales-to-inventory match it depends on isn’t built. Use the Waste Log in the meantime; don’t make decisions off the shrinkage figure.',
     ],
-    troy: [
-      '[TROY: Which POS/register report is the shrinkage import, and how is it exported?]',
-      '[TROY: Is the 70% diversion goal a Fooda target or a placeholder?]',
-    ],
+    troy: [],
   },
 
   // ── 6. Purchasing ──────────────────────────────────────────────────────────
@@ -279,14 +268,14 @@ export const TABS = [
     ],
     gotchas: [
       'Purchasing "Pending" = a RECEIVED cost that accrues into COGS — the OPPOSITE of an Order Hub "Pending", which is a not-yet-received commitment. Same word, opposite meaning.',
-      'Default vendor GL codes (already set): food vendors (Sysco, Nassau, Vistar, Amazon, Webstaurant, Blue Cart, RTZN) → 12000; coffee/barista vendors (Café Moto, David Rio, Don Edwards) → 12002. Override per invoice when a shipment is really chem or paper.',
+      'Default vendor GL codes: food vendors (Sysco, Nassau, Vistar, Amazon, Webstaurant, Blue Cart, RTZN) → 12000; coffee/barista vendors (Café Moto, David Rio, Don Edwards) → 12002.',
+      'Amazon defaults to 12000 (Inventory–Cafeteria). When a specific Amazon order is really chemicals or paper, override that invoice to the chem (65070) or paper (65080) GL code so it lands on the right line.',
     ],
     extra: [
       {
         h: 'Where each GL code lands on the P&L (the food/chem/paper split)',
         body:
-          'The GL code on an invoice decides which P&L line it feeds — this is new, and it is the food/chem/paper ' +
-          'split working:\n' +
+          'The GL code on an invoice decides which P&L line it feeds — this is the food/chem/paper split working:\n' +
           '• 12000–12003 (inventory: cafeteria/barista) → cogs_purchases, which rolls into COGS.\n' +
           '• 65070 (cleaning / chemicals) → its own Cleaning line, with its own budget — not lumped into purchases.\n' +
           '• 65080 (paper / consumables / packaging) → its own Paper line.\n' +
@@ -296,9 +285,7 @@ export const TABS = [
           'lines instead of hiding inside food purchases.',
       },
     ],
-    troy: [
-      '[TROY: Amazon defaults to 12000, but Amazon orders are often a mix (chem + paper + supplies). Should we split a single Amazon invoice across GL codes per line item, or keep coding the whole invoice to one code?]',
-    ],
+    troy: [],
   },
 
   // ── 7. Budgets ─────────────────────────────────────────────────────────────
@@ -308,16 +295,20 @@ export const TABS = [
     urlName: 'Budgets',
     url: '/budgets',
     purpose:
-      'Hold the annual budget by month and line item, then submit it for approval. Once a director approves, it ' +
-      'posts to the P&L as the Budget column (broken out per week).',
+      'Hold the annual budget by month and line item, then submit it for approval. Your director sends you the budget ' +
+      'workbook (2026_Fooda_Cafe_Budgets_Live.xlsm). Upload it in Budgets — Aurelia reads the Budget_Load sheet and maps ' +
+      'each line to its P&L destination. If a line can’t be matched, the preview warns you before importing; it never ' +
+      'silently drops. Once a director approves, the budget posts to the P&L as the Budget column (broken out per week).',
     workflow: [
-      'Download the blank template, or upload a filled one (below).',
-      'Enter/adjust the annual numbers per month across the line items.',
-      'Submit for approval; a director approves, which posts the budget to the P&L and locks it. A manager can request an unlock with a reason.',
+      'Your director sends you the budget workbook (2026_Fooda_Cafe_Budgets_Live.xlsm) — upload it in Budgets.',
+      'Aurelia reads the Budget_Load sheet and maps each line to its P&L destination. The preview warns you about any line ' +
+        'it couldn’t match BEFORE you import — it never silently drops a line.',
+      'Confirm the import, then submit for approval. A director approves, which posts the budget to the P&L and locks it. ' +
+        'A manager can request an unlock with a reason.',
     ],
     uploads: [
       {
-        name: 'Budget template (.xlsx / .csv)',
+        name: 'Budget workbook (2026_Fooda_Cafe_Budgets_Live.xlsm) / template (.xlsx / .csv)',
         note: 'One row per line item, one column per month. Columns:',
         columns: [
           { col: 'Line Item', desc: 'the P&L line (first column)' },
@@ -325,12 +316,24 @@ export const TABS = [
         ],
       },
     ],
+    extra: [
+      {
+        h: 'The 24 budget lines (with GL codes), from 2026_Fooda_Cafe_Budgets_Live.xlsm',
+        body:
+          'Popup GFS (99999)\nCatering GFS (88888)\nDelivery GFS (77777)\nRetail GFS (66666)\nPantry GFS (-33333)\n' +
+          'Popup Revenue (40042)\nCatering Revenue (40200)\nRetail Revenue (40160)\nTotal Fees & Subsidies (40080)\n' +
+          'Onsite Labor (50410)\nOnsite equipment and consumables (50430)\nOnsite Maintenance and Other (50450)\n' +
+          'Payment Processing Fees (61020)\nRevenue Share (40050)\nRetail COGS (50160)\n' +
+          'Total Compensation and Benefits (68016)\nOffice Supplies & Equipment (65090)\nBank fees (61010)\n' +
+          'Advertising and Marketing (62010)\nTechnology Services (63010)\nTravel and Entertainment (64120)\n' +
+          'Professional Fees (66010)\nFacilities (67200)\nTotal other expenses (50460)',
+      },
+    ],
     gotchas: [
       'The budget only shows on the Dashboard after a director approves it — a submitted-but-unapproved budget will not appear as the budget column.',
+      'If a budget line can’t be matched to a P&L line, the import preview lists it and skips it — it is never written to a dead field. Fix the label in the workbook if something you expected shows up in that list.',
     ],
-    troy: [
-      '[TROY: Confirm the line-item names in the template match how Fooda labels them, so uploads map cleanly.]',
-    ],
+    troy: [],
   },
 
   // ── 8. Operating Ledger / Transfers ────────────────────────────────────────
@@ -340,11 +343,14 @@ export const TABS = [
     urlName: 'Transfers',
     url: '/transfers',
     purpose:
-      'Two jobs. Transfers: move inventory between locations with an approval trail. Journal Entries: post GL ' +
-      'adjustments (costs that are not a normal invoice) to the P&L, optionally spread over time.',
+      'Two jobs. Transfers: move inventory between locations — most common at multi-café units. Journal Entries: GL ' +
+      'adjustments and amortization (built, but not yet part of the routine).',
     workflow: [
-      'Transfers sub-tab: log a move (item, units, cost, from → to). Status flows Pending → Approved (director) → Received (manager confirms), which adjusts inventory at both locations.',
-      'Journal Entries sub-tab: post a GL adjustment (code, description, amount) with an amortization choice — one-time, monthly, quarterly or annual — plus optional auto-reverse or a recurring template.',
+      'Transfers: move inventory between locations — most common at multi-café units (e.g. Qualcomm, where several ' +
+        'cafés run under one account). If one café pulls product from a sibling, log a transfer so both sides’ value ' +
+        'adjusts. Create → approve → receive.',
+      'Journal Entries: GL adjustments and amortization. Built, and eventually everyone — managers and finance — will ' +
+        'post here. Not yet part of the routine; check with your director before using it.',
     ],
     uploads: [
       {
@@ -354,11 +360,9 @@ export const TABS = [
       },
     ],
     gotchas: [
-      'A transfer only adjusts inventory when it reaches "Received" — a Pending or Approved transfer has not moved anything yet. Approved transfers not received within ~2 days get an aging alert.',
+      'A transfer only adjusts inventory when it reaches "Received" — a Pending or Approved transfer has not moved anything yet.',
     ],
-    troy: [
-      '[TROY: Give 1–2 real journal entries you actually post (e.g. a monthly cleaning contract, a one-time repair) so the copy can use concrete examples instead of abstractions.]',
-    ],
+    troy: [],
   },
 
   // ── 9. Labor ───────────────────────────────────────────────────────────────
@@ -372,14 +376,14 @@ export const TABS = [
       'Comp & Benefits on the P&L.',
     workflow: [
       'Pick the location; the week comes from the period selector.',
-      'Import a payroll/GL file (below) or type amounts into the GL table by hand.',
+      'Import the labor file — California Labor.xlsx — or type amounts into the GL table by hand.',
       'Amounts autosave; submit for approval (status "pending").',
       'A director approves ("Approve & Close Period"), which signs off and locks the week.',
     ],
     uploads: [
       {
-        name: 'GL labor import (Excel / CSV)',
-        note: 'Standard or "Mosaic" layouts are auto-detected. Columns:',
+        name: 'GL labor import — California Labor.xlsx (Excel / CSV)',
+        note: 'Standard or "Mosaic" layouts are auto-detected; Aurelia prefers a labor/payroll sheet in the workbook. Columns:',
         columns: [
           { col: 'GL Code (GL / Account)', desc: 'the labor GL code' },
           { col: 'Amount (Value)', desc: 'the amount for that code' },
@@ -391,48 +395,41 @@ export const TABS = [
       'The labor GL family: 50410 Onsite Labor, 50411 401k, 50412 Benefits, 50413 Payroll Taxes, 50414 Bonus — all roll up as Onsite Labor. 50420 is 3rd-Party Labor and is broken out on its own. 68xxx codes are Comp & Benefits.',
       'Rule of thumb: Onsite Labor = every 504xx code EXCEPT 50420. Do not let a food invoice get coded to 50412/50413/50414 — those are labor benefit codes, not food.',
     ],
-    troy: [
-      '[TROY: Which payroll / Mosaic report is the labor source file, and where is it exported from?]',
-    ],
+    troy: [],
   },
 ]
 
 export const FAQ = [
   {
-    q: 'I placed an order but it is not showing up as a cost — why?',
-    a:
-      'Because an Order Hub order is a commitment, not a cost. It only becomes a cost when you approve (or pay) its ' +
-      'invoice in the Purchasing tab. Until then it sits in "ap_pending" for the budget burndown.',
+    q: 'What do I do first?',
+    a: 'Upload your item list. Nothing works before that — counting, ordering, valuation and invoicing all key off your location’s catalog. See "Start here".',
   },
   {
-    q: 'What is the difference between the two "Pending"s?',
-    a:
-      'Order Hub "Pending" = you have ordered but not received it (a commitment, not a cost). Purchasing "Pending" = ' +
-      'you have received the invoice and it is accruing as a cost. Same word, opposite meaning.',
+    q: 'Do I have to hand-key sales?',
+    a: 'No. Use Import Events and upload both Fooda reports (Event Line Items - Catering, and Vendor_Partner Financials - Popup Event Summary). Aurelia posts the revenue for you.',
   },
   {
-    q: 'I closed the period by accident — how do I get back in?',
-    a:
-      'Ask a director or admin to reopen it (the 🔓 Reopen button on the top bar). Managers cannot reopen a closed period.',
+    q: 'How do I upload invoices?',
+    a: 'Drag the PDF in — Aurelia reads vendor, dates, amounts and GL code. You can also import a CSV, or enter one by hand.',
   },
   {
-    q: 'My inventory count upload skipped some rows — why?',
-    a:
-      'The preview tells you: rows that did not match an item by name are skipped (fix the name in the file or add ' +
-      'the item to the catalog first), and rows that had an item but no count value are skipped. Only matched rows ' +
-      'with a count are written.',
+    q: 'Do I enter food / chem / paper totals separately?',
+    a: 'No. Code the GL and it lands on the right line automatically: 12000–12003 → purchases/COGS, 65070 → Cleaning, 65080 → Paper.',
   },
   {
-    q: 'Item list vs Upload counts — which do I use?',
-    a:
-      'Use "Item list" (amber) to define WHAT items exist at a location (names, prices, pack sizes). Use "Upload ' +
-      'counts" (green) to enter HOW MANY you have this week. Counts uploaded via the item-list button are ignored.',
+    q: 'What’s the difference between the two Inventory upload buttons?',
+    a: 'Amber "Item list" = definitions, no counts. Green "Upload counts" = counts, previewed before they’re written.',
   },
   {
-    q: 'Why is a whole line on the Dashboard zero?',
-    a:
-      'Either its source tab has not been filled in for this location/period, or you are looking at the wrong ' +
-      'location or week in the top bar. The Dashboard only reports; it never holds numbers of its own.',
+    q: 'Why isn’t my item counted when I only entered units?',
+    a: 'It is now — eaches-only counts register. An item with loose units but no full cases still counts toward value.',
   },
-  // [TROY: add the real questions managers actually ask you here.]
+  {
+    q: 'Why isn’t my Order Hub order showing as a cost?',
+    a: 'It’s a commitment, not a cost. It hits COGS when the invoice is approved/paid in Purchasing.',
+  },
+  {
+    q: 'I closed a period by mistake.',
+    a: 'Only a director/admin can reopen it. Ask one to hit the 🔓 Reopen button on the top bar.',
+  },
 ]
