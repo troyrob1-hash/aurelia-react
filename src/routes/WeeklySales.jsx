@@ -8,7 +8,7 @@ import { Download, Upload, CheckCircle, Clock, AlertCircle, TrendingUp, Trending
 import { useToast } from '@/components/ui/Toast'
 import { usePeriod } from '@/store/PeriodContext'
 import { readPeriodClose } from '@/lib/pnl'
-import { writeSalesPnL, weeksInPeriod } from '@/lib/pnl'
+import { writeSalesPnL, weeksInPeriod, getRates } from '@/lib/pnl'
 import { parseEventExport, mergeEventData } from '@/lib/parseEventExport'
 import Breadcrumb from '@/components/ui/Breadcrumb'
 import { useDragDropUpload } from '@/hooks/useDragDropUpload'
@@ -112,12 +112,15 @@ export default function WeeklySales() {
     if (results.length === 0) return
     setEventFiles(results)
 
-    // Merge popup + catering data
+    // Merge popup + catering data. Retail tax uses the CONFIGURABLE rate
+    // (settings/rates + per-location override), not a hardcoded 0.077.
     const popupResult = results.find(r => r.type === 'popup')
     const cateringResult = results.find(r => r.type === 'catering')
+    const rates = await getRates(selectedLocation)
     const merged = mergeEventData(
       popupResult?.data || null, cateringResult?.data || null,
       popupResult?.daily || {}, cateringResult?.daily || {},
+      rates.retailTaxRate,
     )
     setEventMerged(merged)
     setShowEventModal(true)

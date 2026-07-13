@@ -7,10 +7,56 @@ import { db } from './firebase'
 import { doc, setDoc, getDoc, onSnapshot, serverTimestamp, collection, query, where, getDocs, documentId } from 'firebase/firestore'
 import { useAuthStore } from '@/store/authStore'
 
-// Default commission rate. Interim: single constant (was hardcoded 0.18 in
-// multiple files). Future: read per-location commissionRate from the location
-// doc, falling back to this. Change here once to update everywhere.
+// Legacy fallback commission rate (0.18). This was an INVENTED constant — the
+// budget workbook shows real commission is ~23% popup / ~19% catering. Kept only
+// as the fail-open fallback inside getRates() when settings/rates is unreadable.
 export const DEFAULT_COMMISSION_RATE = 0.18
+
+// ── Configurable contract-term rates ────────────────────────────────────────
+// Commission (popup/catering) and retail tax live at tenants/{org}/settings/rates,
+// with optional per-location overrides on the location doc (orgs/{org}/locations
+// where name == location, field `rates`). Directors/VPs/admins edit them (rule:
+// settings/rates). Memoized per session. FAIL-OPEN: a missing/unreadable settings
+// doc falls back to the prior constants so saving a sales week never blocks on
+// config (logs a warning so the fallback is visible, not silent).
+const RATE_FALLBACK = Object.freeze({
+  commissionRatePopup: DEFAULT_COMMISSION_RATE,     // 0.18 (legacy)
+  commissionRateCatering: DEFAULT_COMMISSION_RATE,  // 0.18 (legacy)
+  retailTaxRate: 0.077,                             // prior hardcoded retail tax
+})
+let _ratesTenant = null
+const _ratesByLoc = {}
+// Test/seed hook — drop the memo so a fresh read picks up an edited settings doc.
+export function _clearRatesCache() { _ratesTenant = null; for (const k in _ratesByLoc) delete _ratesByLoc[k] }
+
+export async function getRates(location) {
+  if (!_ratesTenant) {
+    try {
+      const snap = await getDoc(doc(db, 'tenants', _getOrgId(), 'settings', 'rates'))
+      if (snap.exists()) {
+        _ratesTenant = { ...RATE_FALLBACK, ...snap.data() }
+      } else {
+        console.warn('getRates: tenants/*/settings/rates missing — using fallback', RATE_FALLBACK)
+        _ratesTenant = { ...RATE_FALLBACK }
+      }
+    } catch (e) {
+      console.warn('getRates: settings/rates unreadable — using fallback:', e?.message)
+      _ratesTenant = { ...RATE_FALLBACK }
+    }
+  }
+  if (!location) return _ratesTenant
+  if (_ratesByLoc[location] !== undefined) return _ratesByLoc[location]
+  let merged = _ratesTenant
+  try {
+    const q = await getDocs(query(collection(db, 'orgs', _getOrgId(), 'locations'), where('name', '==', location)))
+    const ov = q.docs[0]?.get('rates')
+    if (ov && typeof ov === 'object') merged = { ..._ratesTenant, ...ov }
+  } catch (e) {
+    console.warn('getRates: per-location override lookup failed for', location, '—', e?.message)
+  }
+  _ratesByLoc[location] = merged
+  return merged
+}
 
 // Previously this read `auth.currentUser?.tenantId` — but that property is
 // Firebase Auth's multi-tenancy field (GCIP tenants), not the `custom:tenantId`
@@ -216,15 +262,19 @@ export async function writeSalesPnL(location, period, salesData) {
     //     positive food/revenue line. We mirror that net: cogs contra +
     //     food/revenue line nets to gfs * rate (the commission).
     //   retail: managed service — books GROSS (matches import:
-    //     rev_retail_cafeteria += gfs), less the 7.7% tax line the import applies.
+    //     rev_retail_cafeteria += gfs), less the retail tax line the import applies.
     //
+    // Rates are configurable (settings/rates + per-location override) via getRates,
+    // NOT the invented 0.18 constant. Popup and catering carry DIFFERENT commission
+    // rates (~23% vs ~19% budget-derived); retail tax is its own rate.
     // Only non-zero streams are written, so a paste of one stream never
     // overwrites another stream's data in the same period doc.
     const { retail = 0, catering = 0, popup = 0 } = salesData
-    const rate = DEFAULT_COMMISSION_RATE
+    const rates = await getRates(location)
     const pnlData = {}
 
     if (popup > 0) {
+      const rate = rates.commissionRatePopup
       pnlData.gfs_popup = popup
       // net contribution = popup * rate (the commission Fooda keeps)
       pnlData.rev_popup_cogs = -(popup - popup * rate)   // = -popup*(1-rate)
@@ -232,15 +282,16 @@ export async function writeSalesPnL(location, period, salesData) {
       // tax / pp_fee unknown for manual entry -> left unset (0)
     }
     if (catering > 0) {
+      const rate = rates.commissionRateCatering
       pnlData.gfs_catering = catering
       pnlData.rev_catering_cogs = -(catering - catering * rate)
       pnlData.rev_catering_revenue = catering            // nets to catering*rate
     }
     if (retail > 0) {
       pnlData.gfs_retail = retail
-      // retail books gross (managed service), less 7.7% tax line per import
+      // retail books gross (managed service), less the configurable retail tax line
       pnlData.rev_retail_cafeteria = retail
-      pnlData.rev_retail_cogs_tax = -Math.abs(retail * 0.077)
+      pnlData.rev_retail_cogs_tax = -Math.abs(retail * rates.retailTaxRate)
     }
 
     const gfs = (pnlData.gfs_retail || 0) + (pnlData.gfs_catering || 0) + (pnlData.gfs_popup || 0)

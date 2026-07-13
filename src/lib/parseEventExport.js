@@ -188,7 +188,11 @@ export async function parseEventExport(file) {
   })
 }
 
-export function mergeEventData(popupData, cateringData, popupDaily, cateringDaily) {
+// retailTaxRate is the CONFIGURABLE retail tax (settings/rates), passed in by the
+// caller (getRates). Popup/catering tax come from the real Tax Net column; only
+// RETAIL tax is estimated, so it must use the same configurable rate as manual
+// entry — not a hardcoded 0.077. Defaults to 0.077 for callers that don't pass it.
+export function mergeEventData(popupData, cateringData, popupDaily, cateringDaily, retailTaxRate = 0.077) {
   const merged = {}
   merged.gfs_popup = (popupData?.gfs_popup || 0)
   merged.gfs_catering = (cateringData?.gfs_catering || 0)
@@ -204,7 +208,7 @@ export function mergeEventData(popupData, cateringData, popupDaily, cateringDail
   merged.rev_delivery_cogs = 0
   merged.rev_retail_barista = popupData?.rev_retail_barista || 0
   merged.rev_retail_cafeteria = popupData?.rev_retail_cafeteria || 0
-  merged.rev_retail_cogs_tax = -Math.abs((merged.rev_retail_barista + merged.rev_retail_cafeteria) * 0.077)
+  merged.rev_retail_cogs_tax = -Math.abs((merged.rev_retail_barista + merged.rev_retail_cafeteria) * retailTaxRate)
   merged.rev_client_fees = popupData?.rev_client_fees || 0
   merged.revenue_total = merged.rev_popup_cogs + merged.rev_popup_food_sales + merged.rev_popup_tax
     + merged.rev_popup_pp_fee + merged.rev_catering_cogs + merged.rev_catering_revenue
