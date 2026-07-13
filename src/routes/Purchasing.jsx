@@ -5,7 +5,7 @@ import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { useToast } from '@/components/ui/Toast'
 import AllLocationsGrid from '@/components/AllLocationsGrid'
 import { usePeriod } from '@/store/PeriodContext'
-import { readPeriodClose, writePnL, locId, weeksInPeriod } from '@/lib/pnl'
+import { readPeriodClose, writePnL, locId, weeksInPeriod, toPnlLine, GL_NUMERIC_TO_PNL } from '@/lib/pnl'
 import { db, storage } from '@/lib/firebase'
 import {
   collection, query, orderBy, getDocs, addDoc, updateDoc,
@@ -62,16 +62,14 @@ const STATUS_META = {
   Void:     { color: '#6b7280', bg: '#f9fafb', border: '#e5e7eb' },
 }
 
-// GL codes that post to their OWN named line on the Dashboard P&L. Invoices
-// with these codes are already counted via that line, so they must be EXCLUDED
-// from the cogs_purchases rollup or they double-count. Any invoice whose GL is
-// NOT in this set has no dedicated line and rolls up into cogs_purchases.
-const NAMED_GL_LINES = new Set([
-  'cogs_cleaning', 'cogs_equipment', 'cogs_ec_barista', 'cogs_paper',
-  'cogs_supplies', 'cogs_uniforms', 'cogs_maintenance', 'cogs_shrinkage',
-  'cogs_payment_processing', 'cogs_retail_barista', 'cogs_retail_cafeteria',
-  'cogs_retail_managed', 'cogs_onsite_labor', 'cogs_3rd_party',
-])
+// The dedicated Dashboard P&L lines Purchasing OWNS = the GL bridge's target lines
+// (pnl.js GL_NUMERIC_TO_PNL values: cogs_cleaning/paper/equipment/ec_barista/
+// supplies/uniforms/maintenance). These are the ONLY lines the recompute writes and
+// zeroes. Every OTHER named line is owned by a DIFFERENT module and must NEVER be
+// written here — cogs_shrinkage (WasteLog), cogs_retail_* (retail), cogs_onsite_labor
+// / cogs_3rd_party (Labor / writeLaborPnL). An invoice not targeting an owned line
+// flattens into cogs_purchases (money conserved, no cross-module clobber).
+const PURCHASING_OWNED_LINES = new Set(Object.values(GL_NUMERIC_TO_PNL))
 
 // Approval thresholds — amounts above these require director approval
 const APPROVAL_THRESHOLD = 500
@@ -322,11 +320,16 @@ export default function Purchasing() {
         entry.syncStatus = null  // ready for external sync (e.g. NetSuite)
         const ref = await addDoc(collection(db, 'tenants', orgId, 'invoices'), entry)
         setInvoices(prev => [{ id: ref.id, ...entry }, ...prev])
-        // Post to P&L immediately
-        if (entry.glCode && entry.amount) {
-          await writePnL(entry.location || location || selectedLocation, entry.periodKey || periodKey, {
-            [entry.glCode]: entry.amount,
-          })
+        // Re-derive the P&L from ALL invoices in this (location, period) — never
+        // SET a single invoice's amount to a named line (writePnL SETs → it would
+        // overwrite prior invoices on that line). Pass the new invoice explicitly
+        // since setInvoices() hasn't propagated to the recompute closure yet.
+        if (entry.amount) {
+          await recomputePurchasingTotalsForPeriod(
+            entry.location || location || selectedLocation,
+            entry.periodKey || periodKey,
+            [{ id: ref.id, ...entry }],
+          )
         }
         toast.success('Invoice added — posted to P&L')
       }
@@ -343,26 +346,37 @@ export default function Purchasing() {
   // changed on markPaid, leaving COGS at $0 between receiving goods and
   // paying weeks later.
   //
-  // overrideInv (optional) lets the caller patch the just-updated invoice's
-  // new state into the period list — necessary because setInvoices() schedules
-  // a state update that hasn't yet propagated to this closure's `invoices`.
-  //
-  // cogs_purchases is the ROLLUP for invoices with NO dedicated GL line.
-  // Invoices whose glCode is in NAMED_GL_LINES are already counted on their
-  // own Dashboard line (posted via writePnL on invoice create), so they MUST
-  // stay excluded here to prevent double-counting. Don't change that filter.
-  async function recomputePurchasingTotalsForPeriod(targetLocation, targetPeriod, overrideInv) {
-    const periodInvoices = invoices
-      .filter(i => i.periodKey === targetPeriod && i.status !== 'Void')
-      .map(i => i.id === overrideInv?.id ? { ...i, ...overrideInv } : i)
+  // Re-derives ALL purchasing-driven P&L for one (location, period) from the FULL
+  // invoice set — it never writes a single invoice's amount to a named line
+  // (writePnL SETs, so that would overwrite prior invoices on the same line — the
+  // data-loss bug this fixes). extraInvoices = newly created/updated invoices not
+  // yet in `invoices` state; each is patched by id if present, else appended, so a
+  // just-created invoice is counted immediately. Idempotent: a re-run yields the
+  // same numbers regardless of history.
+  async function recomputePurchasingTotalsForPeriod(targetLocation, targetPeriod, extraInvoices = []) {
+    const byId = new Map(invoices.map(i => [i.id, i]))
+    for (const e of extraInvoices) byId.set(e.id, { ...(byId.get(e.id) || {}), ...e })
+    const periodInvoices = [...byId.values()].filter(i => i.periodKey === targetPeriod && i.status !== 'Void')
 
-    const rollupInvoices = periodInvoices.filter(i => !NAMED_GL_LINES.has(i.glCode))
-    const invoiceTotal = rollupInvoices.reduce((s, i) => s + (i.amount || 0), 0)
+    // Partition every invoice into its Purchasing-OWNED line or the cogs_purchases
+    // flatten bucket. Seed every owned line to 0 FIRST, so a line with no invoices
+    // this period is SET to 0 — voiding the last invoice on a line zeroes it (no
+    // stale money left counted). Only owned lines are written; lines other modules
+    // own are never touched. INVARIANT: each owned line == the sum of this period's
+    // invoices on it (0 when none); cogs_purchases == the sum of everything else.
+    const namedLineTotals = {}
+    for (const line of PURCHASING_OWNED_LINES) namedLineTotals[line] = 0
+    let invoiceTotal = 0
+    for (const i of periodInvoices) {
+      const line = toPnlLine(i.glCode) || i.glCode
+      if (PURCHASING_OWNED_LINES.has(line)) namedLineTotals[line] += (i.amount || 0)
+      else invoiceTotal += (i.amount || 0)   // 12xxx / 50420 / unknown / non-owned → cogs_purchases
+    }
     const paidTotal    = periodInvoices.filter(i => i.status === 'Paid').reduce((s, i) => s + (i.amount || 0), 0)
     const pendingTotal = periodInvoices.filter(i => i.status === 'Pending' || i.status === 'Approved').reduce((s, i) => s + (i.amount || 0), 0)
 
     await writePurchasingPnL(targetLocation, targetPeriod, {
-      invoiceTotal, paidTotal, pendingTotal,
+      invoiceTotal, paidTotal, pendingTotal, namedLineTotals,
     })
   }
 
@@ -378,9 +392,9 @@ export default function Purchasing() {
     // approval immediately — used by Inventory.saveCounts to compute COGS.
     const targetPeriod = inv.periodKey || periodKey
     const targetLocation = inv.location || location || 'all'
-    await recomputePurchasingTotalsForPeriod(targetLocation, targetPeriod, {
+    await recomputePurchasingTotalsForPeriod(targetLocation, targetPeriod, [{
       id, status: 'Approved',
-    })
+    }])
 
     toast.success('Invoice approved')
   }
@@ -403,9 +417,9 @@ export default function Purchasing() {
     const targetPeriod = inv.periodKey || periodKey
     const targetLocation = inv.location || location || 'all'
 
-    await recomputePurchasingTotalsForPeriod(targetLocation, targetPeriod, {
+    await recomputePurchasingTotalsForPeriod(targetLocation, targetPeriod, [{
       id, status: 'Paid', amountPaid: inv.amount,
-    })
+    }])
 
     // EXTENSION POINT: post-payment hooks (NetSuite sync, notifications, etc.)
     // See INTEGRATIONS_ARCHITECTURE.md section 2 for the NetSuite integration plan.
@@ -539,10 +553,10 @@ export default function Purchasing() {
         }
         setInvoices(prev => [newInv, ...prev])
         // Post to P&L immediately
-        if (aiGlCode && parsed.total) {
-          await writePnL(location || selectedLocation, periodKey, {
-            [aiGlCode]: parsed.total,
-          })
+        // Re-derive from all invoices in the period (never SET one amount to a named
+        // line). newInv carries the just-created invoice (state not yet propagated).
+        if (parsed.total) {
+          await recomputePurchasingTotalsForPeriod(location || selectedLocation, periodKey, [newInv])
         }
         const glLabel = aiGlCode ? aiGlCode.replace('cogs_', '').replace('exp_', '').replace(/_/g, ' ') : 'unclassified'
         toast.success('Invoice parsed: ' + (parsed.vendor || 'Unknown') + ' — $' + (parsed.total || 0).toLocaleString() + (needsGlReview ? ' (needs GL review)' : ' → ' + glLabel) + (aiGlCode ? ' — posted to P&L' : ''))
@@ -555,7 +569,7 @@ export default function Purchasing() {
       const ws   = wb.Sheets[wb.SheetNames[0]]
       const rows = XLSX.utils.sheet_to_json(ws, { raw: false })
       let imported = 0
-      const importedGlTotals = {}
+      const importedInvoices = []
       for (const row of rows) {
         const amount = parseFloat(row['Amount'] || row['amount'] || row['Total'] || 0)
         if (!amount) continue
@@ -586,17 +600,16 @@ export default function Purchasing() {
         }
         const ref = await addDoc(collection(db, 'tenants', orgId, 'invoices'), entry)
         setInvoices(prev => [{ id: ref.id, ...entry }, ...prev])
-        if (entry.glCode && entry.amount) {
-          importedGlTotals[entry.glCode] = (importedGlTotals[entry.glCode] || 0) + entry.amount
-        }
+        importedInvoices.push({ id: ref.id, ...entry })
         imported++
       }
-      // Post ONLY the invoices imported in THIS run to P&L. Reading from the
-      // `invoices` state here would re-post pre-existing invoices (stale +
-      // already posted), inflating the GL lines. We accumulate from the rows
-      // actually imported in this loop instead.
-      if (Object.keys(importedGlTotals).length > 0) {
-        await writePnL(location || selectedLocation, periodKey, importedGlTotals)
+      // Re-derive the P&L for the imported (location, period) from the FULL invoice
+      // set, passing the imported invoices explicitly (state hasn't propagated).
+      // Re-derive sums every line from all invoices, so an import never overwrites
+      // prior amounts (the writePnL-SET data-loss bug). Filtering by period inside
+      // recompute drops any imported rows that belong to a different period.
+      if (importedInvoices.length > 0) {
+        await recomputePurchasingTotalsForPeriod(location || selectedLocation, periodKey, importedInvoices)
       }
       toast.success("Imported " + imported + " invoices — posted to P&L")
     } catch { toast.error('Import failed — check file format') }

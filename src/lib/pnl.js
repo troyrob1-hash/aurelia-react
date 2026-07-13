@@ -276,7 +276,7 @@ export async function writeLaborPnL(location, period, { onsiteLabor, thirdParty,
 }
 
 // Purchasing AP → COGS purchases
-export async function writePurchasingPnL(location, period, { invoiceTotal, paidTotal, pendingTotal }) {
+export async function writePurchasingPnL(location, period, { invoiceTotal, paidTotal, pendingTotal, namedLineTotals }) {
   // Only write fields that are provided and meaningful. Because writes merge,
   // passing 0/undefined for a field would otherwise STOMP an existing value
   // (e.g. OrderHub writes only ap_pending and must not zero out cogs_purchases
@@ -286,9 +286,43 @@ export async function writePurchasingPnL(location, period, { invoiceTotal, paidT
   if (invoiceTotal !== undefined && invoiceTotal !== null) data.cogs_purchases = invoiceTotal
   if (paidTotal    !== undefined && paidTotal    !== null) data.ap_paid        = paidTotal
   if (pendingTotal !== undefined && pendingTotal !== null) data.ap_pending     = pendingTotal
+  // Dedicated named lines, each already re-derived by the caller as the SUM of its
+  // invoices this period. SET here (merge) so a line is never overwritten by a
+  // single invoice's amount — the write-loss bug the caller re-derive fixes.
+  if (namedLineTotals) for (const [line, sum] of Object.entries(namedLineTotals)) data[line] = sum
   if (Object.keys(data).length > 0) {
     await writePnL(location, period, data)
   }
+}
+
+// ── GL code → dedicated P&L line (VF #4 translation bridge) ──────────────────
+// A numeric catalog GL code that posts to a DEDICATED Dashboard COGS line. A code
+// NOT listed here (12xxx inventory purchases, or anything unknown) returns null
+// and flattens into cogs_purchases. Every target is already a NAMED_GL_LINE, so
+// after translation the existing named-line logic applies unchanged. Verified
+// against Dashboard.jsx: cogs_cleaning/paper/equipment/ec_barista/supplies/
+// uniforms/maintenance are dedicated lines; cogs_3rd_party has no standalone line
+// but is summed into the labor subtotal (_labor_subtotal).
+export const GL_NUMERIC_TO_PNL = {
+  '65070': 'cogs_cleaning',
+  '65080': 'cogs_paper',
+  '50430': 'cogs_equipment',
+  '50431': 'cogs_ec_barista',
+  '50440': 'cogs_supplies',
+  '50450': 'cogs_maintenance',
+  '65050': 'cogs_uniforms',
+  // 50420 (3rd-Party Labor) is DELIBERATELY NOT mapped: cogs_3rd_party is written
+  // by the Labor module (writeLaborPnL), so a Purchasing re-derive would clobber
+  // Labor's value. 50420 invoices therefore FLATTEN into cogs_purchases — the only
+  // option with no cross-module write collision. Revisit with a distinct
+  // Purchasing-owned field if 3rd-party labor via Purchasing becomes common.
+}
+// The dedicated P&L field a mapped numeric GL code posts to, or null if unmapped
+// (→ flatten into cogs_purchases). Callers do `toPnlLine(glCode) || glCode` then
+// gate on NAMED_GL_LINES membership, so a mapped code lands on its line and
+// everything else flattens — a bare pnl[<code>] junk field can never be written.
+export function toPnlLine(glCode) {
+  return GL_NUMERIC_TO_PNL[String(glCode)] || null
 }
 
 // Waste → COGS shrinkage
