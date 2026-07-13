@@ -21,17 +21,22 @@ import { canApproveInvoices, canAdministerSystem } from '@/lib/permissions'
 import styles from './Purchasing.module.css'
 
 // ── Fallback vendors — overridden by Firestore per org ───────
+// GL defaults use CANONICAL inventory codes. (Previously mis-set to 50412/50413/
+// 50414 — which are actually Onsite Labor Benefits/Taxes/Bonus, see LaborPlanner —
+// a chart-of-accounts collision. Fixed: food→12000 Inventory-Cafeteria,
+// coffee→12002 Inventory-Barista. Amazon defaults to 12000; user overrides per
+// invoice for chem/paper. Also update the live config/vendors doc, which overrides this.)
 const DEFAULT_VENDORS = [
-  { id: 'sysco',       label: 'Sysco',          glCode: '50413' },
-  { id: 'nassau',      label: 'Nassau',          glCode: '50413' },
-  { id: 'vistar',      label: 'Vistar',          glCode: '50413' },
-  { id: 'cafemoto',    label: 'Café Moto',       glCode: '50412' },
-  { id: 'davidrio',    label: 'David Rio',       glCode: '50412' },
-  { id: 'amazon',      label: 'Amazon',          glCode: '50414' },
-  { id: 'webstaurant', label: 'Webstaurant',     glCode: '50413' },
-  { id: 'bluecart',    label: 'Blue Cart',       glCode: '50413' },
-  { id: 'rtzn',        label: 'RTZN',            glCode: '50413' },
-  { id: 'donedwards',  label: 'Don Edwards',     glCode: '50412' },
+  { id: 'sysco',       label: 'Sysco',          glCode: '12000' },
+  { id: 'nassau',      label: 'Nassau',          glCode: '12000' },
+  { id: 'vistar',      label: 'Vistar',          glCode: '12000' },
+  { id: 'cafemoto',    label: 'Café Moto',       glCode: '12002' },
+  { id: 'davidrio',    label: 'David Rio',       glCode: '12002' },
+  { id: 'amazon',      label: 'Amazon',          glCode: '12000' },
+  { id: 'webstaurant', label: 'Webstaurant',     glCode: '12000' },
+  { id: 'bluecart',    label: 'Blue Cart',       glCode: '12000' },
+  { id: 'rtzn',        label: 'RTZN',            glCode: '12000' },
+  { id: 'donedwards',  label: 'Don Edwards',     glCode: '12002' },
   { id: 'other',       label: 'Other',           glCode: '' },
 ]
 
