@@ -399,17 +399,27 @@ export default function Purchasing() {
   async function approve(id) {
     const inv = invoices.find(i => i.id === id)
     if (!inv) return
-    await updateDoc(doc(db, 'tenants', orgId, 'invoices', id), {
-      status: 'Approved', approvedBy: user?.name || user?.email, approvedAt: serverTimestamp(), updatedAt: serverTimestamp()
-    })
-    setInvoices(prev => prev.map(i => i.id === id ? { ...i, status: 'Approved' } : i))
-
-    // Refresh the purchasing P&L rollup so cogs_purchases reflects this
-    // approval immediately — used by Inventory.saveCounts to compute COGS.
+    // Back-fill periodKey AT APPROVAL, not at OrderHub create. Two meanings of
+    // "Pending" collide: a Purchasing invoice is a RECEIVED cost (accrues into
+    // cogs_purchases per commit 550a6c9), but an OrderHub Pending order is a
+    // COMMITMENT (goods not received) that must stay ap_pending only. The recompute
+    // sums EVERY non-void invoice into cogs_purchases regardless of status — so a
+    // period-stamped Pending order would post an un-received commitment as COGS.
+    // Stamping here means an OrderHub order enters cogs_purchases exactly when it
+    // becomes a real cost. DO NOT move this stamp to create. Only stamp when missing
+    // (`|| ` treats ''/undefined as missing); a valid existing period is never
+    // overwritten — a late approval must not move a cost into a different week.
     const targetPeriod = inv.periodKey || periodKey
     const targetLocation = inv.location || location || 'all'
+    const patch = { status: 'Approved', approvedBy: user?.name || user?.email, approvedAt: serverTimestamp(), updatedAt: serverTimestamp() }
+    if (!inv.periodKey) patch.periodKey = targetPeriod
+    await updateDoc(doc(db, 'tenants', orgId, 'invoices', id), patch)
+    setInvoices(prev => prev.map(i => i.id === id ? { ...i, status: 'Approved', periodKey: i.periodKey || targetPeriod } : i))
+
+    // Recompute AFTER the stamp+status update, with the stamped period passed in, so
+    // the newly-periodized invoice lands in cogs_purchases immediately.
     await recomputePurchasingTotalsForPeriod(targetLocation, targetPeriod, [{
-      id, status: 'Approved',
+      id, status: 'Approved', periodKey: targetPeriod,
     }])
 
     toast.success('Invoice approved')
@@ -419,29 +429,34 @@ export default function Purchasing() {
     const inv = invoices.find(i => i.id === id)
     if (!inv) return
 
-    // Update the invoice to Paid status
-    await updateDoc(doc(db, 'tenants', orgId, 'invoices', id), {
+    // Back-fill periodKey at payment when missing (see approve() for the full why:
+    // OrderHub Pending = commitment → ap_pending; it becomes a real cost, and enters
+    // cogs_purchases, when approved/paid). Only stamp when missing; never overwrite a
+    // valid existing period. DO NOT move this stamp to OrderHub create.
+    const targetPeriod = inv.periodKey || periodKey
+    const targetLocation = inv.location || location || 'all'
+    const patch = {
       status: 'Paid',
       amountPaid: inv.amount,
       paidBy: user?.name || user?.email,
       paidAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
       syncStatus: null,  // ready for external sync (e.g. NetSuite) — see INTEGRATIONS_ARCHITECTURE.md
-    })
+    }
+    if (!inv.periodKey) patch.periodKey = targetPeriod
+    await updateDoc(doc(db, 'tenants', orgId, 'invoices', id), patch)
 
-    // Recalculate P&L totals for the invoice's own period (not the current period — they may differ)
-    const targetPeriod = inv.periodKey || periodKey
-    const targetLocation = inv.location || location || 'all'
-
+    // Recompute AFTER the stamp+status update, with the stamped period passed in, so
+    // the newly-periodized invoice lands in cogs_purchases immediately.
     await recomputePurchasingTotalsForPeriod(targetLocation, targetPeriod, [{
-      id, status: 'Paid', amountPaid: inv.amount,
+      id, status: 'Paid', amountPaid: inv.amount, periodKey: targetPeriod,
     }])
 
     // EXTENSION POINT: post-payment hooks (NetSuite sync, notifications, etc.)
     // See INTEGRATIONS_ARCHITECTURE.md section 2 for the NetSuite integration plan.
     // Implementation pattern: Cloud Function trigger on this invoice doc's status change to 'Paid'.
 
-    setInvoices(prev => prev.map(i => i.id === id ? { ...i, status: 'Paid', amountPaid: i.amount } : i))
+    setInvoices(prev => prev.map(i => i.id === id ? { ...i, status: 'Paid', amountPaid: i.amount, periodKey: i.periodKey || targetPeriod } : i))
     toast.success('Marked as paid — P&L updated')
   }
 
