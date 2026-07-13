@@ -334,7 +334,11 @@ export default function LaborPlanner() {
       const XLSX = await import('xlsx')
       const ab   = await file.arrayBuffer()
       const wb   = XLSX.read(new Uint8Array(ab), { type: 'array' })
-      const ws   = wb.Sheets[wb.SheetNames[0]]
+      // Managers may upload the whole multi-sheet workbook — prefer a sheet whose
+      // name looks like labor/payroll/hours; fall back to the first sheet. A wrong
+      // sheet is caught by the zero-rows-parsed guard below.
+      const sheetName = wb.SheetNames.find(s => /labor|payroll|hours/i.test(s)) || wb.SheetNames[0]
+      const ws   = wb.Sheets[sheetName]
       const data = XLSX.utils.sheet_to_json(ws, { raw: false })
 
       const parsed = []
@@ -412,6 +416,18 @@ export default function LaborPlanner() {
             parsed.push({ gl, label: glMap[gl]?.label || desc || gl, amount, section: glMap[gl]?.section || 'Other' })
           }
         })
+      }
+
+      // Fail-loud on a wrong sheet: no GL-code/amount rows parsed means we read a
+      // cover page / summary, not the labor data. Reject BEFORE writing a submission
+      // or posting $0 to P&L, naming the sheet read and listing the file's tabs.
+      if (parsed.length === 0) {
+        toast.error(
+          `Couldn't find labor data on sheet "${sheetName}". Sheets in this file: ${wb.SheetNames.join(', ')}. ` +
+          `Aurelia looks for GL code + amount columns (e.g. "GL Code" and "Amount", or a Mosaic "50410 - …" layout).`
+        )
+        e.target.value = ''
+        return
       }
 
       const now  = new Date()

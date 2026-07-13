@@ -102,9 +102,15 @@ export async function parseEventExport(file) {
     reader.onload = (e) => {
       try {
         const wb = XLSX.read(e.target.result, { type: 'array', cellDates: true })
-        const sheet = wb.Sheets[wb.SheetNames[0]]
+        const sheetName = wb.SheetNames[0]
+        const sheet = wb.Sheets[sheetName]
         const rows = XLSX.utils.sheet_to_json(sheet)
-        if (rows.length === 0) { reject(new Error('File is empty')); return }
+        // Name the sheet we read (and list the others) so a manager who uploaded a
+        // whole multi-tab workbook knows to check which tab holds the export.
+        const sheetInfo = wb.SheetNames.length > 1
+          ? ` [read sheet "${sheetName}" of ${wb.SheetNames.length}: ${wb.SheetNames.join(', ')}]`
+          : ` [read sheet "${sheetName}"]`
+        if (rows.length === 0) { reject(new Error(`Sheet "${sheetName}" is empty.` + (wb.SheetNames.length > 1 ? ` Other sheets: ${wb.SheetNames.join(', ')}` : ''))); return }
         const headers = Object.keys(rows[0])
         const colCount = headers.length
         // Case/space-tolerant header presence check. The parsers read EXACT keys, so a
@@ -120,7 +126,7 @@ export async function parseEventExport(file) {
           if (missing.length) {
             reject(new Error(
               `This doesn't look like a Fooda popup event export. Expected columns like ` +
-              `"Event Date" and "Gross Food Sales" — found: ${shownHeaders}`
+              `"Event Date" and "Gross Food Sales" — found: ${shownHeaders}${sheetInfo}`
             ))
             return
           }
@@ -136,7 +142,7 @@ export async function parseEventExport(file) {
           if (missing.length) {
             reject(new Error(
               `This doesn't look like a Fooda event export (popup or catering). Expected ` +
-              `catering columns like "Event date", "Total Price", "Entity name" — found: ${shownHeaders}`
+              `catering columns like "Event date", "Total Price", "Entity name" — found: ${shownHeaders}${sheetInfo}`
             ))
             return
           }
@@ -144,7 +150,7 @@ export async function parseEventExport(file) {
         } else {
           reject(new Error(
             `Unrecognized format (${colCount} cols) — not a Fooda popup (>=50 cols) or ` +
-            `catering (<=25 cols) export. Found: ${shownHeaders}`
+            `catering (<=25 cols) export. Found: ${shownHeaders}${sheetInfo}`
           ))
           return
         }

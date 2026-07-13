@@ -114,14 +114,18 @@ export default function Inventory() {
       const workbook = XLSX.read(data)
       console.log('Sheet names:', JSON.stringify(workbook.SheetNames))
 
-      // Target the right sheet — priority order for Fooda inventory templates
-      const sheetPriority = ['Items', 'Inv_By_Item', 'Inventory_UPC', 'Items_UPC']
+      // Target the right sheet — priority order for Fooda inventory templates.
+      // Managers upload the WHOLE multi-sheet OneDrive workbook; the item data
+      // lives on the "INVItems" tab, which may not be first. Normalize names
+      // (lowercase, strip spaces/underscores) so 'invitems' == 'INV Items' ==
+      // 'INV_Items' == 'InvItems' all match the same target regardless of tab
+      // position. INVItems variants come FIRST, then the legacy priority list.
+      const normSheet = (s) => String(s).toLowerCase().replace(/[\s_]+/g, '')
+      const sheetPriority = ['INVItems', 'INV Items', 'INV_Items', 'InvItems', 'Items', 'Inv_By_Item', 'Inventory_UPC', 'Items_UPC']
       let bestSheet = null
       for (const target of sheetPriority) {
-        if (workbook.SheetNames.includes(target)) {
-          bestSheet = target
-          break
-        }
+        const hit = workbook.SheetNames.find(s => normSheet(s) === normSheet(target))
+        if (hit) { bestSheet = hit; break }
       }
       // Fallback: find any sheet with "item" in the name
       if (!bestSheet) {
@@ -168,6 +172,25 @@ export default function Inventory() {
 
       // Fuzzy column finder — matches partial, case-insensitive
       const headers = Object.keys(rows[0])
+
+      // Fail-loud on a WRONG SHEET: if the chosen sheet has no name/description
+      // column, we picked a cover page / summary, not the item list. Reject BEFORE
+      // the destructive catalog-clear below, naming the sheet used and listing the
+      // file's tabs so the user can see what happened. (A silent parse of the wrong
+      // sheet is exactly the failure this guards against.)
+      const NAME_ALIASES = ['description', 'item name', 'item', 'name', 'product']
+      const hasNameCol = headers.some(h => {
+        const hl = String(h).toLowerCase().trim()
+        return NAME_ALIASES.some(a => hl === a || hl.includes(a))
+      })
+      if (!hasNameCol) {
+        toast.error(
+          `Couldn't find item data on sheet "${bestSheet}". Sheets in this file: ${workbook.SheetNames.join(', ')}. ` +
+          `Aurelia looks for a sheet named INVItems (or Items). Expected columns: name/description, pack size, ` +
+          `pack price, vendor, GL code.`
+        )
+        return
+      }
 
       // Fail-loud: this upload imports item DEFINITIONS only, never counts. If a
       // column looks like counted quantities, warn BEFORE any write so a user
@@ -362,7 +385,7 @@ export default function Inventory() {
       if (batchCount > 0) await batch.commit()
 
       console.log('Upload complete:', count, 'items written to tenants/' + orgId + '/inventory/' + locKey + '/items')
-      toast.success('Imported ' + count + ' items')
+      toast.success('Imported ' + count + ' items from sheet "' + bestSheet + '"')
       if (typeof load === 'function') { console.log('Calling load()...'); await load(); console.log('load() done') }
 
     } catch (err) {
@@ -854,8 +877,18 @@ export default function Inventory() {
       const nameCol = headers.find(h => /^(item|name|description|item name|product)$/i.test(h.trim()))
       const casesCol = headers.find(h => /^(cases|qty|quantity|count)$/i.test(h.trim()))
       const eachesCol = headers.find(h => /^(eaches|units|loose|each)$/i.test(h.trim()))
-      if (!nameCol) { toast.error('No item column found. Add a header named "Item", "Name", or "Description".'); return }
-      if (!casesCol && !eachesCol) { toast.error('No count column found. Add "Cases" (or "Qty") and/or "Eaches".'); return }
+      // Fail-loud on a wrong sheet: name the sheet we read and list the file's tabs.
+      if (!nameCol) {
+        toast.error(
+          `Couldn't find item data on sheet "${sheetName}". Sheets in this file: ${wb.SheetNames.join(', ')}. ` +
+          `Add a header named "Item", "Name", or "Description".`
+        )
+        return
+      }
+      if (!casesCol && !eachesCol) {
+        toast.error(`No count column on sheet "${sheetName}". Add "Cases" (or "Qty") and/or "Eaches".`)
+        return
+      }
 
       // Lookups from the CURRENT location's loaded items.
       const bySlug = {}, byName = {}
@@ -902,6 +935,7 @@ export default function Inventory() {
 
       setCountUploadPreview({
         fileName: file.name,
+        sheetName,
         toCount,
         overwrites: toCount.filter(e => e.isOverwrite),
         unmatched, noCount, duplicates,
@@ -2227,7 +2261,7 @@ export default function Inventory() {
                   <h3 style={{ fontSize: 16, fontWeight: 600, color: '#0f172a', margin: 0 }}>Upload counts — preview</h3>
                   <div style={{ fontSize: 13, color: '#475569', marginTop: 4 }}>
                     To <strong>{periodKey}</strong> · <strong>{cleanLocName(location)}</strong> — {N} counted, {K} overwritten, {M} unmatched
-                    <span style={{ color: '#94a3b8' }}> · {p.fileName}</span>
+                    <span style={{ color: '#94a3b8' }}> · {p.fileName}{p.sheetName ? ` · sheet: ${p.sheetName}` : ''}</span>
                   </div>
                 </div>
 
