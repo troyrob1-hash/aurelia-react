@@ -5,7 +5,7 @@ import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { usePeriod } from '@/store/PeriodContext'
 import {
   BarChart2, ShoppingCart, TrendingUp, Package,
-  Trash2, FileText, LayoutGrid, ArrowLeftRight, Settings, Users
+  Trash2, FileText, LayoutGrid, ArrowLeftRight, Settings, Users, HelpCircle
 } from 'lucide-react'
 import styles from './Home.module.css'
 import Onboarding from '@/components/Onboarding'
@@ -91,6 +91,15 @@ const MODULES = [
     icon: Users,
     color: '#993C1D',
     bg: '#FAECE7',
+  },
+  {
+    path: '/directions',
+    section: 'Guide',
+    label: 'Help & Directions',
+    desc: 'How each tab works · Uploads · FAQ',
+    icon: HelpCircle,
+    color: '#B0472A',
+    bg: '#FEECE7',
   },
   {
     path: '/settings',

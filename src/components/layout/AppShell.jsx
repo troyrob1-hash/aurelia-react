@@ -8,7 +8,7 @@ import { readPeriodClose, writePeriodClose, lockPeriod, unlockPeriod, isPeriodLo
 import {
   LayoutDashboard, ShoppingCart, Package, TrendingUp,
   Trash2, FileText, PieChart, ArrowLeftRight,
-  Users, Settings, LogOut, ChevronDown, Bell, MapPin, Menu, X
+  Users, Settings, LogOut, ChevronDown, Bell, MapPin, Menu, X, HelpCircle
 } from 'lucide-react'
 import AureliaChat from '@/components/AureliaChat'
 import { db } from '@/lib/firebase'
@@ -475,6 +475,18 @@ export default function AppShell() {
               </div>
             </NavLink>
           ))}
+          {/* Help pinned to the bottom of the sidebar, separated from operational tabs */}
+          <NavLink to="/directions"
+            className={({ isActive }) => `${styles.navItem} ${isActive ? styles.active : ''}`}
+            onClick={handleNavClick}
+            style={{ marginTop: 'auto' }}
+          >
+            <div className={styles.navIcon}><HelpCircle size={16}/></div>
+            <div className={styles.navText}>
+              <span className={styles.navCategory}>Guide</span>
+              <span className={styles.navLabel}>Help &amp; Directions</span>
+            </div>
+          </NavLink>
         </nav>
 
         <main className={styles.main} onClick={() => menuOpen && setMenuOpen(false)}>
