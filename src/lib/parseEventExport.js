@@ -105,13 +105,60 @@ export async function parseEventExport(file) {
         const sheet = wb.Sheets[wb.SheetNames[0]]
         const rows = XLSX.utils.sheet_to_json(sheet)
         if (rows.length === 0) { reject(new Error('File is empty')); return }
-        const colCount = Object.keys(rows[0]).length
+        const headers = Object.keys(rows[0])
+        const colCount = headers.length
+        // Case/space-tolerant header presence check. The parsers read EXACT keys, so a
+        // near-miss (e.g. different casing) still passes here but is caught by the
+        // zero-usable-rows guard below — the two together prevent silent empty imports.
+        const hasCol = (name) => headers.some(h => String(h).trim().toLowerCase() === name.toLowerCase())
+        const shownHeaders = headers.slice(0, 12).join(', ') + (headers.length > 12 ? ', …' : '')
+
         let type, parsed
-        if (colCount >= 50) { type = 'popup'; parsed = parsePopupExport(rows) }
-        else if (colCount <= 25) { type = 'catering'; parsed = parseCateringExport(rows) }
-        else { reject(new Error(`Unrecognized format (${colCount} cols)`)); return }
+        if (colCount >= 50) {
+          // Popup export — VALIDATE the signature columns, don't trust col-count alone.
+          const missing = ['Event Date', 'Gross Food Sales'].filter(c => !hasCol(c))
+          if (missing.length) {
+            reject(new Error(
+              `This doesn't look like a Fooda popup event export. Expected columns like ` +
+              `"Event Date" and "Gross Food Sales" — found: ${shownHeaders}`
+            ))
+            return
+          }
+          type = 'popup'; parsed = parsePopupExport(rows)
+        } else if (colCount <= 25) {
+          // Catering export — VALIDATE the signature. A small GENERIC daily-sales export
+          // lands here purely by col-count; without these columns parseCateringExport
+          // would skip every row and silently import nothing (the bug this fixes).
+          const missing = []
+          if (!(hasCol('Event date') || hasCol('Event Date'))) missing.push('Event date')
+          if (!hasCol('Total Price')) missing.push('Total Price')
+          if (!hasCol('Entity name')) missing.push('Entity name')
+          if (missing.length) {
+            reject(new Error(
+              `This doesn't look like a Fooda event export (popup or catering). Expected ` +
+              `catering columns like "Event date", "Total Price", "Entity name" — found: ${shownHeaders}`
+            ))
+            return
+          }
+          type = 'catering'; parsed = parseCateringExport(rows)
+        } else {
+          reject(new Error(
+            `Unrecognized format (${colCount} cols) — not a Fooda popup (>=50 cols) or ` +
+            `catering (<=25 cols) export. Found: ${shownHeaders}`
+          ))
+          return
+        }
         const data = parsed.totals
         const daily = parsed.daily
+        // Zero-usable-rows guard: the format matched but every row was skipped (all $0,
+        // blank, or undated). Warn loudly instead of confirming an empty import.
+        if (Object.keys(daily).length === 0) {
+          reject(new Error(
+            `Parsed the ${type} file but found no usable rows — every row was empty, $0, or ` +
+            `undated (popup needs a dated row with Gross Food Sales; catering needs Total Price > 0).`
+          ))
+          return
+        }
         for (const [k, v] of Object.entries(data)) {
           if (typeof v === 'number') data[k] = Math.round(v * 100) / 100
         }
