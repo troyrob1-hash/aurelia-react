@@ -27,7 +27,9 @@ const DEFAULT_SCHEMA = [
     lines: [
       { key: 'gfs_popup',    label: 'Popup',                 indent: 1, budgetKey: 'budget_gfs_popup' },
       { key: 'gfs_catering', label: 'Catering',              indent: 1, budgetKey: 'budget_gfs_catering' },
+      { key: 'gfs_delivery', label: 'Delivery',              indent: 1, budgetKey: 'budget_gfs_delivery' },
       { key: 'gfs_retail',   label: 'Retail',                indent: 1, budgetKey: 'budget_gfs_retail' },
+      { key: 'gfs_pantry',   label: 'Pantry',                indent: 1, budgetKey: 'budget_gfs_pantry' },
       { key: 'gfs_total',    label: 'Total Gross Food Sales', bold: true, budgetKey: 'budget_gfs' },
     ]
   },
@@ -51,7 +53,7 @@ const DEFAULT_SCHEMA = [
       // Retail COGS (tax)
       { key: 'rev_retail_cogs_tax',  label: 'Retail COGS - Tax',               indent: 2, negative: true },
       // Customer Fees
-      { key: 'rev_client_fees',      label: 'Popup Client Fees',                indent: 2 },
+      { key: 'rev_client_fees',      label: 'Popup Client Fees',                indent: 2, budgetKey: 'budget_rev_client_fees' },
       // Total
       { key: 'revenue_total',        label: 'Total Revenue',                    bold: true, budgetKey: 'budget_revenue',
         computeFn: p => {
@@ -98,7 +100,7 @@ const DEFAULT_SCHEMA = [
       { key: 'cogs_retail_barista',  label: 'Retail COGS - Barista',            indent: 2, budgetKey: 'budget_cogs_retail_barista' },
       { key: 'cogs_retail_cafeteria', label: 'Retail COGS - Cafeteria',         indent: 2, budgetKey: 'budget_cogs_retail_cafeteria' },
       { key: 'cogs_retail_managed',  label: 'Retail COGS - Managed Service Cost', indent: 2, budgetKey: 'budget_cogs_retail_managed' },
-      { key: '_retail_cogs_subtotal', label: 'Total Retail COGS',               bold: true, indent: 1,
+      { key: '_retail_cogs_subtotal', label: 'Total Retail COGS',               bold: true, indent: 1, budgetKey: 'budget_cogs_retail',
         computeFn: p => (p.cogs_retail_barista||0) + (p.cogs_retail_cafeteria||0) + (p.cogs_retail_managed||0)
       },
       // Inventory and Purchases are data sources, not P&L line items.

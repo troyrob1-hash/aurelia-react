@@ -100,7 +100,30 @@ const BUDGET_TO_PNL = {
   total_onsite_equipment_and_consumables: '_ec_subtotal',
   total_retail_cogs: '_retail_cogs_subtotal',
   total_cost_of_goods_sold: '_total_cogs',
+
+  // ── 2026_Fooda_Cafe_Budgets_Live.xlsm labels (Troy-verified against the real
+  //    company workbook). slug(label) → P&L line key; the writer prepends 'budget_'.
+  popup_gfs: 'gfs_popup',
+  catering_gfs: 'gfs_catering',
+  delivery_gfs: 'gfs_delivery',                    // new Dashboard GFS line
+  retail_gfs: 'gfs_retail',
+  pantry_gfs: 'gfs_pantry',                         // new Dashboard GFS line
+  total_fees_subsidies: 'rev_client_fees',          // "Total Fees & Subsidies" (40080)
+  onsite_labor: 'cogs_onsite_labor',                // single line → single field (shows at Total Onsite Labor)
+  onsite_equipment_and_consumables: 'cogs_equipment',
+  retail_cogs: 'cogs_retail',                       // one line → the retail-COGS subtotal budget (not the 3-way split)
+  total_compensation_and_benefits: 'exp_comp_benefits',  // GL 68016 (verified) — no GL collision
+  bank_fees: 'cogs_payment_processing',             // 61010 + 61020 SUM into one line (write loop accumulates, never overwrites)
+  advertising_and_marketing: 'exp_mktg_marketing',
+  total_other_expenses: 'exp_other',
+  // Popup/Catering/Retail Revenue and Revenue Share are intentionally UNMAPPED:
+  // no per-line P&L budget row exists. The import preview WARNS on them (never a
+  // silent drop); they still roll into the Total Revenue budget via section detection.
 }
+
+// Resolve a budget-line slug to its P&L key, or null if unmapped. Callers MUST
+// collect unmapped lines and warn — never write budget_<deadkey> (a silent drop).
+const resolveBudgetKey = (slug) => BUDGET_TO_PNL[slug] || null
 function slugify(str) { return str.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'') }
 function locId(n)    { return (n||'').replace(/[^a-zA-Z0-9]/g,'_') }
 
@@ -424,13 +447,18 @@ export default function Budgets() {
           budget_expenses: expenses,
           budget_ebitda:   ebitda,
         }
-        // Map every budget line to its P&L key
+        // Map every budget line to its P&L key. Resolve-or-skip: an unmapped line is
+        // NEVER written to a dead budget_<slug> key (that was the silent drop). The
+        // import preview already warned the user about those lines. Accumulate (+=) so
+        // two source lines that map to one P&L line SUM (e.g. Bank fees 61010 +
+        // Payment Processing 61020 → cogs_payment_processing) instead of overwriting.
         for (const line of allLines) {
           const val = budget[line.key]?.[mo] || 0
-          if (val !== 0) {
-            const pnlKey = BUDGET_TO_PNL[line.key] || line.key
-            budgetData['budget_' + pnlKey] = val
-          }
+          if (val === 0) continue
+          const pnlKey = resolveBudgetKey(line.key)
+          if (!pnlKey) continue
+          const bk = 'budget_' + pnlKey
+          budgetData[bk] = (budgetData[bk] || 0) + val
         }
         // Divide monthly budget by actual weeks in the month
         // and write to each week so Dashboard shows correct weekly variance
@@ -481,13 +509,15 @@ export default function Budgets() {
           budget_gfs: gfs, budget_revenue: revenue,
           budget_cogs: cogs, budget_labor: labor, budget_ebitda: ebitda,
         }
-        // Map every budget line to its P&L key
+        // Map every budget line to its P&L key. Resolve-or-skip (no dead-key writes)
+        // and accumulate so multiple source lines mapping to one P&L line SUM.
         for (const line of allLines) {
           const val = activeBudget[line.key]?.[mo] || 0
-          if (val !== 0) {
-            const pnlKey = BUDGET_TO_PNL[line.key] || line.key
-            budgetData['budget_' + pnlKey] = val
-          }
+          if (val === 0) continue
+          const pnlKey = resolveBudgetKey(line.key)
+          if (!pnlKey) continue
+          const bk = 'budget_' + pnlKey
+          budgetData[bk] = (budgetData[bk] || 0) + val
         }
         const basePeriod = `${year}-P${String(mo).padStart(2,'0')}`
         const numWeeks = weeksInPeriod(year, mo)
@@ -552,7 +582,12 @@ export default function Budgets() {
     const rows   = XLSX.utils.sheet_to_json(ws, { header:1, defval:'' })
     const result = parseExcel(rows, year)
     if (!result || result.schema.length === 0) { toast.error('No data found. Make sure the file has month columns (Jan–Dec).'); return }
-    setPreview({ ...result, sheetName, lineCount: Object.keys(result.data).length })
+    // Every value-bearing line whose slug resolves to no P&L key will NOT be imported.
+    // Surface these in the preview BEFORE the user confirms — no silent drops.
+    const unmatched = result.schema.flatMap(s => s.lines)
+      .filter(l => !resolveBudgetKey(l.key))
+      .map(l => l.label)
+    setPreview({ ...result, sheetName, lineCount: Object.keys(result.data).length, unmatched })
   }
 
   function switchSheet(sheet) {
@@ -910,14 +945,26 @@ export default function Budgets() {
 
       {/* ── Preview confirm ── */}
       {preview && (
-        <div className={styles.previewBar}>
-          <div className={styles.previewInfo}>
-            <span className={styles.previewCheck}>✓</span>
-            Parsed <strong>{preview.lineCount} line items</strong> across <strong>{preview.schema.length} sections</strong> from <strong>"{preview.sheetName}"</strong>
-          </div>
-          <div style={{display:'flex',gap:8}}>
-            <button className={styles.btnCancel} onClick={()=>{setPreview(null);setSheetNames([])}}>Cancel</button>
-            <button className={styles.btnConfirm} onClick={confirmImport}>{schema.length===0?'Import & set schema':'Import data'}</button>
+        <div>
+          {preview.unmatched?.length > 0 && (
+            <div style={{
+              background:'#FEF3C7', border:'1px solid #F59E0B', borderRadius:8,
+              padding:'10px 14px', margin:'0 0 8px', fontSize:13, color:'#92400E', lineHeight:1.5,
+            }}>
+              <strong>⚠️ {preview.unmatched.length} budget line{preview.unmatched.length===1?'':'s'} couldn’t be matched to a P&L line and will not be imported:</strong>{' '}
+              {preview.unmatched.join(', ')}.
+              <div style={{marginTop:4,opacity:0.85}}>Everything else below will post normally. Fix the label in the workbook if one of these should map.</div>
+            </div>
+          )}
+          <div className={styles.previewBar}>
+            <div className={styles.previewInfo}>
+              <span className={styles.previewCheck}>✓</span>
+              Parsed <strong>{preview.lineCount} line items</strong> across <strong>{preview.schema.length} sections</strong> from <strong>"{preview.sheetName}"</strong>
+            </div>
+            <div style={{display:'flex',gap:8}}>
+              <button className={styles.btnCancel} onClick={()=>{setPreview(null);setSheetNames([])}}>Cancel</button>
+              <button className={styles.btnConfirm} onClick={confirmImport}>{schema.length===0?'Import & set schema':'Import data'}</button>
+            </div>
           </div>
         </div>
       )}
@@ -994,9 +1041,10 @@ export default function Budgets() {
 
                             if (view === 'variance') {
                               // Map the budget line key to its P&L field, then read the
-                              // actual from the summed-by-month actuals.
-                              const pnlKey   = BUDGET_TO_PNL[line.key] || line.key
-                              const actual   = actuals[pnlKey]?.[mo] ?? null
+                              // actual from the summed-by-month actuals. Unmapped lines
+                              // (won't import) resolve to null → show budget, no actual.
+                              const pnlKey   = resolveBudgetKey(line.key)
+                              const actual   = pnlKey ? (actuals[pnlKey]?.[mo] ?? null) : null
                               const variance = actual !== null && bVal !== null ? actual - bVal : null
                               return (
                                 <td key={mo} className={styles.varCell}>
