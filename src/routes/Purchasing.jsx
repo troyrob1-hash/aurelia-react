@@ -71,6 +71,21 @@ const STATUS_META = {
 // flattens into cogs_purchases (money conserved, no cross-module clobber).
 const PURCHASING_OWNED_LINES = new Set(Object.values(GL_NUMERIC_TO_PNL))
 
+// Resolve an invoice's money value for P&L sums: amount → subtotal → Σ(lineItems.total)
+// → 0. Uses Number.isFinite (not just ??) so a NON-numeric amount (NaN) also falls
+// through instead of poisoning the sum. NEVER returns undefined/NaN — a broken header
+// total can't silently drop money from cogs_purchases or a named line.
+function invoiceAmount(inv) {
+  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null }
+  const a = num(inv?.amount); if (a !== null) return a
+  const s = num(inv?.subtotal); if (s !== null) return s
+  if (Array.isArray(inv?.lineItems)) {
+    const li = inv.lineItems.reduce((t, l) => t + (Number(l?.total) || 0), 0)
+    if (li) return li
+  }
+  return 0
+}
+
 // Approval thresholds — amounts above these require director approval
 const APPROVAL_THRESHOLD = 500
 
@@ -369,11 +384,12 @@ export default function Purchasing() {
     let invoiceTotal = 0
     for (const i of periodInvoices) {
       const line = toPnlLine(i.glCode) || i.glCode
-      if (PURCHASING_OWNED_LINES.has(line)) namedLineTotals[line] += (i.amount || 0)
-      else invoiceTotal += (i.amount || 0)   // 12xxx / 50420 / unknown / non-owned → cogs_purchases
+      const amt = invoiceAmount(i)   // never undefined/NaN — no silent drop
+      if (PURCHASING_OWNED_LINES.has(line)) namedLineTotals[line] += amt
+      else invoiceTotal += amt   // 12xxx / 50420 / unknown / non-owned → cogs_purchases
     }
-    const paidTotal    = periodInvoices.filter(i => i.status === 'Paid').reduce((s, i) => s + (i.amount || 0), 0)
-    const pendingTotal = periodInvoices.filter(i => i.status === 'Pending' || i.status === 'Approved').reduce((s, i) => s + (i.amount || 0), 0)
+    const paidTotal    = periodInvoices.filter(i => i.status === 'Paid').reduce((s, i) => s + invoiceAmount(i), 0)
+    const pendingTotal = periodInvoices.filter(i => i.status === 'Pending' || i.status === 'Approved').reduce((s, i) => s + invoiceAmount(i), 0)
 
     await writePurchasingPnL(targetLocation, targetPeriod, {
       invoiceTotal, paidTotal, pendingTotal, namedLineTotals,
