@@ -264,7 +264,7 @@ function formatAgo(date) {
 function computeEBITDA(p) {
   const rev     = p.revenue_total || 0
   const labor   = (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
-  const payproc = (p.gfs_total||0) * 0.018
+  const payproc = (p.cogs_payment_processing||0)   // real merchant-fee cost (GL 61020), not a 1.8%-of-GFS estimate
   const gm      = rev - (labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + payproc)
   return gm - (p.exp_comp_benefits||0)
 }
@@ -281,7 +281,8 @@ function computePrimeCost(p) {
 //
 // scenario: { revenueDelta, laborDelta, foodCostDelta }
 //   revenueDelta: percent (-30 to +30) — scales GFS, revenue, and the
-//                 payment processing line which is GFS-derived
+//                 payment-processing COST (cogs_payment_processing), which now
+//                 scales with revenue directly (it is no longer GFS-derived)
 //   laborDelta:   percentage POINTS (-5 to +5) added to current labor %.
 //                 Recomputes onsite + 3rd party labor proportionally.
 //   foodCostDelta: percentage POINTS added to current food cost %.
@@ -304,6 +305,9 @@ function applyScenario(baselinePnl, scenario) {
     out.gfs_popup          = (baselinePnl.gfs_popup          || 0) * revScale
     out.revenue_total      = (baselinePnl.revenue_total      || 0) * revScale
     out.revenue_commission = (baselinePnl.revenue_commission || 0) * revScale
+    // Payment processing is now a real cost line (not GFS-derived), so scale it
+    // explicitly with revenue instead of letting it fall out of GFS scaling.
+    out.cogs_payment_processing = (baselinePnl.cogs_payment_processing || 0) * revScale
   }
 
   // 2. Labor adjustment (in percentage points of GFS)
@@ -538,7 +542,7 @@ export default function Dashboard() {
   const gfs          = pnl.gfs_total || 0
   const revenue      = pnl.revenue_total || 0
   const labor        = (pnl.cogs_onsite_labor||0) + (pnl.cogs_3rd_party||0)
-  const payproc      = gfs * 0.018
+  const payproc      = pnl.cogs_payment_processing || 0   // real merchant-fee cost, not 1.8% of GFS
   const totalCOGS    = labor + (pnl.cogs_inventory||0) + (pnl.cogs_purchases||0) + payproc
   const grossMargin  = revenue - totalCOGS
   const ebitda       = grossMargin - (pnl.exp_comp_benefits||0)
@@ -552,7 +556,7 @@ export default function Dashboard() {
   const priorGFS    = priorPnl.gfs_total || 0
   const priorRev    = priorPnl.revenue_total || 0
   const priorLabor  = (priorPnl.cogs_onsite_labor||0) + (priorPnl.cogs_3rd_party||0)
-  const priorPayp   = priorGFS * 0.018
+  const priorPayp   = priorPnl.cogs_payment_processing || 0
   const priorCOGS   = priorLabor + (priorPnl.cogs_inventory||0) + (priorPnl.cogs_purchases||0) + priorPayp
   const priorEBITDA = (priorRev - priorCOGS) - (priorPnl.exp_comp_benefits||0)
 
@@ -571,11 +575,11 @@ export default function Dashboard() {
   const scenGfs     = scenarioPnl.gfs_total || 0
   const scenRev     = scenarioPnl.revenue_total || 0
   const scenLabor   = (scenarioPnl.cogs_onsite_labor || 0) + (scenarioPnl.cogs_3rd_party || 0)
-  const scenPayp    = scenGfs * 0.018
+  const scenPayp    = scenarioPnl.cogs_payment_processing || 0
   const scenCogs    = scenLabor + (scenarioPnl.cogs_inventory || 0) + (scenarioPnl.cogs_purchases || 0) + scenPayp
   const scenGm      = scenRev - scenCogs
   const scenEbitda  = scenGm - (scenarioPnl.exp_comp_benefits || 0)
-  const scenPrime   = scenRev > 0 ? (scenLabor + scenCogs - scenPayp) / scenRev : null
+  const scenPrime   = computePrimeCost(scenarioPnl)   // canonical (the old inline form double-counted labor)
   const scenLaborPct = scenGfs > 0 ? scenLabor / scenGfs : null
 
   // EBITDA delta vs baseline — the headline output of the scratchpad
@@ -596,11 +600,11 @@ export default function Dashboard() {
       const g = p.gfs_total || 0
       const r = p.revenue_total || 0
       const l = (p.cogs_onsite_labor || 0) + (p.cogs_3rd_party || 0)
-      const pp = g * 0.018
-      const cogsT = l + (p.cogs_inventory || 0) + (p.cogs_purchases || 0) + pp
-      const gm = r - cogsT
-      const eb = gm - (p.exp_comp_benefits || 0)
-      const pc = r > 0 ? (l + cogsT - pp) / r : null  // prime cost = labor+COGS (excl payproc double-count)
+      // Use the shared helpers so the sparkline matches the KPI cards exactly:
+      // real payproc (cogs_payment_processing), and no labor double-count (the old
+      // inline `l + cogsT - pp` expanded to 2·labor + food).
+      const eb = computeEBITDA(p)
+      const pc = computePrimeCost(p)
       const lp = g > 0 ? (l / g) : null
       gfsArr.push(g)
       revArr.push(r)

@@ -24,6 +24,7 @@ function parsePopupExport(rows) {
   const totals = {
     gfs_popup: 0, gfs_retail: 0,
     rev_popup_cogs: 0, rev_popup_food_sales: 0, rev_popup_tax: 0, rev_popup_pp_fee: 0,
+    cogs_payment_processing: 0,   // export "Payment Processing Fee" is a COST (GL 61020), not revenue
     rev_retail_barista: 0, rev_retail_cafeteria: 0,
     rev_client_fees: 0,
     popup_net_revenue: 0, retail_net_revenue: 0,
@@ -61,7 +62,9 @@ function parsePopupExport(rows) {
       totals.rev_popup_cogs += -(gfs - commission)
       totals.rev_popup_food_sales += foodNet
       totals.rev_popup_tax += taxNet
-      totals.rev_popup_pp_fee += ppFee
+      // The processor's cut is money taken FROM Fooda — a cost (GL 61020 "Bank
+      // Charges, Merchant Fees"), NOT popup revenue. Route it to cogs_payment_processing.
+      totals.cogs_payment_processing += ppFee
       totals.rev_client_fees += clientFees
     }
   }
@@ -201,7 +204,8 @@ export function mergeEventData(popupData, cateringData, popupDaily, cateringDail
   merged.rev_popup_cogs = popupData?.rev_popup_cogs || 0
   merged.rev_popup_food_sales = popupData?.rev_popup_food_sales || 0
   merged.rev_popup_tax = popupData?.rev_popup_tax || 0
-  merged.rev_popup_pp_fee = popupData?.rev_popup_pp_fee || 0
+  merged.rev_popup_pp_fee = 0   // no longer revenue — the PP fee is a cost (cogs_payment_processing below)
+  merged.cogs_payment_processing = popupData?.cogs_payment_processing || 0   // GL 61020 "Bank Charges, Merchant Fees"
   merged.rev_catering_cogs = cateringData?.rev_catering_cogs || 0
   merged.rev_catering_revenue = cateringData?.rev_catering_revenue || 0
   merged.rev_catering_pp_fee = cateringData?.rev_catering_pp_fee || 0
@@ -210,8 +214,10 @@ export function mergeEventData(popupData, cateringData, popupDaily, cateringDail
   merged.rev_retail_cafeteria = popupData?.rev_retail_cafeteria || 0
   merged.rev_retail_cogs_tax = -Math.abs((merged.rev_retail_barista + merged.rev_retail_cafeteria) * retailTaxRate)
   merged.rev_client_fees = popupData?.rev_client_fees || 0
+  // rev_popup_pp_fee intentionally EXCLUDED — the payment-processing fee is a cost
+  // (cogs_payment_processing), not revenue, so it no longer inflates revenue_total.
   merged.revenue_total = merged.rev_popup_cogs + merged.rev_popup_food_sales + merged.rev_popup_tax
-    + merged.rev_popup_pp_fee + merged.rev_catering_cogs + merged.rev_catering_revenue
+    + merged.rev_catering_cogs + merged.rev_catering_revenue
     + merged.rev_catering_pp_fee + merged.rev_delivery_cogs + merged.rev_retail_barista
     + merged.rev_retail_cafeteria + merged.rev_retail_cogs_tax + merged.rev_client_fees
   const allDates = new Set([

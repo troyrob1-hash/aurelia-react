@@ -893,14 +893,14 @@ export function buildPeriodDiff(pnl, priorPnl, history, trailingKeys, locationLa
   const gfs       = pnl.gfs_total || 0
   const rev       = pnl.revenue_total || 0
   const labor     = (pnl.cogs_onsite_labor || 0) + (pnl.cogs_3rd_party || 0)
-  const payproc   = gfs * 0.018
+  const payproc   = pnl.cogs_payment_processing || 0   // real merchant-fee cost (GL 61020), not 1.8% of GFS
   const cogs      = labor + (pnl.cogs_inventory || 0) + (pnl.cogs_purchases || 0) + (pnl.cogs_waste || 0) + payproc
   const ebitda    = rev - cogs - (pnl.exp_comp_benefits || 0)
 
   const priorGfs   = priorPnl?.gfs_total || 0
   const priorRev   = priorPnl?.revenue_total || 0
   const priorLabor = (priorPnl?.cogs_onsite_labor || 0) + (priorPnl?.cogs_3rd_party || 0)
-  const priorPayp  = priorGfs * 0.018
+  const priorPayp  = priorPnl?.cogs_payment_processing || 0
   const priorCogs  = priorLabor + (priorPnl?.cogs_inventory || 0) + (priorPnl?.cogs_purchases || 0) + (priorPnl?.cogs_waste || 0) + priorPayp
   const priorEbitda = priorRev - priorCogs - (priorPnl?.exp_comp_benefits || 0)
 
@@ -974,7 +974,7 @@ export function buildPeriodDiff(pnl, priorPnl, history, trailingKeys, locationLa
         const p = history[k] || {}
         const r = p.revenue_total || 0
         const l = (p.cogs_onsite_labor || 0) + (p.cogs_3rd_party || 0)
-        const pp = (p.gfs_total || 0) * 0.018
+        const pp = p.cogs_payment_processing || 0
         const c = l + (p.cogs_inventory || 0) + (p.cogs_purchases || 0) + (p.cogs_waste || 0) + pp
         return r - c - (p.exp_comp_benefits || 0)
       })
