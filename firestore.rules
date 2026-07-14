@@ -68,6 +68,16 @@ service cloud.firestore {
         allow write: if ownsTenant(tenantId) && (isDirector() || isVp());
       }
 
+      // Contract-term rates at settings/rates — commission (popup/catering) and
+      // retail tax used by writeSalesPnL, which runs as whatever user is saving a
+      // sales week, so it must be readable tenant-wide. Write is director/vp/admin
+      // (same money-authority tier as glCodes / period unlock) — these are
+      // negotiated contract terms, not a per-user preference.
+      match /settings/rates {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && (isDirector() || isVp());
+      }
+
       match /inventory/{locationId}/items/{itemId} {
         allow read:  if ownsTenant(tenantId);
         allow write: if ownsTenant(tenantId) && isManager();
