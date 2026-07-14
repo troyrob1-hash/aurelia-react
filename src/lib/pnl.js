@@ -77,6 +77,28 @@ export function locId(name) {
   return (name || '').replace(/[^a-zA-Z0-9]/g, '_')
 }
 
+// The revenue sub-lines that sum to total revenue. Single source of truth so the
+// helper below and applyScenario's scaling can't drift.
+export const REV_SUBLINES = [
+  'rev_popup_cogs', 'rev_popup_food_sales', 'rev_popup_tax', 'rev_popup_pp_fee',
+  'rev_catering_cogs', 'rev_catering_revenue', 'rev_catering_pp_fee',
+  'rev_delivery_cogs',
+  'rev_retail_barista', 'rev_retail_cafeteria', 'rev_retail_cogs_tax',
+  'rev_client_fees',
+]
+
+// Canonical revenue. The rev_* sub-lines are AUTHORITATIVE (both manual entry and
+// the event import populate them); the stored `revenue_total` is a last-resort
+// fallback ONLY — the manual save path never writes it, so reading it directly
+// shows $0 on every hand-keyed week. This is the rule the Dashboard statement
+// already documents; computeRevenue makes every reader obey it. Same treatment as
+// computePrimeCost — one definition, no drift.
+export function computeRevenue(p) {
+  if (!p) return 0
+  const rev = REV_SUBLINES.reduce((s, k) => s + (Number(p[k]) || 0), 0)
+  return rev !== 0 ? rev : (Number(p.revenue_total) || 0)
+}
+
 // periodKey is now passed in from PeriodContext (e.g. '2026-P01-W2')
 // These helpers kept for backward compat but PeriodContext is the source of truth
 // DEPRECATED: returns an approximate W1 key and is wrong for any other week.

@@ -5,7 +5,7 @@ import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { usePnL } from '@/lib/usePnL'
 import { db } from '@/lib/firebase'
 import { collection, addDoc, getDocs, query, where, orderBy, limit, doc, getDoc, serverTimestamp } from 'firebase/firestore'
-import { writePnL, weeksInPeriod, getPriorKey } from '@/lib/pnl'
+import { writePnL, weeksInPeriod, getPriorKey, computeRevenue } from '@/lib/pnl'
 
 const JE_GL_CODES = [
   { code: 'exp_office_supplies', label: 'Office Supplies & Equipment' },
@@ -254,7 +254,7 @@ export default function AureliaChat() {
     if (toolName === 'get_budget_status') {
       const gfs = pnl.gfs_total || 0
       const budgetGfs = pnl.budget_gfs || 0
-      const rev = pnl.revenue_total || 0
+      const rev = computeRevenue(pnl)
       const budgetRev = pnl.budget_revenue || 0
       const laborTotal = Object.keys(pnl).filter(k => k.startsWith('cogs_labor')).reduce((s, k) => s + (pnl[k] || 0), 0)
       const budgetLabor = pnl.budget_labor || 0
@@ -295,7 +295,7 @@ export default function AureliaChat() {
     }
 
     if (toolName === 'get_location_comparison') {
-      return 'Location comparison requires loading multiple locations. Based on current data for ' + (location ? cleanLocName(location) : 'the selected location') + ':\n- GFS: ' + fmt(pnl.gfs_total || 0) + '\n- Revenue: ' + fmt(pnl.revenue_total || 0) + '\n\nSwitch to the Sales tab All Locations view for a full comparison across all ' + visibleLocations.length + ' locations.'
+      return 'Location comparison requires loading multiple locations. Based on current data for ' + (location ? cleanLocName(location) : 'the selected location') + ':\n- GFS: ' + fmt(pnl.gfs_total || 0) + '\n- Revenue: ' + fmt(computeRevenue(pnl)) + '\n\nSwitch to the Sales tab All Locations view for a full comparison across all ' + visibleLocations.length + ' locations.'
     }
 
     if (toolName === 'close_period') {
@@ -304,7 +304,7 @@ export default function AureliaChat() {
 
     if (toolName === 'generate_report') {
       const gfs = pnl.gfs_total || 0
-      const rev = pnl.revenue_total || 0
+      const rev = computeRevenue(pnl)
       const budgetGfs = pnl.budget_gfs || 0
       const budgetRev = pnl.budget_revenue || 0
       const budgetLabor = pnl.budget_labor || 0
@@ -394,13 +394,13 @@ export default function AureliaChat() {
       let data = []
       if (metric === 'gfs' || metric === 'revenue' || metric === 'labor' || metric === 'ebitda') {
         const currentVal = metric === 'gfs' ? (pnl.gfs_total || 0)
-          : metric === 'revenue' ? (pnl.revenue_total || 0)
+          : metric === 'revenue' ? computeRevenue(pnl)
           : metric === 'labor' ? Object.keys(pnl).filter(k => k.startsWith('cogs_labor')).reduce((s, k) => s + (pnl[k] || 0), 0)
-          : (pnl.revenue_total || 0) - Object.keys(pnl).filter(k => k.startsWith('cogs_labor')).reduce((s, k) => s + (pnl[k] || 0), 0)
+          : computeRevenue(pnl) - Object.keys(pnl).filter(k => k.startsWith('cogs_labor')).reduce((s, k) => s + (pnl[k] || 0), 0)
         const priorVal = metric === 'gfs' ? (priorPnl.gfs_total || 0)
-          : metric === 'revenue' ? (priorPnl.revenue_total || 0)
+          : metric === 'revenue' ? computeRevenue(priorPnl)
           : metric === 'labor' ? Object.keys(priorPnl).filter(k => k.startsWith('cogs_labor')).reduce((s, k) => s + (priorPnl[k] || 0), 0)
-          : (priorPnl.revenue_total || 0) - Object.keys(priorPnl).filter(k => k.startsWith('cogs_labor')).reduce((s, k) => s + (priorPnl[k] || 0), 0)
+          : computeRevenue(priorPnl) - Object.keys(priorPnl).filter(k => k.startsWith('cogs_labor')).reduce((s, k) => s + (priorPnl[k] || 0), 0)
         const budgetVal = metric === 'gfs' ? (pnl.budget_gfs || 0) : metric === 'revenue' ? (pnl.budget_revenue || 0) : metric === 'labor' ? (pnl.budget_labor || 0) : (pnl.budget_ebitda || 0)
         data = [
           { label: 'Prior', value: priorVal, color: '#94a3b8' },

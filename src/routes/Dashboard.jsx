@@ -6,7 +6,7 @@ import { useToast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/store/authStore'
 import { db } from '@/lib/firebase'
 import { doc, getDoc } from 'firebase/firestore'
-import { readPnL, getPriorKey, getTrailingPeriodKeys, writePeriodClose } from '@/lib/pnl'
+import { readPnL, getPriorKey, getTrailingPeriodKeys, writePeriodClose, computeRevenue, REV_SUBLINES } from '@/lib/pnl'
 import { usePeriodStatus } from '@/hooks/usePeriodStatus'
 import { usePnL, useMultiLocationPnL, usePnLHistory } from '@/lib/usePnL'
 import { usePeriod } from '@/store/PeriodContext'
@@ -56,13 +56,7 @@ const DEFAULT_SCHEMA = [
       { key: 'rev_client_fees',      label: 'Popup Client Fees',                indent: 2, budgetKey: 'budget_rev_client_fees' },
       // Total
       { key: 'revenue_total',        label: 'Total Revenue',                    bold: true, budgetKey: 'budget_revenue',
-        computeFn: p => {
-          return (p.rev_popup_cogs||0) + (p.rev_popup_food_sales||0) + (p.rev_popup_tax||0) + (p.rev_popup_pp_fee||0)
-               + (p.rev_catering_cogs||0) + (p.rev_catering_revenue||0) + (p.rev_catering_pp_fee||0)
-               + (p.rev_delivery_cogs||0)
-               + (p.rev_retail_barista||0) + (p.rev_retail_cafeteria||0) + (p.rev_retail_cogs_tax||0)
-               + (p.rev_client_fees||0)
-        }
+        computeFn: p => computeRevenue(p)
       },
     ]
   },
@@ -128,15 +122,8 @@ const DEFAULT_SCHEMA = [
     lines: [
       { key: '_gross_profit', label: 'Gross Profit', bold: true, highlight: true,
         computeFn: p => {
-          const rev = (p.rev_popup_cogs||0) + (p.rev_popup_food_sales||0) + (p.rev_popup_tax||0) + (p.rev_popup_pp_fee||0)
-                    + (p.rev_catering_cogs||0) + (p.rev_catering_revenue||0) + (p.rev_catering_pp_fee||0)
-                    + (p.rev_delivery_cogs||0)
-                    + (p.rev_retail_barista||0) + (p.rev_retail_cafeteria||0) + (p.rev_retail_cogs_tax||0)
-                    + (p.rev_client_fees||0)
-          // Manual entry and import both populate rev_* sub-lines now, so the
-          // primary rev sum is authoritative. revenue_total kept only as a
-          // last-resort fallback for legacy docs written before this contract.
-          const revenue = rev !== 0 ? rev : (p.revenue_total || 0)
+          // rev_* sub-lines are authoritative; revenue_total is a legacy fallback only.
+          const revenue = computeRevenue(p)
           const labor = (p.cogs_labor_salaries||0) + (p.cogs_labor_401k||0) + (p.cogs_labor_benefits||0)
                       + (p.cogs_labor_taxes||0) + (p.cogs_labor_bonus||0)
                       + (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
@@ -181,12 +168,7 @@ const DEFAULT_SCHEMA = [
     lines: [
       { key: '_ebitda', label: 'EBITDA', bold: true, highlight: true, budgetKey: 'budget_ebitda',
         computeFn: p => {
-          const rev = (p.rev_popup_cogs||0) + (p.rev_popup_food_sales||0) + (p.rev_popup_tax||0) + (p.rev_popup_pp_fee||0)
-                    + (p.rev_catering_cogs||0) + (p.rev_catering_revenue||0) + (p.rev_catering_pp_fee||0)
-                    + (p.rev_delivery_cogs||0)
-                    + (p.rev_retail_barista||0) + (p.rev_retail_cafeteria||0) + (p.rev_retail_cogs_tax||0)
-                    + (p.rev_client_fees||0)
-          const revenue = rev !== 0 ? rev : (p.revenue_total || 0)
+          const revenue = computeRevenue(p)
           const labor = (p.cogs_labor_salaries||0) + (p.cogs_labor_401k||0) + (p.cogs_labor_benefits||0)
                       + (p.cogs_labor_taxes||0) + (p.cogs_labor_bonus||0)
                       + (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
@@ -205,12 +187,7 @@ const DEFAULT_SCHEMA = [
       },
       { key: '_pct_ebitda_gfs', label: 'EBITDA % of GFS', pct: true, indent: 1,
         computeFn: p => {
-          const rev = (p.rev_popup_cogs||0) + (p.rev_popup_food_sales||0) + (p.rev_popup_tax||0) + (p.rev_popup_pp_fee||0)
-                    + (p.rev_catering_cogs||0) + (p.rev_catering_revenue||0) + (p.rev_catering_pp_fee||0)
-                    + (p.rev_delivery_cogs||0)
-                    + (p.rev_retail_barista||0) + (p.rev_retail_cafeteria||0) + (p.rev_retail_cogs_tax||0)
-                    + (p.rev_client_fees||0)
-          const revenue = rev !== 0 ? rev : (p.revenue_total || 0)
+          const revenue = computeRevenue(p)
           const labor = (p.cogs_labor_salaries||0) + (p.cogs_labor_401k||0) + (p.cogs_labor_benefits||0)
                       + (p.cogs_labor_taxes||0) + (p.cogs_labor_bonus||0)
                       + (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
@@ -262,7 +239,7 @@ function formatAgo(date) {
 
 // Compute EBITDA from a raw pnl data object
 function computeEBITDA(p) {
-  const rev     = p.revenue_total || 0
+  const rev     = computeRevenue(p)
   const labor   = (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
   const payproc = (p.cogs_payment_processing||0)   // real merchant-fee cost (GL 61020), not a 1.8%-of-GFS estimate
   const gm      = rev - (labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + payproc)
@@ -270,7 +247,7 @@ function computeEBITDA(p) {
 }
 
 function computePrimeCost(p) {
-  const rev   = p.revenue_total || 0
+  const rev   = computeRevenue(p)
   const labor = (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0) + (p.exp_comp_benefits||0)
   const cogs  = (p.cogs_inventory||0) + (p.cogs_purchases||0)
   return rev > 0 ? (labor + cogs) / rev : null
@@ -303,6 +280,10 @@ function applyScenario(baselinePnl, scenario) {
     out.gfs_retail         = (baselinePnl.gfs_retail         || 0) * revScale
     out.gfs_catering       = (baselinePnl.gfs_catering       || 0) * revScale
     out.gfs_popup          = (baselinePnl.gfs_popup          || 0) * revScale
+    // Scale the rev_* SUB-LINES — computeRevenue sums these, so scaling the stored
+    // revenue_total alone would no longer move the number any reader sees. Keep
+    // revenue_total scaled too, as the legacy fallback.
+    for (const k of REV_SUBLINES) out[k] = (baselinePnl[k] || 0) * revScale
     out.revenue_total      = (baselinePnl.revenue_total      || 0) * revScale
     out.revenue_commission = (baselinePnl.revenue_commission || 0) * revScale
     // Payment processing is now a real cost line (not GFS-derived), so scale it
@@ -329,7 +310,7 @@ function applyScenario(baselinePnl, scenario) {
   // 3. Food cost adjustment (in percentage points of revenue)
   // Current food cost = inventory + purchases. Same approach.
   if (scenario.foodCostDelta !== 0) {
-    const revForCalc = out.revenue_total || baselinePnl.revenue_total || 0
+    const revForCalc = computeRevenue(out) || computeRevenue(baselinePnl)
     const currentFood = (baselinePnl.cogs_inventory || 0) + (baselinePnl.cogs_purchases || 0)
     if (revForCalc > 0 && currentFood > 0) {
       const currentFoodPct = currentFood / revForCalc
@@ -540,7 +521,7 @@ export default function Dashboard() {
 
   // ── Derived values ───────────────────────────────────────────
   const gfs          = pnl.gfs_total || 0
-  const revenue      = pnl.revenue_total || 0
+  const revenue      = computeRevenue(pnl)
   const labor        = (pnl.cogs_onsite_labor||0) + (pnl.cogs_3rd_party||0)
   const payproc      = pnl.cogs_payment_processing || 0   // real merchant-fee cost, not 1.8% of GFS
   const totalCOGS    = labor + (pnl.cogs_inventory||0) + (pnl.cogs_purchases||0) + payproc
@@ -554,7 +535,7 @@ export default function Dashboard() {
 
   // Prior period
   const priorGFS    = priorPnl.gfs_total || 0
-  const priorRev    = priorPnl.revenue_total || 0
+  const priorRev    = computeRevenue(priorPnl)
   const priorLabor  = (priorPnl.cogs_onsite_labor||0) + (priorPnl.cogs_3rd_party||0)
   const priorPayp   = priorPnl.cogs_payment_processing || 0
   const priorCOGS   = priorLabor + (priorPnl.cogs_inventory||0) + (priorPnl.cogs_purchases||0) + priorPayp
@@ -573,7 +554,7 @@ export default function Dashboard() {
   const scenarioActive = revenueDelta !== 0 || laborDelta !== 0 || foodCostDelta !== 0
   const scenarioPnl = scenarioActive ? applyScenario(pnl, scenario) : pnl
   const scenGfs     = scenarioPnl.gfs_total || 0
-  const scenRev     = scenarioPnl.revenue_total || 0
+  const scenRev     = computeRevenue(scenarioPnl)
   const scenLabor   = (scenarioPnl.cogs_onsite_labor || 0) + (scenarioPnl.cogs_3rd_party || 0)
   const scenPayp    = scenarioPnl.cogs_payment_processing || 0
   const scenCogs    = scenLabor + (scenarioPnl.cogs_inventory || 0) + (scenarioPnl.cogs_purchases || 0) + scenPayp
@@ -598,7 +579,7 @@ export default function Dashboard() {
     trailingKeys.forEach(k => {
       const p = history[k] || {}
       const g = p.gfs_total || 0
-      const r = p.revenue_total || 0
+      const r = computeRevenue(p)
       const l = (p.cogs_onsite_labor || 0) + (p.cogs_3rd_party || 0)
       // Use the shared helpers so the sparkline matches the KPI cards exactly:
       // real payproc (cogs_payment_processing), and no labor double-count (the old
