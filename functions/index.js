@@ -1532,8 +1532,10 @@ function cfWeeksInPeriod(year, period) {
   const firstDay = new Date(year, period - 1, 1);
   const lastDay = new Date(year, period, 0);
   const daysInMonth = lastDay.getDate();
-  const firstSunday = firstDay.getDay() === 0 ? 1 : (7 - firstDay.getDay() + 1);
-  const remainingDays = daysInMonth - firstSunday;
+  // Fooda weeks run Sun–Sat. Week 1: day 1 through the first Saturday.
+  const daysToSat = (6 - firstDay.getDay() + 7) % 7;   // days from the 1st to the first Saturday
+  const firstSaturday = 1 + daysToSat;                  // date of the first Saturday
+  const remainingDays = daysInMonth - firstSaturday;
   const fullWeeks = Math.floor(remainingDays / 7);
   const leftover = remainingDays % 7;
   return 1 + fullWeeks + (leftover > 0 ? 1 : 0);

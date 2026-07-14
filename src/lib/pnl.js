@@ -128,11 +128,12 @@ export function weeksInPeriod(year, period) {
   const firstDay = new Date(year, period - 1, 1)        // 1st of the month
   const lastDay  = new Date(year, period, 0)             // last day of the month
   const daysInMonth = lastDay.getDate()
-  // Week 1: day 1 through first Sunday
-  const firstSunday = firstDay.getDay() === 0 ? 1 : (7 - firstDay.getDay() + 1)
-  // Remaining days after first Sunday
-  const remainingDays = daysInMonth - firstSunday
-  // Full Mon-Sun weeks in the middle + 1 partial last week if leftover days
+  // Fooda weeks run Sun–Sat. Week 1: day 1 through the first Saturday.
+  const daysToSat = (6 - firstDay.getDay() + 7) % 7    // days from the 1st to the first Saturday
+  const firstSaturday = 1 + daysToSat                   // date of the first Saturday
+  // Remaining days after the first Saturday
+  const remainingDays = daysInMonth - firstSaturday
+  // Full Sun–Sat weeks in the middle + 1 partial last week if leftover days
   const fullWeeks = Math.floor(remainingDays / 7)
   const leftover = remainingDays % 7
   // Total: week 1 (partial) + full weeks + last partial week (if any)

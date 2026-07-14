@@ -1,9 +1,11 @@
 import { createContext, useContext, useState, useMemo } from 'react'
 
 // ── Fiscal Calendar ───────────────────────────────────────────
-// Week 1 = starts on 1st of month regardless of day, ends Sunday
-// Week 2+ = Mon–Sun
-// Last week = ends on last day of month (may be short)
+// Fooda weeks run SUNDAY–SATURDAY (weeks END on Saturday).
+// Week 1 = starts on the 1st of the month regardless of day, ends the first Saturday (partial).
+// Week 2+ = Sun–Sat.
+// Last week = ends on the last day of the month (may be short).
+// A week never crosses a month boundary — it is chopped at the 1st and last of the month.
 
 function daysInMonth(year, month) {
   return new Date(year, month, 0).getDate()
@@ -18,10 +20,10 @@ export function getPeriodWeeks(year, period) {
 
   while (current <= last) {
     const wkStart = new Date(current)
-    // Find next Sunday
-    const daysToSun = (7 - current.getDay()) % 7
+    // Find the next Saturday — weeks run Sun–Sat, so a week ends on Saturday.
+    const daysToSat = (6 - current.getDay() + 7) % 7
     const wkEnd = new Date(current)
-    wkEnd.setDate(current.getDate() + daysToSun)
+    wkEnd.setDate(current.getDate() + daysToSat)
     // Cap at end of month
     const end = wkEnd > last ? new Date(last) : wkEnd
     weeks.push({ start: new Date(wkStart), end: new Date(end) })
