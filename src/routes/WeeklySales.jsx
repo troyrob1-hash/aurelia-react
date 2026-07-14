@@ -22,10 +22,11 @@ import styles from './WeeklySales.module.css'
 import { useAutosave } from '@/hooks/useAutosave'
 import SaveStatusBar from '@/components/SaveStatusBar'
 
-// Full list of weekday names — used for iterating over a week. Individual
+// Weekday names indexed by Date.getDay() (0 = Sunday … 6 = Saturday) so a row's
+// label is derived from its REAL date, not its position in the week. Individual
 // locations can customize which days they operate via the operatingDays
 // field on their location doc (falls back to Mon-Fri if unset).
-const DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday']
+const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']
 const DAY_ABBR = { Monday: 'Mon', Tuesday: 'Tue', Wednesday: 'Wed', Thursday: 'Thu', Friday: 'Fri', Saturday: 'Sat', Sunday: 'Sun' }
 const DEFAULT_OPERATING_DAYS = ['Mon','Tue','Wed','Thu','Fri']
 
@@ -347,14 +348,17 @@ export default function WeeklySales() {
       weekKey: periodKey,
       label: `P${period} Wk ${weekNum} · ${start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`,
       operatingDays,
-      days: DAYS.map((name, i) => {
+      days: Array.from({ length: 7 }, (_, i) => {
         const d = new Date(start)
         d.setDate(start.getDate() + i)
         d.setHours(12, 0, 0, 0)
         // Compare date-only: `end` sits at local midnight, days at noon, so a
-        // raw `d > end` would clip the final day (Sunday) by 12 hours.
+        // raw `d > end` would clip the final day (Saturday) by 12 hours.
         const endDay = new Date(end); endDay.setHours(23, 59, 59, 999)
         if (d > endDay) return null
+        // Label from the REAL date's day-of-week, not the row index — a Sun–Sat
+        // week now correctly labels row 1 "Sunday" (and gates operatingDays right).
+        const name = DAYS[d.getDay()]
         if (!operatingDays.includes(DAY_ABBR[name])) return null
         return { name, date: d, key: d.toISOString().slice(0, 10) }
       }).filter(Boolean)
