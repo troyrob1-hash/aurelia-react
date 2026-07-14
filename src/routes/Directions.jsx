@@ -8,8 +8,8 @@
  * rendered as a visible highlighted callout so unanswered process questions are
  * obvious, never buried in a paragraph.
  */
-import { HelpCircle, Upload, AlertTriangle, ListChecks } from 'lucide-react'
-import { INTRO, TABS, FAQ } from '@/content/directions'
+import { HelpCircle, Upload, AlertTriangle, ListChecks, Rocket } from 'lucide-react'
+import { INTRO, START_HERE, TABS, FAQ } from '@/content/directions'
 
 const C = {
   ink: '#0f172a', sub: '#475569', faint: '#64748b', line: '#e2e8f0',
@@ -139,6 +139,22 @@ export default function Directions() {
             <div style={{ fontSize: 14.5, fontWeight: 700, color: C.ink, marginBottom: 4 }}>{b.h}</div>
             <div style={{ fontSize: 13.5, color: C.sub, lineHeight: 1.55 }}>{renderText(b.body, `intro-${i}`)}</div>
           </div>
+        ))}
+      </div>
+
+      {/* Start here — the first thing a new manager does, visually prominent */}
+      <div style={{
+        background: '#FEF7ED', border: `1.5px solid ${C.orange}`, borderRadius: 12,
+        padding: '16px 18px', margin: '4px 0 12px',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <Rocket size={18} style={{ color: C.orange }} />
+          <h2 style={{ fontSize: 17, fontWeight: 800, color: C.ink, margin: 0 }}>{START_HERE.heading}</h2>
+        </div>
+        {START_HERE.body.map((para, i) => (
+          <p key={i} style={{ fontSize: 14, color: C.sub, lineHeight: 1.6, margin: i ? '8px 0 0' : 0 }}>
+            {renderText(para, `start-${i}`)}
+          </p>
         ))}
       </div>
 
