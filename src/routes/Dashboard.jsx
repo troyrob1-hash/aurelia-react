@@ -546,8 +546,9 @@ export default function Dashboard() {
   const pacingGFS   = budgetGFS && pacing ? budgetGFS * pacing : null
   const onPace      = pacingGFS ? gfs >= pacingGFS : null
 
-  // Prime cost benchmark — industry standard 55-65% of revenue
-  const primeStatus = primeCost == null ? null : primeCost <= 0.60 ? 'good' : primeCost <= 0.65 ? 'warn' : 'over'
+  // Prime cost is shown as a plain metric + trend — no verdict against an invented
+  // "target %". Judge it against your own budget and prior weeks, not a benchmark
+  // nobody at Fooda set.
 
   // Scenario derived values — recomputed whenever sliders change
   const scenario = { revenueDelta, laborDelta, foodCostDelta }
@@ -963,9 +964,6 @@ export default function Dashboard() {
           if (v == null || isNaN(v)) return '—'
           return '$' + Math.round(v).toLocaleString('en-US')
         }
-        const primeColor = primeStatus === 'over'  ? '#b45309'
-                          : primeStatus === 'warn' ? '#b45309'
-                          : '#0f172a'
         const deltaRow = (val, suffix = '', goodIsUp = true) => {
           if (val == null || isNaN(val)) return null
           const up = val >= 0
@@ -1012,15 +1010,11 @@ export default function Dashboard() {
             label: 'Prime cost %',
             value: primeCost != null ? (primeCost * 100).toFixed(1) + '%' : '—',
             delta: null,
-            sub: primeStatus === 'good' ? 'under 60% target'
-                 : primeStatus === 'warn' ? 'approaching 65% ceiling'
-                 : primeStatus === 'over' ? 'above 65% critical'
-                 : 'labor + COGS / revenue',
-            subColor: primeStatus === 'good' ? '#059669'
-                      : primeStatus ? '#b45309' : '#94a3b8',
+            sub: 'labor + COGS / revenue',
+            subColor: '#94a3b8',
             sparkData: sparkSeries.primeCost,
-            sparkColor: primeStatus === 'good' ? '#1D9E75' : '#BA7517',
-            valueColor: primeColor,
+            sparkColor: '#BA7517',
+            valueColor: '#0f172a',
           },
           {
             label: 'Labor %',
@@ -1451,7 +1445,7 @@ export default function Dashboard() {
         const charts = [
           { key: 'revenue',   label: 'Net revenue',  color: '#1D9E75', fmt: fmtDollar,  refLine: null },
           { key: 'ebitda',    label: 'EBITDA',       color: '#1D9E75', fmt: fmtDollar,  refLine: 0 },
-          { key: 'primeCost', label: 'Prime cost %', color: '#BA7517', fmt: fmtPercent, refLine: 60 },
+          { key: 'primeCost', label: 'Prime cost %', color: '#BA7517', fmt: fmtPercent, refLine: null },
           { key: 'laborPct',  label: 'Labor %',      color: '#1D9E75', fmt: fmtPercent, refLine: null },
         ]
 
@@ -1593,7 +1587,7 @@ export default function Dashboard() {
                   <td className={styles.rankName}>{cleanLocName(loc.name)}</td>
                   <td style={{ textAlign: 'right' }}>{fmt$(loc.gfs)}</td>
                   <td style={{ textAlign: 'right', color: loc.ebitda >= 0 ? '#059669' : '#dc2626', fontWeight: 700 }}>{fmt$(loc.ebitda)}</td>
-                  <td style={{ textAlign: 'right', color: loc.ebitdaPct != null ? (loc.ebitdaPct >= 0.10 ? '#059669' : loc.ebitdaPct >= 0 ? '#d97706' : '#dc2626') : '#bbb' }}>
+                  <td style={{ textAlign: 'right', color: loc.ebitdaPct != null ? (loc.ebitdaPct >= 0 ? '#059669' : '#dc2626') : '#bbb' }}>
                     {loc.ebitdaPct != null ? fmtPct(loc.ebitdaPct) : '—'}
                   </td>
                 </tr>

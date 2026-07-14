@@ -184,8 +184,7 @@ export default function LaborPlanner() {
     })()
   }, [selectedLocation, periodKey])
 
-  // Labor alert calculations
-  const laborAlertThreshold = 35
+  // Labor summary calculations
   const totalLabor = rows.reduce((s, r) => s + (r.amount || 0), 0)
   const gfsTotal = pnl?.gfs_total || 0
   const laborPct = gfsTotal > 0 ? (totalLabor / gfsTotal) * 100 : 0
@@ -605,16 +604,16 @@ export default function LaborPlanner() {
         </div>
       )}
 
-      {laborPct > laborAlertThreshold && gfsTotal > 0 && (
+      {gfsTotal > 0 && (
         <div style={{
           padding: '12px 18px', marginBottom: 16, borderRadius: 10,
-          background: '#fef2f2', border: '1px solid #fecaca',
+          background: '#f8fafc', border: '1px solid #e2e8f0',
           display: 'flex', justifyContent: 'space-between', alignItems: 'center',
         }}>
-          <div style={{ fontSize: 13, color: '#dc2626' }}>
-            <span style={{ fontWeight: 600 }}>Labor alert:</span> {laborPct.toFixed(1)}% of GFS
-            {laborOverBudget && <span> · {laborBudgetVar}% over budget</span>}
-            <span style={{ color: '#7f1d1d' }}> — target is under {laborAlertThreshold}%</span>
+          <div style={{ fontSize: 13, color: '#475569' }}>
+            <span style={{ fontWeight: 600 }}>Labor:</span> {laborPct.toFixed(1)}% of GFS
+            {/* Real comparison kept: labor vs the approved budget. No invented % target. */}
+            {laborOverBudget && <span style={{ color: '#b45309' }}> · {laborBudgetVar}% over budget</span>}
           </div>
         </div>
       )}

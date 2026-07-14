@@ -280,8 +280,6 @@ export default function AureliaChat() {
       const laborTotal = Object.keys(pnl).filter(k => k.startsWith('cogs_labor')).reduce((s, k) => s + (pnl[k] || 0), 0)
       const budgetLabor = pnl.budget_labor || 0
       if (budgetLabor > 0 && laborTotal > budgetLabor * 1.1) issues.push('Labor is ' + (((laborTotal - budgetLabor) / budgetLabor) * 100).toFixed(1) + '% over budget')
-      
-      if (gfs > 0 && laborTotal / gfs > 0.35) issues.push('Labor as % of GFS is ' + ((laborTotal / gfs) * 100).toFixed(1) + '% — above 35% threshold')
 
       const expKeys = Object.keys(pnl).filter(k => k.startsWith('exp_') && typeof pnl[k] === 'number' && pnl[k] > 0)
       expKeys.forEach(k => {
@@ -360,7 +358,6 @@ export default function AureliaChat() {
         const actions = []
         if (budgetGfs > 0 && gfs < budgetGfs * 0.9) actions.push('• GFS is ' + Math.abs(parseFloat(gfsVsBudget)) + '% below budget — review event calendar and popup vendor schedule')
         if (budgetLabor > 0 && laborTotal > budgetLabor * 1.05) actions.push('• Labor ' + (((laborTotal / budgetLabor - 1) * 100).toFixed(1)) + '% over budget — review scheduling and overtime')
-        if (gfs > 0 && laborTotal / gfs > 0.35) actions.push('• Labor % of GFS at ' + laborPct + '% — target is 30-35%')
         const highExpenses = Object.keys(pnl).filter(k => k.startsWith('exp_') && pnl['budget_' + k] && pnl[k] > pnl['budget_' + k] * 1.2)
         highExpenses.forEach(k => actions.push('• ' + k.replace('exp_', '').replace(/_/g, ' ') + ' is significantly over budget — investigate'))
         if (actions.length === 0) actions.push('• All metrics within normal ranges — no immediate action required')

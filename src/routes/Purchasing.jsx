@@ -14,6 +14,7 @@ import {
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from 'firebase/storage'
 import { Plus, Download, Search, CheckCircle, AlertCircle, Upload, TrendingUp, TrendingDown, Paperclip, FileText, Image as ImageIcon, Trash2 } from 'lucide-react'
 import { writePurchasingPnL } from '@/lib/pnl'
+import { SPEND_CATEGORIES } from '@/lib/spendCategories'
 import Breadcrumb from '@/components/ui/Breadcrumb'
 import { useDragDropUpload } from '@/hooks/useDragDropUpload'
 import DropZoneOverlay from '@/components/ui/DropZoneOverlay'
@@ -41,15 +42,6 @@ const DEFAULT_VENDORS = [
 ]
 
 
-const SPEND_CATEGORIES = [
-  { key: 'cogs_equipment',  label: 'Onsite Equipment',               pctGFS: 0.010 },
-  { key: 'cogs_supplies',   label: 'Onsite Supplies',                pctGFS: 0.001 },
-  { key: 'cogs_cleaning',   label: 'Cleaning Supplies & Chemicals',  pctGFS: 0.005 },
-  { key: 'cogs_paper',      label: 'Paper Products',                 pctGFS: 0.025 },
-  { key: 'cogs_ec_other',   label: 'Other Equipment & Consumables',  pctGFS: 0.003 },
-  { key: 'cogs_maintenance',label: 'Onsite Other',                   pctGFS: 0.005 },
-]
-const TOTAL_SPEND_PCT = SPEND_CATEGORIES.reduce((s, c) => s + c.pctGFS, 0) // 4.9%
 
 const STATUSES = ['Pending', 'Approved', 'Paid', 'Overdue', 'Disputed', 'Void']
 
@@ -130,7 +122,8 @@ export default function Purchasing() {
           const cats = {}
           let totalBudget = 0, totalSpent = 0
           for (const cat of SPEND_CATEGORIES) {
-            const budget = Math.round(actualGFS * cat.pctGFS * 100) / 100
+            // Real approved budget from the workbook import (weekly), NOT a % of GFS.
+            const budget = data['budget_' + cat.key] || 0
             const spent = data[cat.key] || 0
             cats[cat.key] = { budget, spent, remaining: budget - spent, label: cat.label }
             totalBudget += budget
@@ -1224,14 +1217,14 @@ export default function Purchasing() {
       </div>
 
       {/* ── Declining Balance Tracker ── */}
-      {spendTracker && spendTracker.gfs > 0 && (
+      {spendTracker && spendTracker.totalBudget > 0 && (
         <div style={{
           padding: '14px 20px', marginBottom: 16,
           background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10,
         }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
             <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a' }}>
-              Spend Tracker — {(TOTAL_SPEND_PCT * 100).toFixed(1)}% of ${spendTracker.gfs.toLocaleString()} GFS
+              Spend Tracker — vs approved budget
             </div>
             <div style={{
               fontSize: 13, fontWeight: 700,

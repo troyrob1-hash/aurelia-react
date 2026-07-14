@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { doc, getDoc, setDoc, collection, getDocs, serverTimestamp, writeBatch, deleteDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { getPriorKey as getPriorKeyLib, locId as locIdLib, isPeriodLocked } from '@/lib/pnl'
+import { classifyVariance } from '@/lib/variance'
 import { useCountsListener } from '@/hooks/useCountsListener'
 import { useToast } from '@/components/ui/Toast'
 
@@ -16,12 +17,10 @@ export const fmt$ = (v) => '$' + Number(v || 0).toLocaleString('en-US', {
   maximumFractionDigits: 2 
 })
 
+// Inventory count variance vs the prior count. Thin wrapper over the canonical
+// classifyVariance (lib/variance) — one definition of the 10%/25% bands, no drift.
 function getVarianceClass(curr, prior) {
-  if (curr == null || !prior || prior === 0) return 'neutral'
-  const pct = Math.abs((curr - prior) / prior)
-  if (pct <= 0.10) return 'good'
-  if (pct <= 0.25) return 'warn'
-  return 'alert'
+  return classifyVariance(curr, prior)
 }
 
 function calcDaysOnHand(qty, avgDailyUsage) {

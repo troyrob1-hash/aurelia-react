@@ -10,6 +10,7 @@ import { Search, Download, X, Clock, LayoutGrid, List, TrendingUp, Package, Chec
 import { db, auth } from '@/lib/firebase'
 import { collection, addDoc, getDocs, query, orderBy, limit, serverTimestamp, doc, getDoc, where, writeBatch, setDoc, onSnapshot } from 'firebase/firestore'
 import { writePurchasingPnL } from '@/lib/pnl'
+import { SPEND_CATEGORIES } from '@/lib/spendCategories'
 import { usePeriod } from '@/store/PeriodContext'
 import { useAuthStore } from '@/store/authStore'
 import { submitToVendor } from '@/services/vendors'
@@ -69,15 +70,6 @@ const STATUS_CONFIG = {
 // ═══════════════════════════════════════════════════════════════════════════
 
 
-const SPEND_CATEGORIES = [
-  { key: 'cogs_equipment',  label: 'Onsite Equipment',               pctGFS: 0.010 },
-  { key: 'cogs_supplies',   label: 'Onsite Supplies',                pctGFS: 0.001 },
-  { key: 'cogs_cleaning',   label: 'Cleaning Supplies & Chemicals',  pctGFS: 0.005 },
-  { key: 'cogs_paper',      label: 'Paper Products',                 pctGFS: 0.025 },
-  { key: 'cogs_ec_other',   label: 'Other Equipment & Consumables',  pctGFS: 0.003 },
-  { key: 'cogs_maintenance',label: 'Onsite Other',                   pctGFS: 0.005 },
-]
-const TOTAL_SPEND_PCT = SPEND_CATEGORIES.reduce((s, c) => s + c.pctGFS, 0) // 4.9%
 
 export default function OrderHub() {
   const { selectedLocation, setSelectedLocation , isParentLocation , getParentName } = useLocations()
@@ -214,14 +206,15 @@ export default function OrderHub() {
         const data = combinedData
         if (Object.keys(data).length > 0) {
           const actualGFS = data.gfs_total || 0
-          // Budget = % of actual GFS per category
+          // Budget = the REAL approved per-line budget from the workbook import
+          // (weekly), NOT a fabricated % of GFS.
           const catBudgets = {}
           let totalBudget = 0
           let totalSpent = 0
           for (const cat of SPEND_CATEGORIES) {
-            const budget = Math.round(actualGFS * cat.pctGFS * 100) / 100
+            const budget = data['budget_' + cat.key] || 0
             const spent = data[cat.key] || 0
-            catBudgets[cat.key] = { budget, spent, remaining: budget - spent, label: cat.label, pct: cat.pctGFS }
+            catBudgets[cat.key] = { budget, spent, remaining: budget - spent, label: cat.label }
             totalBudget += budget
             totalSpent += spent
           }
@@ -1249,8 +1242,9 @@ export default function OrderHub() {
               )}
 </div>
 
-            {/* Budget burndown — always visible, live-updating as cart changes */}
-            {location && (() => {
+            {/* Budget burndown — shown only when a real approved budget exists.
+                No budget → no tracker (a fabricated bar is a lie with a progress bar). */}
+            {location && weeklyBudget.cogs > 0 && (() => {
               const budget = weeklyBudget.cogs
               const spent = weeklyBudget.spent
               const inCart = cartTotal
@@ -1300,7 +1294,7 @@ export default function OrderHub() {
                   <div className={styles.budgetLiveStats}>
                     <span>${spent.toFixed(0)} spent</span>
                     {inCart > 0 && <span style={{ color: c.text, fontWeight: 600 }}>+ ${inCart.toFixed(0)} cart</span>}
-                    <span>of ${budget.toFixed(0)} ({weeklyBudget.gfs ? (TOTAL_SPEND_PCT * 100).toFixed(1) + '% of $' + weeklyBudget.gfs.toLocaleString() + ' GFS' : ''})</span>
+                    <span>of ${budget.toFixed(0)} approved budget</span>
                   </div>
                   {weeklyBudget.categories && (
                     <div style={{ marginTop: 8, fontSize: 11, display: 'grid', gridTemplateColumns: '1fr auto auto auto', gap: '3px 10px', color: '#64748b' }}>

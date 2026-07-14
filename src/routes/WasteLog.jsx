@@ -329,8 +329,8 @@ export default function WasteLog() {
             ))}
             <div style={{ background: '#f1f5f9', borderRadius: 10, padding: '14px 16px' }}>
               <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', color: '#64748b', marginBottom: 4 }}>Diversion</div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: diversionPct >= 70 ? '#4a7c3f' : diversionPct >= 50 ? '#8a6c2c' : '#dc2626' }}>{diversionPct}%</div>
-              <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>Goal: 70%</div>
+              <div style={{ fontSize: 22, fontWeight: 700, color: '#0f172a' }}>{diversionPct}%</div>
+              <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>Diverted (compost / recycle / donate)</div>
             </div>
           </div>
 
@@ -484,8 +484,8 @@ export default function WasteLog() {
       )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 24 }}>
-        <div style={{ background: totalShrinkageValue > 500 ? '#fef2f2' : '#f0fdf4', borderRadius: 10, padding: '14px 18px' }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: totalShrinkageValue > 500 ? '#dc2626' : '#059669', textTransform: 'uppercase', marginBottom: 4 }}>Total shrinkage</div>
+        <div style={{ background: '#f8fafc', borderRadius: 10, padding: '14px 18px' }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', marginBottom: 4 }}>Total shrinkage</div>
           <div style={{ fontSize: 24, fontWeight: 700, color: '#0f172a' }}>{fmt$(totalShrinkageValue)}</div>
         </div>
         <div style={{ background: '#f8fafc', borderRadius: 10, padding: '14px 18px' }}>
