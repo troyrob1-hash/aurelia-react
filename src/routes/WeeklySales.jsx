@@ -28,7 +28,10 @@ import SaveStatusBar from '@/components/SaveStatusBar'
 // field on their location doc (falls back to Mon-Fri if unset).
 const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday']
 const DAY_ABBR = { Monday: 'Mon', Tuesday: 'Tue', Wednesday: 'Wed', Thursday: 'Thu', Friday: 'Fri', Saturday: 'Sat', Sunday: 'Sun' }
-const DEFAULT_OPERATING_DAYS = ['Mon','Tue','Wed','Thu','Fri']
+// Default to the FULL fiscal week (Sun–Sat) — the calendar, sales data, and P&L are
+// all 7 days now. A café configures fewer via operatingDays, but that only MUTES a
+// day ("closed"), never hides or drops it — weekend catering revenue must be capturable.
+const DEFAULT_OPERATING_DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat']
 
 /**
  * Returns the list of weekday abbreviations this location operates on.
@@ -355,12 +358,14 @@ export default function WeeklySales() {
         // Compare date-only: `end` sits at local midnight, days at noon, so a
         // raw `d > end` would clip the final day (Saturday) by 12 hours.
         const endDay = new Date(end); endDay.setHours(23, 59, 59, 999)
-        if (d > endDay) return null
-        // Label from the REAL date's day-of-week, not the row index — a Sun–Sat
-        // week now correctly labels row 1 "Sunday" (and gates operatingDays right).
+        if (d > endDay) return null   // month-boundary chop only — NOT operating-days
+        // Label from the REAL date's day-of-week, not the row index.
         const name = DAYS[d.getDay()]
-        if (!operatingDays.includes(DAY_ABBR[name])) return null
-        return { name, date: d, key: d.toISOString().slice(0, 10) }
+        // Non-operating days STILL render (muted "closed") and stay ENTERABLE — a
+        // closed café can cater a weekend event. Operating-days is DISPLAY-only now;
+        // it never drops a day, so grid days == entries == P&L (no hidden revenue).
+        const closed = !operatingDays.includes(DAY_ABBR[name])
+        return { name, date: d, key: d.toISOString().slice(0, 10), closed }
       }).filter(Boolean)
     }
   }, [currentWeek, periodKey, period, weekNum, currentLocation])
@@ -2542,11 +2547,14 @@ export default function WeeklySales() {
                 const hasAnomaly = CATS.some(c => anomalies[`${day.key}_${c.key}`])
 
                 return (
-                  <tr key={day.key} className={`${styles.row} ${isToday ? styles.today : ''} ${isFuture ? styles.future : ''} ${isAlert ? styles.alert : ''}`}>
+                  <tr key={day.key} className={`${styles.row} ${isToday ? styles.today : ''} ${isFuture ? styles.future : ''} ${isAlert ? styles.alert : ''}`}
+                      style={day.closed ? { background: '#f8fafc', opacity: 0.85 } : undefined}>
                     <td className={styles.tdDay}>
                       <div className={styles.dayName}>
                         {(isAlert || hasAnomaly) && <span className={styles.alertIcon}>⚠</span>}
                         {day.name}
+                        {/* Non-operating day: muted "closed" marker, but inputs stay enabled (weekend catering is capturable). */}
+                        {day.closed && <span style={{ fontSize: 10, fontWeight: 600, color: '#94a3b8', marginLeft: 6, textTransform: 'uppercase', letterSpacing: 0.3 }}>closed</span>}
                         {isToday && <span className={styles.todayBadge}>Today</span>}
                       </div>
                       <div className={styles.dayDate}>{day.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</div>
