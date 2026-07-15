@@ -24,8 +24,13 @@ import { writePnL } from './pnl'
 import { getPeriodWeeks, formatPeriodKey } from '@/store/PeriodContext'
 
 const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '')
-const pick = (row, cands) => { for (const c of cands) for (const k of Object.keys(row)) if (norm(k) === norm(c)) return row[k]; return undefined }
-const hasAny = (headers, cands) => headers.some(h => cands.some(c => norm(h) === norm(c)))
+// HEADER normalizer keeps '$' and '%' — the ONLY things distinguishing the dollar
+// columns from the hours columns ("Actual Labor $" vs "Actual Labor", "Labor $
+// Variance" vs "Labor Variance"). Stripping '$' (as norm() does) collapses them and
+// silently grabs the HOURS column as cost (~23x too low). Money bug — match exactly.
+const normHdr = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9$%]/g, '')
+const pick = (row, cands) => { for (const c of cands) for (const k of Object.keys(row)) if (normHdr(k) === normHdr(c)) return row[k]; return undefined }
+const hasAny = (headers, cands) => headers.some(h => cands.some(c => normHdr(h) === normHdr(c)))
 
 const COLS = {
   site:          ['Site Name', 'Site'],
