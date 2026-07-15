@@ -574,14 +574,33 @@ export default function LaborPlanner() {
     rows.forEach(r => { if (r.gl) byGl[r.gl] = r })
     // Preserve any imported rows whose GL isn't in glMap (custom/unmapped).
     const extraRows = rows.filter(r => r.gl && !glMap[r.gl])
-    const mapped = Object.entries(glMap).map(([gl, cfg]) => ({
-      gl,
-      label: byGl[gl]?.label || cfg.label,
-      section: byGl[gl]?.section || cfg.section,
-      amount: byGl[gl]?.amount || 0,
-    }))
+    // The Location Costs labor lines are sourced from the SAME enriched P&L as the
+    // KPIs — NOT the stale laborSubmissions rows — reading the exact fields
+    // computeOnsiteLabor sums, so the section total equals the Total Labor KPI by
+    // construction. Each is derived/owned elsewhere (salaries=salary JE, burden=
+    // computeLaborBurden via enrichPnLLabor, hourly=Café import, 3rd=3rd-party JE),
+    // so these rows are READ-ONLY here — this is the f4434cb P&L-statement fix
+    // applied to the Labor tab's GL grid, which was a separate stale component.
+    const laborActuals = {
+      '50410': Number(enrichedPnl?.cogs_labor_salaries) || 0,   // salaries (GL 50410)
+      '50411': Number(enrichedPnl?.cogs_labor_401k) || 0,       // derived burden
+      '50412': Number(enrichedPnl?.cogs_labor_benefits) || 0,   // derived burden
+      '50413': Number(enrichedPnl?.cogs_labor_taxes) || 0,      // derived burden
+      '50414': Number(enrichedPnl?.cogs_labor_bonus) || 0,      // derived burden
+      '50420': Number(enrichedPnl?.cogs_3rd_party) || 0,        // 3rd-party (GL 50420)
+    }
+    const mapped = Object.entries(glMap).map(([gl, cfg]) => (
+      gl in laborActuals
+        ? { gl, label: byGl[gl]?.label || cfg.label, section: cfg.section, amount: laborActuals[gl], derived: true }
+        : { gl, label: byGl[gl]?.label || cfg.label, section: byGl[gl]?.section || cfg.section, amount: byGl[gl]?.amount || 0 }
+    ))
+    // Hourly is its own bucket (not a 5041x GL) — give it a Location Costs row, like
+    // the P&L statement's "Onsite Labor — Hourly" line.
+    const hourlyRow = { gl: 'hourly', label: 'Onsite Labor — Hourly (Cafe)', section: 'Location Costs', amount: Number(enrichedPnl?.cogs_onsite_labor_hourly) || 0, derived: true }
+    const iSal = mapped.findIndex(r => r.gl === '50410')
+    if (iSal >= 0) mapped.splice(iSal + 1, 0, hourlyRow); else mapped.push(hourlyRow)
     return [...mapped, ...extraRows]
-  }, [rows, glMap])
+  }, [rows, glMap, enrichedPnl])
   const sections = useMemo(() => {
     const s = {}
     displayRows.forEach(r => {
@@ -897,7 +916,13 @@ export default function LaborPlanner() {
                           <td className={styles.glCode}>{r.gl || '—'}</td>
                           <td className={styles.desc}>{r.label}</td>
                           <td style={{ textAlign: 'right', padding: '4px 8px' }}>
-                            {(() => {
+                            {r.derived ? (
+                              // Read-only: sourced from the enriched P&L (salary JE / Café /
+                              // derived burden / 3rd-party JE), not typed here.
+                              <span style={{ fontWeight: 700, color: r.amount > 0 ? '#0f172a' : '#cbd5e1' }} title="Derived from the P&L — edit via a journal entry, the Cafe import, or salary/rates settings">
+                                {r.amount > 0 ? `$${fmt(r.amount)}` : '—'}
+                              </span>
+                            ) : (() => {
                               const locked = approvalStatus === 'approved' || periodClosed
                               const hasVal = r.amount > 0
                               // Three states: empty = plain gray; filled w/ budget = variance
