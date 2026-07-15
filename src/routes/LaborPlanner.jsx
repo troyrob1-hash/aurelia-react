@@ -651,9 +651,17 @@ export default function LaborPlanner() {
   const sections = useMemo(() => {
     const s = {}
     displayRows.forEach(r => {
+      // Value-driven rows (68xxx Comp & Benefits, imported extras) display ONLY once
+      // they carry a real value — from a JE to that GL or the monthly GL-report upload.
+      // Zero/empty is never shown. Core labor lines (r.derived: 50410 / 50411-50414
+      // burden / 50420) ALWAYS show, even at $0, so the labor structure stays visible.
+      const visible = r.derived || Math.abs(r.amount || 0) > 0.005
+      if (!visible) return
       if (!s[r.section]) s[r.section] = []
       s[r.section].push(r)
     })
+    // A section with no visible rows (e.g. all-zero Comp & Benefits) drops out entirely
+    // — header and total hidden — because it never gets a key here.
     return s
   }, [displayRows, budgets])
 
