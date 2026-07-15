@@ -6,8 +6,9 @@ import { Upload, Download, CheckCircle, Clock, AlertCircle, RefreshCw, Plus } fr
 import { useLocations } from '@/store/LocationContext'
 import { useAuthStore } from '@/store/authStore'
 import { usePeriod } from '@/store/PeriodContext'
-import { readPeriodClose } from '@/lib/pnl'
+import { readPeriodClose, computeOnsiteLabor, computeLaborBurden, getLaborRates } from '@/lib/pnl'
 import { writeLaborPnL } from '@/lib/pnl'
+import { useLedgerEnrichedPnL } from '@/lib/usePnL'
 import { db } from '@/lib/firebase'
 import {
   doc, getDoc, collection, addDoc, updateDoc,
@@ -184,12 +185,23 @@ export default function LaborPlanner() {
     })()
   }, [selectedLocation, periodKey])
 
-  // Labor summary calculations
+  // ── CANONICAL labor total — the SAME helpers the Dashboard uses, on the same
+  // ledger-enriched pnl (salary FJE + Café hourly + legacy + derived burden). The
+  // tab's headline now equals the Dashboard's for the same (location, period).
+  // `rows`/`totalLabor` below stay only as the GL-submission DETAIL, not the total.
+  const { data: enrichedPnl } = useLedgerEnrichedPnL(location, periodKey)
+  const canonicalLabor = computeOnsiteLabor(enrichedPnl)           // == Dashboard "Total Onsite Labor"
+  const lborBurden = computeLaborBurden(enrichedPnl?.cogs_labor_salaries, enrichedPnl?.cogs_onsite_labor_hourly)
+  const burdenCost  = (lborBurden.cogs_labor_taxes || 0) + (lborBurden.cogs_labor_benefits || 0) + (lborBurden.cogs_labor_401k || 0) + (lborBurden.cogs_labor_bonus || 0)
+  const thirdCost   = Number(enrichedPnl?.cogs_3rd_party) || 0
+  const wagesCost   = canonicalLabor - burdenCost - thirdCost      // residual → breakdown always sums to the total, whether or not legacy cogs_onsite_labor is still in the cost sum
+
+  // Labor summary calculations (submission detail — see canonical totals above)
   const totalLabor = rows.reduce((s, r) => s + (r.amount || 0), 0)
-  const gfsTotal = pnl?.gfs_total || 0
-  const laborPct = gfsTotal > 0 ? (totalLabor / gfsTotal) * 100 : 0
-  const laborOverBudget = pnl?.budget_labor && totalLabor > pnl.budget_labor
-  const laborBudgetVar = pnl?.budget_labor ? ((totalLabor / pnl.budget_labor - 1) * 100).toFixed(1) : null
+  const gfsTotal = pnl?.gfs_total || enrichedPnl?.gfs_total || 0
+  const laborPct = gfsTotal > 0 ? (canonicalLabor / gfsTotal) * 100 : 0
+  const laborOverBudget = pnl?.budget_labor && canonicalLabor > pnl.budget_labor
+  const laborBudgetVar = pnl?.budget_labor ? ((canonicalLabor / pnl.budget_labor - 1) * 100).toFixed(1) : null
 
 
   async function handleCloseTab() {
@@ -728,33 +740,34 @@ export default function LaborPlanner() {
 
       {/* ── KPI bar ── */}
       <div className={styles.kpiBar}>
+        {/* Canonical labor via computeOnsiteLabor/computeLaborBurden — equals the Dashboard. */}
         <div className={`${styles.kpi} ${styles.kpiPrimary}`}>
           <div className={styles.kpiL}>Total Labor</div>
-          <div className={styles.kpiV}>{rows.length ? `$${fmt(grandTotal)}` : '—'}</div>
-          <div className={styles.kpiSub}>{rows.length ? pct(grandTotal, gfsSales) : '—'} of GFS</div>
-          {budgetTotal > 0 && (
-            <div className={`${styles.kpiBadge} ${grandVariance > 0 ? styles.kpiBadgeOver : styles.kpiBadgeUnder}`}>
-              {grandVariance > 0 ? '▲ Over' : '▼ Under'} budget ${fmt(Math.abs(grandVariance))}
+          <div className={styles.kpiV}>{canonicalLabor ? `$${fmt(canonicalLabor)}` : '—'}</div>
+          <div className={styles.kpiSub}>{canonicalLabor ? pct(canonicalLabor, gfsSales) : '—'} of GFS · matches P&amp;L</div>
+          {pnl?.budget_labor > 0 && (
+            <div className={`${styles.kpiBadge} ${laborOverBudget ? styles.kpiBadgeOver : styles.kpiBadgeUnder}`}>
+              {laborOverBudget ? '▲ Over' : '▼ Under'} budget ${fmt(Math.abs(canonicalLabor - (pnl.budget_labor || 0)))}
             </div>
           )}
         </div>
         <div className={styles.kpi}>
-          <div className={styles.kpiL}>Onsite Labor</div>
-          <div className={styles.kpiV}>{rows.length ? `$${fmt(totalOnsite)}` : '—'}</div>
-          <div className={styles.kpiSub}>{rows.length ? pct(totalOnsite, gfsSales) : '—'} of GFS</div>
+          <div className={styles.kpiL}>Wages (salary + hourly)</div>
+          <div className={styles.kpiV}>{canonicalLabor ? `$${fmt(wagesCost)}` : '—'}</div>
+          <div className={styles.kpiSub}>{canonicalLabor ? pct(wagesCost, gfsSales) : '—'} of GFS</div>
         </div>
         <div className={styles.kpi}>
           <div className={styles.kpiL}>3rd Party Labor</div>
-          <div className={styles.kpiV}>{rows.length ? `$${fmt(total3rd)}` : '—'}</div>
-          <div className={styles.kpiSub}>{rows.length ? pct(total3rd, gfsSales) : '—'} of GFS</div>
+          <div className={styles.kpiV}>{canonicalLabor ? `$${fmt(thirdCost)}` : '—'}</div>
+          <div className={styles.kpiSub}>{canonicalLabor ? pct(thirdCost, gfsSales) : '—'} of GFS</div>
         </div>
         <div className={styles.kpi}>
-          <div className={styles.kpiL}>Benefits &amp; Tax</div>
-          <div className={styles.kpiV}>{rows.length ? `$${fmt(totalBenTax)}` : '—'}</div>
-          <div className={styles.kpiSub}>{rows.length ? pct(totalBenTax, gfsSales) : '—'} of GFS</div>
+          <div className={styles.kpiL}>Burden (derived)</div>
+          <div className={styles.kpiV}>{canonicalLabor ? `$${fmt(burdenCost)}` : '—'}</div>
+          <div className={styles.kpiSub}>tax + benefits + 401k + bonus</div>
         </div>
         <div className={styles.kpi}>
-          <div className={styles.kpiL}>GL Lines</div>
+          <div className={styles.kpiL}>GL Lines (detail)</div>
           <div className={styles.kpiV} style={{ color: '#7c3aed' }}>{rows.length || '—'}</div>
           <div className={styles.kpiSub}>{Object.keys(sections).length || '—'} sections</div>
         </div>
