@@ -8,7 +8,7 @@ import { readPeriodClose, writePeriodClose, lockPeriod, unlockPeriod, isPeriodLo
 import {
   LayoutDashboard, ShoppingCart, Package, TrendingUp,
   Trash2, FileText, PieChart, ArrowLeftRight,
-  Users, Settings, LogOut, ChevronDown, Bell, MapPin, Menu, X, HelpCircle
+  Users, Settings, LogOut, ChevronDown, Bell, MapPin, Menu, X, HelpCircle, Scale
 } from 'lucide-react'
 import AureliaChat from '@/components/AureliaChat'
 import ErrorBoundary from '@/components/ErrorBoundary'
@@ -44,6 +44,7 @@ const NAV = [
   { to: '/budgets',    icon: PieChart,        label: 'Budgets',      category: 'Planning' },
   { to: '/transfers',  icon: ArrowLeftRight,  label: 'Operating Ledger', category: 'Finance' },
 { to: '/labor',      icon: Users,           label: 'Labor',        category: 'Labor' },
+  { to: '/reconciliation', icon: Scale,      label: 'Reconciliation', category: 'Finance' },
 ]
 
 export default function AppShell() {

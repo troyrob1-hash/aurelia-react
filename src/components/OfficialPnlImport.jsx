@@ -40,7 +40,7 @@ function monthOptions(periodKey) {
   return out
 }
 
-export default function OfficialPnlImport() {
+export default function OfficialPnlImport({ onImported }) {
   const { user } = useAuthStore()
   const orgId = user?.tenantId
   const { locationsByName, selectedLocation } = useLocations()
@@ -132,6 +132,7 @@ export default function OfficialPnlImport() {
     close()
     if (failed) toast.error(`Imported ${wrote} · ${failed} failed (see console)`)
     else toast.success(`Official P&L imported — ${wrote} location(s) for ${monthKey}${unmatchedSites.length ? ` · ${unmatchedSites.length} unmatched site(s) skipped` : ''}`)
+    if (wrote > 0) onImported?.()   // let a host (e.g. the reconciliation view) reload
   }
 
   const S = STYLES
