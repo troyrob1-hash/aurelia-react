@@ -10,7 +10,7 @@ import { Component } from 'react'
 export default class ErrorBoundary extends Component {
   constructor(props) {
     super(props)
-    this.state = { error: null }
+    this.state = { error: null, info: null }
   }
 
   static getDerivedStateFromError(error) {
@@ -18,16 +18,18 @@ export default class ErrorBoundary extends Component {
   }
 
   componentDidCatch(error, info) {
-    // Best-effort logging; never rethrow (would defeat the boundary).
+    // Best-effort logging; never rethrow (would defeat the boundary). Also keep the
+    // React component stack so a fallback can surface WHERE it threw (on screen).
     console.error('ErrorBoundary caught:', error, info)
+    this.setState({ info })
   }
 
-  reset = () => this.setState({ error: null })
+  reset = () => this.setState({ error: null, info: null })
 
   render() {
     if (this.state.error) {
       const { fallback } = this.props
-      if (typeof fallback === 'function') return fallback(this.state.error, this.reset)
+      if (typeof fallback === 'function') return fallback(this.state.error, this.reset, this.state.info)
       if (fallback != null) return fallback
       return (
         <div style={{ padding: 16, color: '#b91c1c', fontSize: 13 }}>

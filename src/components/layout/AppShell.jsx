@@ -11,9 +11,28 @@ import {
   Users, Settings, LogOut, ChevronDown, Bell, MapPin, Menu, X, HelpCircle
 } from 'lucide-react'
 import AureliaChat from '@/components/AureliaChat'
+import ErrorBoundary from '@/components/ErrorBoundary'
 import { db } from '@/lib/firebase'
 import { collection, query, where, onSnapshot, doc, updateDoc, orderBy } from 'firebase/firestore'
 import styles from './AppShell.module.css'
+
+// Shared fallback: contain a crash to its subtree AND surface the actual error
+// (message + JS stack + React component stack) on screen, so a throw can be
+// diagnosed without the console. `label` names the degraded subtree.
+function crashBox(label) {
+  return (err, reset, info) => (
+    <div style={{ margin: 12, padding: 14, border: '1px solid #fecaca', background: '#fef2f2', borderRadius: 10, color: '#7f1d1d', fontSize: 12, maxWidth: 680 }}>
+      <div style={{ fontWeight: 800, marginBottom: 6 }}>{label} hit an error (contained — the rest of the app is fine).</div>
+      <div style={{ fontWeight: 700, fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{String(err?.message || err)}</div>
+      <details style={{ marginTop: 8 }}>
+        <summary style={{ cursor: 'pointer' }}>stack</summary>
+        <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11, marginTop: 6 }}>{String(err?.stack || '')}</pre>
+        <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11, color: '#9a3412' }}>{String(info?.componentStack || '')}</pre>
+      </details>
+      <button onClick={reset} style={{ marginTop: 8, padding: '5px 12px', borderRadius: 8, border: '1px solid #cbd5e1', background: '#fff', cursor: 'pointer' }}>Retry</button>
+    </div>
+  )
+}
 
 const NAV = [
   { to: '/dashboard',  icon: LayoutDashboard, label: 'P&L',          category: 'FINANCE' },
@@ -490,7 +509,10 @@ export default function AppShell() {
         </nav>
 
         <main className={styles.main} onClick={() => menuOpen && setMenuOpen(false)}>
-          <Outlet/>
+          {/* Route crash stays contained to the page area — the shell/nav survive. */}
+          <ErrorBoundary fallback={crashBox('This page')}>
+            <Outlet/>
+          </ErrorBoundary>
         </main>
       </div>
 
@@ -505,7 +527,10 @@ export default function AppShell() {
           </NavLink>
         ))}
       </nav>
-          <AureliaChat />
+          {/* The chat widget is GLOBAL — a throw here previously blanked the whole app. Contain it. */}
+          <ErrorBoundary fallback={crashBox('Aurelia chat')}>
+            <AureliaChat />
+          </ErrorBoundary>
     </div>
   )
 }
