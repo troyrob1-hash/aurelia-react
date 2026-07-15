@@ -46,7 +46,7 @@ export const RECON_MAP = {
   // ── Labor — COMING until 2.3a (Café hourly parser) + 2.3b (FJE model) land and
   //    the 14 pending submissions re-import. Today a labor variance would read
   //    "we haven't loaded labor," not a real discrepancy. Flip back to MAPPED then.
-  'Onsite Labor (Fooda) Salaries and Wages': { section: 'Labor', acct: '50410', status: STATUS.COMING, aurelia: ['cogs_labor_salaries', 'cogs_onsite_labor', 'cogs_onsite_labor_hourly'] }, // hourly (Café Labor 2.3a) folds into 50410
+  'Onsite Labor (Fooda) Salaries and Wages': { section: 'Labor', acct: '50410', status: STATUS.COMING, aurelia: ['cogs_labor_salaries', 'cogs_onsite_labor_hourly'] }, // FJE salary + Café hourly. cogs_onsite_labor RETIRED as cost (now a plan field) → not summed here
   'Onsite Labor 401k':     { section: 'Labor', acct: '50411', status: STATUS.COMING, aurelia: ['cogs_labor_401k'] },
   'Onsite Labor Benefits': { section: 'Labor', acct: '50412', status: STATUS.COMING, aurelia: ['cogs_labor_benefits'] },
   'Onsite Labor Taxes':    { section: 'Labor', acct: '50413', status: STATUS.COMING, aurelia: ['cogs_labor_taxes'] },

@@ -105,9 +105,13 @@ export function computeRevenue(p) {
 // 401k, benefits, taxes, bonus) + cogs_onsite_labor (legacy single-line) +
 // cogs_onsite_labor_hourly (Café Labor 2.3a) + cogs_3rd_party. Every Dashboard /
 // whyRules labor sum routes through this. Same treatment as computeRevenue.
+// NOTE: cogs_onsite_labor is RETIRED as a cost — the Labor-tab grid now writes it
+// as a PLAN (labor_planned_hourly), and the authoritative hourly COST is Café
+// actuals (cogs_onsite_labor_hourly). Leaving cogs_onsite_labor OUT of this sum is
+// what prevents the tab plan from double-counting against Café actuals.
 export const ONSITE_LABOR_FIELDS = [
   'cogs_labor_salaries', 'cogs_labor_401k', 'cogs_labor_benefits', 'cogs_labor_taxes', 'cogs_labor_bonus',
-  'cogs_onsite_labor', 'cogs_onsite_labor_hourly', 'cogs_3rd_party',
+  'cogs_onsite_labor_hourly', 'cogs_3rd_party',
 ]
 export function computeOnsiteLabor(p) {
   if (!p) return 0
@@ -400,10 +404,13 @@ export async function writeInventoryPnL(location, period, { closingValue, openin
 // Labor import → COGS labor + Expenses comp & benefits
 export async function writeLaborPnL(location, period, { onsiteLabor, thirdParty, compBenefits, glRows }) {
   await writePnL(location, period, {
-    cogs_onsite_labor: onsiteLabor,
+    // The tab's onsite-labor total is now a PLAN (scheduled), NOT a P&L cost line —
+    // the authoritative hourly COST is Café actuals (cogs_onsite_labor_hourly), which
+    // is the only field ONSITE_LABOR_FIELDS reads. This is what makes the plan
+    // structurally incapable of double-counting against actuals.
+    labor_planned_hourly: onsiteLabor,
     cogs_3rd_party:    thirdParty,
     exp_comp_benefits: compBenefits,
-    labor_total:       (onsiteLabor || 0) + (thirdParty || 0) + (compBenefits || 0),
     labor_gl_rows:     glRows || [],
   })
 }
