@@ -78,6 +78,15 @@ service cloud.firestore {
         allow write: if ownsTenant(tenantId) && (isDirector() || isVp());
       }
 
+      // Labor burden rates at settings/laborRates — taxes/benefits/401k/bonus %
+      // used by computeLaborBurden at read time (never stored on pnl). Readable
+      // tenant-wide (every P&L read derives burden); write is director/vp/admin,
+      // same money-authority tier as settings/rates.
+      match /settings/laborRates {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && (isDirector() || isVp());
+      }
+
       match /inventory/{locationId}/items/{itemId} {
         allow read:  if ownsTenant(tenantId);
         allow write: if ownsTenant(tenantId) && isManager();
@@ -150,6 +159,15 @@ service cloud.firestore {
       match /pnl/{locationId}/periods/{periodId} {
         allow read:  if ownsTenant(tenantId);
         allow write: if ownsTenant(tenantId) && isManager();
+      }
+
+      // Official (NetSuite Enterprise P&L) — the authoritative books. Read
+      // tenant-wide (the reconciliation view), but write is authority-tier only
+      // (director/vp/admin) since it's the source of record the running P&L is
+      // diffed against. isDirector() already includes isAdmin().
+      match /officialPnl/{locationId}/periods/{monthId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && (isDirector() || isVp());
       }
 
       match /budgets/{budgetId} {
