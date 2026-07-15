@@ -42,26 +42,11 @@ const serialDate = (dt) => serialOf(dt.getFullYear(), dt.getMonth() + 1, dt.getD
 const parseYMD = (s) => { const m = String(s || '').match(/(\d{4})-(\d{2})-(\d{2})/); return m ? { y: +m[1], mo: +m[2], d: +m[3] } : null }
 const overlapDays = (aS, aE, bS, bE) => Math.max(0, Math.min(aE, bE) - Math.max(aS, bS) + 1)
 
-const ymd = (serial) => { const d = new Date(serial * 86400000); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}` }
 
-// Year-seam chaining. A 364-day window is 52×7, so start+364 lands on the SAME
-// weekday (stays Sunday-aligned) AND is exactly the day AFTER the prior window
-// ends (prior end = start+363). So successive annual salary windows chain with
-// zero gap and zero overlap — every calendar day falls in exactly one window.
-export function nextAnnualWindowStart(windowStartDate) {
-  const st = parseYMD(windowStartDate); if (!st) return null
-  return ymd(serialOf(st.y, st.mo, st.d) + 364)
-}
-
-// First salary a location enters anchors to the fiscal year's first Sun–Sat week
-// start (a Sunday → full weeks land on annual/52). Subsequent years chain via
-// nextAnnualWindowStart. Uses the ONE calendar source.
-export function fiscalYearAnchor(year) {
-  const w0 = getPeriodWeeks(year, 1)[0].start            // P01-W1 start (Jan 1)
-  let s = serialDate(w0)
-  while (new Date(s * 86400000).getUTCDay() !== 0) s += 1 // advance to the first Sunday (first full week)
-  return ymd(s)
-}
+// Year-chaining (fiscalYearAnchor / nextAnnualWindowStart) was RETIRED with the
+// unified JE model — windows are now explicit finite N-month spans anchored to the
+// entry period (see jeContribution), so a salary is just a 50410 JE over 12 months,
+// re-entered each year rather than auto-chained.
 
 // fiscal-week [start,end] serials for a periodKey (via the ONE calendar source).
 export function weekRangeOf(periodKey) {
@@ -101,6 +86,24 @@ export function jeContribution(je, weekStart, weekEnd) {
   const amt = Number(je.totalAmount) || 0
   if (!amt) return 0
 
+  // ── UNIFIED model: entryPeriod (a periodKey) + amortizeMonths (0/blank = once). ──
+  // The window STARTS at the entry period's fiscal-week start and runs N calendar
+  // months forward, daily-prorated (days-in-week × amount/window_days). Conserves to
+  // the penny, boundary weeks split, and it FALLS TO 0 after the window ends — no
+  // start-date picker, no year-chaining. Behavior is glCode-driven, not type-driven.
+  if (je.entryPeriod) {
+    const ew = weekRangeOf(je.entryPeriod); if (!ew) return 0
+    const n = parseInt(je.amortizeMonths) || 0
+    if (n <= 0) return ew.start === weekStart ? amt : 0            // once — full amount in the entry week
+    const dt = new Date(ew.start * 86400000)
+    const endEx = Math.floor(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth() + n, dt.getUTCDate()) / 86400000)
+    const wd = endEx - ew.start; if (wd <= 0) return 0             // calendar days across the N-month span
+    return overlapDays(ew.start, ew.start + wd - 1, weekStart, weekEnd) * (amt / wd)
+  }
+
+  // ── LEGACY fallback (pre-unified JEs: salary FJE / 3rd-party with amortization + ──
+  // windowStartDate/entryDate). Kept so existing entries keep resolving; new entries
+  // always carry entryPeriod and take the branch above.
   if (je.amortization === 'once') {
     const ed = parseYMD(je.entryDate) || parseYMD(je.windowStartDate); if (!ed) return 0
     const e = serialOf(ed.y, ed.mo, ed.d)

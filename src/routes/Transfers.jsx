@@ -8,13 +8,14 @@ import { usePeriod } from '@/store/PeriodContext'
 import { db } from '@/lib/firebase'
 import {
   collection, query, orderBy, getDocs, addDoc,
-  updateDoc, doc, getDoc, setDoc, serverTimestamp
+  updateDoc, deleteDoc, doc, getDoc, setDoc, serverTimestamp
 } from 'firebase/firestore'
-import { Plus, Download, Search, CheckCircle, XCircle, Upload, AlertTriangle, FileText } from 'lucide-react'
+import { Plus, Download, Search, CheckCircle, XCircle, Upload, AlertTriangle, FileText, Trash2 } from 'lucide-react'
 import { writePnL } from '@/lib/pnl'
 import { getInventory, saveInventory } from '@/lib/inventory'
-import SalaryFjeModal from '@/components/SalaryFjeModal'
-import ThirdPartyLaborModal from '@/components/ThirdPartyLaborModal'
+import JournalEntryModal from '@/components/JournalEntryModal'
+import { jeContribution, weekRangeOf, invalidateLedgerJEs } from '@/lib/ledgerContributions'
+import { canApproveSales } from '@/lib/permissions'
 import styles from './Transfers.module.css'
 
 const STATUSES = ['Pending', 'Approved', 'Received', 'Rejected']
@@ -98,10 +99,8 @@ export default function Transfers() {
   const [view,         setView]         = useState('board') // 'board' | 'timeline' | 'list'
   const [activeTab, setActiveTab] = useState('journal')
   const [journalEntries, setJournalEntries] = useState([])
-  const [showJeForm, setShowJeForm] = useState(false)
-  const [showTypePicker, setShowTypePicker] = useState(false)  // New Entry → choose Standard vs Salary
-  const [salaryOpen, setSalaryOpen] = useState(false)          // controls the salary entry modal (merged into New Entry)
-  const [thirdPartyOpen, setThirdPartyOpen] = useState(false)  // controls the 3rd-party labor entry modal
+  const [showJeForm, setShowJeForm] = useState(false)          // legacy Standard write-time form (no longer opened; kept for #3 retirement)
+  const [jeModalOpen, setJeModalOpen] = useState(false)        // the ONE unified journal-entry form (New Entry)
   const [jeForm, setJeForm] = useState({ ...EMPTY_JE })
   const [jeSaving, setJeSaving] = useState(false)
   const [jeTemplates, setJeTemplates] = useState([])
@@ -188,12 +187,34 @@ export default function Transfers() {
     })()
   }, [selectedLocation, periodKey])
 
-  // Reload the JE list (used after a salary FJE is added).
+  // Reload the JE list (used after a journal entry is added or deleted).
   async function reloadJEs() {
     try {
       const snap = await getDocs(query(collection(db, 'tenants', orgId, 'journalEntries'), orderBy('createdAt', 'desc')))
       setJournalEntries(snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(e => e.location === selectedLocation || e.location === 'all'))
     } catch (err) { console.error('JE reload failed:', err) }
+  }
+
+  // Delete a journal entry: creator (by uid) OR director+ can delete. Read-time
+  // model means NOTHING is stored on pnl — removing the doc makes its contributions
+  // vanish from every period it spanned on the next render, including closed weeks
+  // (no write to any locked period). Legacy entries with no createdByUid can only
+  // be deleted by director+.
+  function canDeleteJe(je) {
+    return canApproveSales(user) || (!!je.createdByUid && je.createdByUid === user?.uid)
+  }
+  async function handleDeleteJe(je) {
+    if (!canDeleteJe(je)) { toast.error('You can only delete entries you created (director+ can delete any).'); return }
+    if (!window.confirm('Delete this entry? This removes it from all periods it posts to.')) return
+    try {
+      await deleteDoc(doc(db, 'tenants', orgId, 'journalEntries', je.id))
+      invalidateLedgerJEs()                            // read-time contributions drop immediately
+      toast.success('Journal entry deleted')
+      reloadJEs()
+    } catch (e) {
+      console.error('JE delete failed:', e)
+      toast.error('Delete failed — ' + (e?.message || ''))
+    }
   }
 
   async function handleJeSave() {
@@ -593,7 +614,7 @@ export default function Transfers() {
                   )}
                 </div>
               )}
-              <button className={styles.btnPrimary} onClick={() => setShowTypePicker(true)}>
+              <button className={styles.btnPrimary} onClick={() => setJeModalOpen(true)}>
                 <Plus size={15}/> New Entry
               </button>
             </div>
@@ -958,32 +979,9 @@ export default function Transfers() {
       {/* ── Journal Entries Tab ── */}
       {activeTab === 'journal' && (
         <div>
-          {/* New Entry → type picker: Standard adjustment vs Salary (merged; no separate button) */}
-          {showTypePicker && (
-            <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }} onClick={() => setShowTypePicker(false)}>
-              <div style={{ background: '#fff', borderRadius: 16, width: '90%', maxWidth: 420, padding: 24 }} onClick={e => e.stopPropagation()}>
-                <div style={{ fontSize: 16, fontWeight: 800, color: '#0f172a', marginBottom: 4 }}>New entry</div>
-                <div style={{ fontSize: 13, color: '#64748b', marginBottom: 16 }}>What kind of entry are you adding?</div>
-                <button style={{ display: 'block', width: '100%', textAlign: 'left', padding: '12px 14px', marginBottom: 10, borderRadius: 10, border: '1px solid #cbd5e1', background: '#fff', cursor: 'pointer' }}
-                        onClick={() => { setShowTypePicker(false); setJeForm({ ...EMPTY_JE, location: selectedLocation }); setShowJeForm(true) }}>
-                  <div style={{ fontWeight: 700, color: '#0f172a' }}>Standard adjustment</div>
-                  <div style={{ fontSize: 12, color: '#64748b' }}>One-time or amortized GL entry (adjustments, accruals)</div>
-                </button>
-                <button style={{ display: 'block', width: '100%', textAlign: 'left', padding: '12px 14px', marginBottom: 10, borderRadius: 10, border: '1px solid #cbd5e1', background: '#fff', cursor: 'pointer' }}
-                        onClick={() => { setShowTypePicker(false); setSalaryOpen(true) }}>
-                  <div style={{ fontWeight: 700, color: '#0f172a' }}>Salary</div>
-                  <div style={{ fontSize: 12, color: '#64748b' }}>Annual salary for a person — amortized, posts weekly</div>
-                </button>
-                <button style={{ display: 'block', width: '100%', textAlign: 'left', padding: '12px 14px', borderRadius: 10, border: '1px solid #cbd5e1', background: '#fff', cursor: 'pointer' }}
-                        onClick={() => { setShowTypePicker(false); setThirdPartyOpen(true) }}>
-                  <div style={{ fontWeight: 700, color: '#0f172a' }}>3rd-Party Labor</div>
-                  <div style={{ fontSize: 12, color: '#64748b' }}>Agency/temp invoice → GL 50420, no burden (this period, or amortized)</div>
-                </button>
-              </div>
-            </div>
-          )}
-          <SalaryFjeModal open={salaryOpen} onClose={() => setSalaryOpen(false)} onSaved={reloadJEs} />
-          <ThirdPartyLaborModal open={thirdPartyOpen} onClose={() => setThirdPartyOpen(false)} onSaved={reloadJEs} />
+          {/* New Entry → the ONE unified journal-entry form (GL-driven; supersedes the
+              old Standard/Salary/3rd-Party type picker). */}
+          <JournalEntryModal open={jeModalOpen} onClose={() => setJeModalOpen(false)} onSaved={reloadJEs} />
           {showJeForm && (
             <div style={{
               position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
@@ -1090,23 +1088,30 @@ export default function Transfers() {
               </thead>
               <tbody>
                 {(() => {
-                  const periodEntries = journalEntries.filter(je =>
-                    je.periods?.includes(periodKey) || je.periods?.some(p => p.startsWith(periodKey.split('-W')[0]))
-                  )
-                  if (periodEntries.length === 0) return (
+                  // What each JE actually contributes to THIS fiscal week — the same
+                  // engine the P&L uses (jeContribution). Unified read-time entries show
+                  // their per-week slice; legacy write-time entries (periods[], contrib 0)
+                  // still show via the periods filter with their old per-period amount.
+                  const wr = weekRangeOf(periodKey)
+                  const rows = journalEntries
+                    .map(je => ({ je, contrib: wr ? jeContribution(je, wr.start, wr.end) : 0 }))
+                    .filter(({ je, contrib }) =>
+                      Math.abs(contrib) > 0.005 ||
+                      je.periods?.includes(periodKey) || je.periods?.some(p => p.startsWith(periodKey.split('-W')[0]))
+                    )
+                  if (rows.length === 0) return (
                     <tr><td colSpan={7} style={{ padding: '40px 16px', textAlign: 'center', color: '#94a3b8' }}>
                       No journal entries for this period. Click "New Entry" to add one.
                     </td></tr>
                   )
-                  const totalAmount = periodEntries.reduce((s, je) => {
-                    if (je.amortization === 'once') return s + (je.totalAmount || 0)
-                    const months = je.amortMonths || 1
-                    return s + Math.round(((je.totalAmount || 0) / months) * 100) / 100
-                  }, 0)
+                  const amtOf = ({ je, contrib }) => Math.abs(contrib) > 0.005 ? contrib
+                    : je.amortization === 'once' ? (je.totalAmount || 0)
+                    : Math.round(((je.totalAmount || 0) / (je.amortMonths || 1)) * 100) / 100
+                  const totalAmount = rows.reduce((s, r) => s + amtOf(r), 0)
                   return (<>
-                    {periodEntries.map(je => {
-                      const periodAmt = je.amortization === 'once' ? je.totalAmount
-                        : Math.round(((je.totalAmount || 0) / (je.amortMonths || 1)) * 100) / 100
+                    {rows.map(({ je, contrib }) => {
+                      const periodAmt = amtOf({ je, contrib })
+                      const amMonths = je.amortizeMonths != null ? Number(je.amortizeMonths) : null
                       return (
                         <tr key={je.id} style={{ borderTop: '1px solid #f1f5f9' }}>
                           <td style={{ padding: '10px 16px', color: '#64748b' }}>
@@ -1118,13 +1123,18 @@ export default function Transfers() {
                             {fmt$(periodAmt)}
                           </td>
                           <td style={{ padding: '10px 16px', textAlign: 'center' }}>
-                            <span style={{
-                              padding: '3px 8px', fontSize: 11, fontWeight: 500, borderRadius: 999,
-                              background: je.amortization === 'once' ? '#f1f5f9' : '#dbeafe',
-                              color: je.amortization === 'once' ? '#475569' : '#1e40af',
-                            }}>
-                              {je.amortization === 'once' ? 'One-time' : je.amortization === 'annual' ? '12-mo' : je.amortization === 'quarterly' ? '3-mo' : `${je.amortMonths}-mo`}
-                            </span>
+                            {(() => {
+                              const once = amMonths != null ? amMonths < 1 : je.amortization === 'once'
+                              const label = amMonths != null
+                                ? (amMonths >= 1 ? `${amMonths}-mo` : 'One-time')
+                                : (je.amortization === 'once' ? 'One-time' : je.amortization === 'annual' ? '12-mo' : je.amortization === 'quarterly' ? '3-mo' : `${je.amortMonths}-mo`)
+                              return (
+                                <span style={{
+                                  padding: '3px 8px', fontSize: 11, fontWeight: 500, borderRadius: 999,
+                                  background: once ? '#f1f5f9' : '#dbeafe', color: once ? '#475569' : '#1e40af',
+                                }}>{label}</span>
+                              )
+                            })()}
                           </td>
                           <td style={{ padding: '10px 16px', color: '#64748b' }}>{je.createdBy}</td>
                           <td style={{ padding: '10px 16px' }}>
@@ -1133,12 +1143,18 @@ export default function Transfers() {
                                 <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 999, background: '#fef2f2', color: '#dc2626', fontWeight: 500 }}>Reversed</span>
                               ) : je.reversalOf ? (
                                 <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 999, background: '#f1f5f9', color: '#64748b', fontWeight: 500 }}>Reversal</span>
-                              ) : (
+                              ) : je.amortizeMonths != null ? null : (
                                 <button onClick={() => handleReversal(je)} style={{
                                   fontSize: 11, padding: '3px 8px', borderRadius: 6,
                                   background: '#fff', color: '#dc2626', border: '1px solid #fecaca',
                                   cursor: 'pointer', fontWeight: 500,
                                 }}>↩ Reverse</button>
+                              )}
+                              {canDeleteJe(je) && (
+                                <button onClick={() => handleDeleteJe(je)} title="Delete entry" style={{
+                                  display: 'inline-flex', alignItems: 'center', padding: 4, borderRadius: 6,
+                                  background: '#fff', color: '#dc2626', border: '1px solid #fecaca', cursor: 'pointer',
+                                }}><Trash2 size={13} /></button>
                               )}
                             </div>
                           </td>
@@ -1147,7 +1163,7 @@ export default function Transfers() {
                     })}
                     <tr style={{ borderTop: '2px solid #e2e8f0', background: '#f8fafc' }}>
                       <td colSpan={3} style={{ padding: '12px 16px', fontWeight: 600, color: '#0f172a' }}>
-                        Period Total ({periodEntries.length} {periodEntries.length === 1 ? 'entry' : 'entries'})
+                        Period Total ({rows.length} {rows.length === 1 ? 'entry' : 'entries'})
                       </td>
                       <td style={{ padding: '12px 16px', textAlign: 'right', fontWeight: 700, fontFamily: 'ui-monospace, monospace', color: '#0f172a', fontSize: 14 }}>
                         {fmt$(totalAmount)}
