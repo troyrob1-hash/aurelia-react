@@ -9,6 +9,7 @@ import { usePeriod } from '@/store/PeriodContext'
 import { readPeriodClose, computeOnsiteLabor, computeLaborBurden, getLaborRates } from '@/lib/pnl'
 import { writeLaborPnL } from '@/lib/pnl'
 import { useLedgerEnrichedPnL } from '@/lib/usePnL'
+import CafeLaborImport from '@/components/CafeLaborImport'
 import { db } from '@/lib/firebase'
 import {
   doc, getDoc, collection, addDoc, updateDoc,
@@ -652,6 +653,9 @@ export default function LaborPlanner() {
               <input type="file" accept=".csv,.xlsx,.xls" style={{ display: 'none' }} onChange={handleImport} />
             </label>
           )}
+          {/* Self-contained Café Labor import (multi-site/multi-period; derives
+              location+period per row — independent of this tab's selection). */}
+          <CafeLaborImport />
           {rows.length > 0 && approvalStatus !== 'approved' && (
             <button className={styles.btnClear} onClick={() => { setRows([]); setSource(''); setApproval(null); setSubmissionId(null) }}>
               Clear
