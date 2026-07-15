@@ -189,7 +189,8 @@ export default function LaborPlanner() {
   // ── CANONICAL labor total — the SAME helpers the Dashboard uses, on the same
   // ledger-enriched pnl (salary FJE + Café hourly + legacy + derived burden). The
   // tab's headline now equals the Dashboard's for the same (location, period).
-  // `rows`/`totalLabor` below stay only as the GL-submission DETAIL, not the total.
+  // `rows` (laborSubmissions) stays only as the manual GL-submission working state
+  // (save payload + Comp & Benefits detail), never as a displayed labor total.
   const { data: enrichedPnl } = useLedgerEnrichedPnL(location, periodKey)
   const canonicalLabor = computeOnsiteLabor(enrichedPnl)           // == Dashboard "Total Onsite Labor"
   const lborBurden = computeLaborBurden(enrichedPnl?.cogs_labor_salaries, enrichedPnl?.cogs_onsite_labor_hourly)
@@ -202,8 +203,6 @@ export default function LaborPlanner() {
   const salariesActual = Number(enrichedPnl?.cogs_labor_salaries) || 0
   const hourlyActual   = Number(enrichedPnl?.cogs_onsite_labor_hourly) || 0
 
-  // Labor summary calculations (submission detail — see canonical totals above)
-  const totalLabor = rows.reduce((s, r) => s + (r.amount || 0), 0)
   const gfsTotal = pnl?.gfs_total || enrichedPnl?.gfs_total || 0
   const laborPct = gfsTotal > 0 ? (canonicalLabor / gfsTotal) * 100 : 0
   const laborOverBudget = pnl?.budget_labor && canonicalLabor > pnl.budget_labor
@@ -657,13 +656,17 @@ export default function LaborPlanner() {
     return s
   }, [displayRows, budgets])
 
-  const totalOnsite   = rows.filter(r => r.gl?.startsWith('504') && r.gl !== '50420').reduce((s, r) => s + r.amount, 0)
-  const total3rd      = rows.find(r => r.gl === '50420')?.amount || 0
-  const totalBenTax   = rows.filter(r => r.gl?.startsWith('68')).reduce((s, r) => s + r.amount, 0)
-  const grandTotal    = rows.reduce((s, r) => s + r.amount, 0)
-  // If no actual labor data but we have budgets, create placeholder rows
+  // All labor totals read the SAME enriched basis as the section grid (displayRows:
+  // Location Costs sourced from computeOnsiteLabor/derived burden, Comp & Benefits from
+  // 68xxx) — NOT the stale `rows` (laborSubmissions), which is empty for Café/JE-sourced
+  // locations. So grandTotal == the sum of every section's secActual == the Total Labor
+  // KPI, by construction, and can never diverge from what's shown above it.
+  const totalOnsite   = displayRows.filter(r => r.gl?.startsWith('504') && r.gl !== '50420').reduce((s, r) => s + r.amount, 0)
+  const total3rd      = displayRows.find(r => r.gl === '50420')?.amount || 0
+  const totalBenTax   = displayRows.filter(r => r.gl?.startsWith('68')).reduce((s, r) => s + r.amount, 0)
+  const grandTotal    = displayRows.reduce((s, r) => s + r.amount, 0)
   const budgetTotal   = displayRows.reduce((s, r) => s + (budgets[r.gl] || 0), 0)
-  const grandVariance = grandTotal - budgetTotal
+  const grandVariance = grandTotal - budgetTotal   // both displayRows-based — consistent
 
   const importedAtStr = importedAt
     ? importedAt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) +
