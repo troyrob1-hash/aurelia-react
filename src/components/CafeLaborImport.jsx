@@ -2,13 +2,15 @@
 //
 // PHASE 2.3a · GATE 3 — self-contained Café Labor import flow (BudgetImport-style).
 // NOT bound to the Labor tab's selected location/period: it derives (location,
-// period) per row from Site Name + Week of Event. Button → parseCafeLabor →
-// mandatory preview (matched/unmatched/overwrite/locked/skipped/unresolved) →
-// confirm → writeCafeLaborPnL fan-out. Nothing writes until the manager confirms.
+// period) per row from Site Name + Week of Event. CONTROLLED — the Labor tab's
+// single "Import Labor" dispatcher detects the file type and hands a Café file in
+// via the `file` prop; this component owns parseCafeLabor → mandatory preview
+// (matched/unmatched/overwrite/locked/skipped/unresolved) → confirm →
+// writeCafeLaborPnL fan-out. Nothing writes until the manager confirms.
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { Upload, X, CheckCircle, AlertTriangle, Lock, ArrowRight } from 'lucide-react'
+import { X, CheckCircle, AlertTriangle, Lock, ArrowRight } from 'lucide-react'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { useAuthStore } from '@/store/authStore'
 import { useToast } from '@/components/ui/Toast'
@@ -20,30 +22,39 @@ import { buildSiteMatcher } from '@/lib/siteMatch'
 
 const fmt$ = (v) => (v == null || isNaN(v)) ? '—' : '$' + Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
-export default function CafeLaborImport() {
+// Controlled: the Labor tab's single "Import Labor" dispatcher detects the file
+// type and, for a Café file, hands the already-picked File in via `file`. This
+// component owns only the parse + preview + write — not the button or file dialog.
+export default function CafeLaborImport({ file, onDone }) {
   const { locationsByName } = useLocations()
   const { user } = useAuthStore()
   const orgId = user?.tenantId
   const toast = useToast()
 
-  const [busy, setBusy] = useState(false)
   const [preview, setPreview] = useState(null)   // enriched preview (see buildPreview)
   const [writing, setWriting] = useState(false)
 
-  async function handleFile(e) {
-    const file = e.target.files?.[0]
-    e.target.value = ''
+  // Close the preview and tell the parent to clear the picked file (so re-picking
+  // the same file re-triggers the effect).
+  function close() { setPreview(null); onDone?.() }
+
+  // A new file handed down → parse + build the preview. On parse error, surface it
+  // and release the file.
+  useEffect(() => {
     if (!file) return
-    setBusy(true)
-    try {
-      const parsed = await parseCafeLabor(file)
-      const enriched = await buildPreview(parsed, file.name)
-      setPreview(enriched)
-    } catch (err) {
-      toast.error(err.message || 'Could not parse the Café Labor file.')
-    }
-    setBusy(false)
-  }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const parsed = await parseCafeLabor(file)
+        const enriched = await buildPreview(parsed, file.name)
+        if (!cancelled) setPreview(enriched)
+      } catch (err) {
+        if (!cancelled) { toast.error(err.message || 'Could not parse the Café Labor file.'); onDone?.() }
+      }
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [file])
 
   // Enrich the raw parse with site matching + per-(loc,period) overwrite/lock/close
   // reads. Everything the manager needs to see BEFORE any write.
@@ -101,7 +112,7 @@ export default function CafeLaborImport() {
       }
     }
     setWriting(false)
-    setPreview(null)
+    close()
     if (failed) toast.error(`Imported ${wrote} · ${skipped} locked/closed skipped · ${failed} failed (see console)`)
     else toast.success(`Café Labor imported — ${wrote} (site, week) posted to hourly labor${skipped ? ` · ${skipped} locked/closed skipped` : ''}`)
   }
@@ -109,20 +120,15 @@ export default function CafeLaborImport() {
   const S = STYLES
   return (
     <>
-      <label style={S.btn} title="Import the Café Labor Efficiency 'Summary by Site' export">
-        <Upload size={14} /> {busy ? 'Reading…' : 'Import Café Labor'}
-        <input type="file" accept=".csv,.xlsx,.xls" style={{ display: 'none' }} onChange={handleFile} disabled={busy || writing} />
-      </label>
-
       {preview && createPortal(
-        <div style={S.overlay} onClick={() => !writing && setPreview(null)}>
+        <div style={S.overlay} onClick={() => !writing && close()}>
           <div style={S.modal} onClick={e => e.stopPropagation()}>
             <div style={S.head}>
               <div>
                 <div style={S.title}>Café Labor import — review before posting</div>
                 <div style={S.sub}>{preview.fileName} · periods: {preview.periods.join(', ') || '—'}</div>
               </div>
-              <button style={S.x} onClick={() => !writing && setPreview(null)}><X size={18} /></button>
+              <button style={S.x} onClick={() => !writing && close()}><X size={18} /></button>
             </div>
 
             {/* summary chips */}
@@ -190,7 +196,7 @@ export default function CafeLaborImport() {
             </div>
 
             <div style={S.foot}>
-              <button style={S.cancel} onClick={() => setPreview(null)} disabled={writing}>Cancel</button>
+              <button style={S.cancel} onClick={() => close()} disabled={writing}>Cancel</button>
               <button style={{ ...S.confirm, opacity: (preview.writableCount === 0 || writing) ? 0.5 : 1 }}
                       onClick={handleConfirm} disabled={preview.writableCount === 0 || writing}>
                 {writing ? 'Posting…' : `Post ${preview.writableCount} (site, week) to hourly labor`}

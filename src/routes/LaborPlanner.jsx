@@ -241,6 +241,8 @@ export default function LaborPlanner() {
   const [submissionId, setSubmissionId] = useState(null)
   const [rejectedReason, setRejectedReason] = useState('')
   const [glMap, setGlMap]             = useState(DEFAULT_GL_MAP)
+  const [cafeFile, setCafeFile]       = useState(null)   // a detected Café file handed to CafeLaborImport
+  const [detecting, setDetecting]     = useState(false)  // peeking a picked file's headers
   const [budgets, setBudgets]         = useState({})
   const [gfsSales, setGfsSales]       = useState(0)
   const [connectedIntegrations, setConnectedIntegrations] = useState({ '7shifts': true, adp: false, gusto: false })
@@ -338,6 +340,51 @@ export default function LaborPlanner() {
     loadIntegrations()
     loadPendingSubmission()
   }, [orgId, periodKey, location]) // re-runs when period changes
+
+  // Peek a picked file's first ~20 rows and classify it. The two labor formats are
+  // DISJOINT: Café has "Week of Event" / "Actual Labor $" columns; the GL report has
+  // "GL Code"/"Amount" headers, a Mosaic "50410 - …" first cell, or raw 5-digit GL
+  // rows. Returns { type: 'cafe' | 'gl' | null, headers }.
+  async function detectLaborFile(file) {
+    const XLSX = await import('xlsx')
+    const ab   = await file.arrayBuffer()
+    const wb   = XLSX.read(new Uint8Array(ab), { type: 'array' })
+    const sheetName = wb.SheetNames.find(s => /labor|payroll|hours|site|summary/i.test(s)) || wb.SheetNames[0]
+    const aoa  = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, raw: false, blankrows: false })
+    const scan = aoa.slice(0, 20)                                   // the header lives in the first rows
+    const cells = scan.flat().map(c => String(c ?? '').trim())
+    const lower = cells.map(c => c.toLowerCase())
+    const hasCell = (s) => lower.some(c => c === s || c.includes(s))
+    // Café first (disjoint markers) — "Actual Labor" covers both the $ and hours cols.
+    if (hasCell('week of event') || hasCell('actual labor')) return { type: 'cafe' }
+    // GL report: explicit headers, or a 5-digit GL in the first cell of any scanned row.
+    const firstCells = scan.map(r => String(r?.[0] ?? '').trim())
+    const glLike = (c) => /^\d{5}\s*[-–—]/.test(c) || /^\d{5}\s+\S/.test(c) || /^\d{5}$/.test(c)
+    if (hasCell('gl code') || lower.some(c => c === 'amount') || firstCells.some(glLike)) return { type: 'gl' }
+    return { type: null, headers: cells.filter(Boolean).slice(0, 12) }
+  }
+
+  // The ONE "Import Labor" front door: detect, then route to each format's OWN
+  // existing preview/flow (Café's self-contained modal, or the GL grid submission).
+  async function handleLaborImportPick(e) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    setDetecting(true)
+    try {
+      const { type, headers } = await detectLaborFile(file)
+      if (type === 'cafe') {
+        setCafeFile(file)                                          // → CafeLaborImport (controlled)
+      } else if (type === 'gl') {
+        await handleImport({ target: { files: [file], value: '' } })  // → GL grid flow (event-like)
+      } else {
+        toast.error(`Not a recognized labor file — expected the Cafe Labor Efficiency export (Week of Event / Actual Labor $) or a GL labor report (GL Code / Amount, or "50410 - …"). Found headers: ${headers.join(', ') || '(none)'}`)
+      }
+    } catch (err) {
+      toast.error('Could not read the file — ' + (err?.message || ''))
+    }
+    setDetecting(false)
+  }
 
   async function handleImport(e) {
     const file = e.target.files[0]
@@ -680,15 +727,15 @@ export default function LaborPlanner() {
               <Download size={15} />
             </button>
           )}
-          {approvalStatus !== 'approved' && (
-            <label className={styles.btnImport}>
-              <Upload size={14} /> Import Labor Report
-              <input type="file" accept=".csv,.xlsx,.xls" style={{ display: 'none' }} onChange={handleImport} />
-            </label>
-          )}
-          {/* Self-contained Café Labor import (multi-site/multi-period; derives
-              location+period per row — independent of this tab's selection). */}
-          <CafeLaborImport />
+          {/* ONE front door: auto-detects Café (multi-site/period hourly) vs GL report
+              (single-location grid) and routes to each format's own preview/flow. Not
+              gated on approval — a GL re-import is blocked inside handleImport, while a
+              Café import is location-independent and stays available. */}
+          <label className={styles.btnImport}>
+            <Upload size={14} /> {detecting ? 'Reading…' : 'Import Labor'}
+            <input type="file" accept=".csv,.xlsx,.xls" style={{ display: 'none' }} onChange={handleLaborImportPick} disabled={detecting} />
+          </label>
+          <CafeLaborImport file={cafeFile} onDone={() => setCafeFile(null)} />
           {rows.length > 0 && approvalStatus !== 'approved' && (
             <button className={styles.btnClear} onClick={() => { setRows([]); setSource(''); setApproval(null); setSubmissionId(null) }}>
               Clear
