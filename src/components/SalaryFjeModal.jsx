@@ -13,9 +13,9 @@
 // just computes on read). On save we invalidateLedgerJEs() so every P&L reader
 // picks the new salary up immediately.
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { X, UserPlus } from 'lucide-react'
+import { X } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { usePeriod } from '@/store/PeriodContext'
@@ -28,25 +28,25 @@ import { invalidateLedgerJEs, fiscalYearAnchor, nextAnnualWindowStart } from '@/
 const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '')
 const fmt$ = (v) => '$' + (Number(v) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
-export default function SalaryFjeModal({ onSaved }) {
+export default function SalaryFjeModal({ open, onClose, onSaved }) {
   const { user } = useAuthStore()
   const orgId = user?.tenantId
   const { selectedLocation } = useLocations()
   const { year } = usePeriod()
   const toast = useToast()
 
-  const [open, setOpen] = useState(false)
   const [rates, setRates] = useState(LABOR_RATE_FALLBACK)
   const [annual, setAnnual] = useState('')
   const [person, setPerson] = useState('')
   const [fiscalYear, setFiscalYear] = useState(year || new Date().getFullYear())
   const [saving, setSaving] = useState(false)
 
-  async function openForm() {
+  // Controlled modal (opened from New Entry → "Salary"): reset fields + load rates on open.
+  useEffect(() => {
+    if (!open) return
     setAnnual(''); setPerson(''); setFiscalYear(year || new Date().getFullYear())
-    setRates(await getLaborRates().catch(() => LABOR_RATE_FALLBACK))
-    setOpen(true)
-  }
+    getLaborRates().then(setRates).catch(() => setRates(LABOR_RATE_FALLBACK))
+  }, [open])
 
   // ── Burden PREVIEW (display only; derived, never written) ──
   const annualNum = parseFloat(String(annual).replace(/[$,\s]/g, '')) || 0
@@ -87,15 +87,15 @@ export default function SalaryFjeModal({ onSaved }) {
         windowStartDate,                                // 364-day, week-aligned, chained
         fiscalYear: Number(fiscalYear),
         location: loc,
-        description: `Salary FJE: ${person.trim()} (FY${fiscalYear})`,
+        description: `Salary: ${person.trim()} (FY${fiscalYear})`,
         createdBy: user?.name || user?.email || 'unknown',
         createdAt: serverTimestamp(),
         status: 'posted',
       })
 
       invalidateLedgerJEs()                             // read-time cache picks it up immediately
-      setOpen(false)
-      toast.success(`Salary FJE saved — ${fmt$(annualNum)}/yr → ${fmt$(loaded)}/wk loaded, derived to the weekly P&L`)
+      onClose?.()
+      toast.success(`Salary saved — ${fmt$(annualNum)}/yr → ${fmt$(loaded)}/wk loaded, amortized to the weekly P&L`)
       onSaved?.()
     } catch (e) {
       console.error('Salary FJE save failed:', e)
@@ -105,19 +105,16 @@ export default function SalaryFjeModal({ onSaved }) {
   }
 
   const S = STYLES
-  return (
-    <>
-      <button style={S.btn} onClick={openForm}><UserPlus size={14} /> Add Salary (FJE)</button>
-
-      {open && createPortal(
-        <div style={S.overlay} onClick={() => !saving && setOpen(false)}>
+  if (!open) return null
+  return createPortal(
+        <div style={S.overlay} onClick={() => !saving && onClose?.()}>
           <div style={S.modal} onClick={e => e.stopPropagation()}>
             <div style={S.head}>
               <div>
-                <div style={S.title}>Salaried person — annual FJE</div>
-                <div style={S.sub}>{selectedLocation && selectedLocation !== 'all' ? cleanLocName(selectedLocation) : '⚠ pick a location'} · amortizes to GL 50410 weekly</div>
+                <div style={S.title}>New salary — annual</div>
+                <div style={S.sub}>{selectedLocation && selectedLocation !== 'all' ? cleanLocName(selectedLocation) : '⚠ pick a location'} · amortizes to GL 50410, posts weekly</div>
               </div>
-              <button style={S.x} onClick={() => !saving && setOpen(false)}><X size={18} /></button>
+              <button style={S.x} onClick={() => !saving && onClose?.()}><X size={18} /></button>
             </div>
 
             <div style={S.body}>
@@ -156,16 +153,14 @@ export default function SalaryFjeModal({ onSaved }) {
             </div>
 
             <div style={S.foot}>
-              <button style={S.cancel} onClick={() => setOpen(false)} disabled={saving}>Cancel</button>
+              <button style={S.cancel} onClick={() => onClose?.()} disabled={saving}>Cancel</button>
               <button style={{ ...S.confirm, opacity: (annualNum <= 0 || !person.trim() || saving) ? 0.5 : 1 }}
                       onClick={save} disabled={annualNum <= 0 || !person.trim() || saving}>
                 {saving ? 'Saving…' : `Save salary base (${fmt$(annualNum)}/yr)`}
               </button>
             </div>
           </div>
-        </div>, document.body)}
-    </>
-  )
+        </div>, document.body)
 }
 
 const STYLES = {

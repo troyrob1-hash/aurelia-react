@@ -98,6 +98,8 @@ export default function Transfers() {
   const [activeTab, setActiveTab] = useState('journal')
   const [journalEntries, setJournalEntries] = useState([])
   const [showJeForm, setShowJeForm] = useState(false)
+  const [showTypePicker, setShowTypePicker] = useState(false)  // New Entry → choose Standard vs Salary
+  const [salaryOpen, setSalaryOpen] = useState(false)          // controls the salary entry modal (merged into New Entry)
   const [jeForm, setJeForm] = useState({ ...EMPTY_JE })
   const [jeSaving, setJeSaving] = useState(false)
   const [jeTemplates, setJeTemplates] = useState([])
@@ -589,8 +591,7 @@ export default function Transfers() {
                   )}
                 </div>
               )}
-              <SalaryFjeModal onSaved={reloadJEs} />
-              <button className={styles.btnPrimary} onClick={()=>{ setJeForm({ ...EMPTY_JE, location: selectedLocation }); setShowJeForm(true) }}>
+              <button className={styles.btnPrimary} onClick={() => setShowTypePicker(true)}>
                 <Plus size={15}/> New Entry
               </button>
             </div>
@@ -955,6 +956,26 @@ export default function Transfers() {
       {/* ── Journal Entries Tab ── */}
       {activeTab === 'journal' && (
         <div>
+          {/* New Entry → type picker: Standard adjustment vs Salary (merged; no separate button) */}
+          {showTypePicker && (
+            <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }} onClick={() => setShowTypePicker(false)}>
+              <div style={{ background: '#fff', borderRadius: 16, width: '90%', maxWidth: 420, padding: 24 }} onClick={e => e.stopPropagation()}>
+                <div style={{ fontSize: 16, fontWeight: 800, color: '#0f172a', marginBottom: 4 }}>New entry</div>
+                <div style={{ fontSize: 13, color: '#64748b', marginBottom: 16 }}>What kind of entry are you adding?</div>
+                <button style={{ display: 'block', width: '100%', textAlign: 'left', padding: '12px 14px', marginBottom: 10, borderRadius: 10, border: '1px solid #cbd5e1', background: '#fff', cursor: 'pointer' }}
+                        onClick={() => { setShowTypePicker(false); setJeForm({ ...EMPTY_JE, location: selectedLocation }); setShowJeForm(true) }}>
+                  <div style={{ fontWeight: 700, color: '#0f172a' }}>Standard adjustment</div>
+                  <div style={{ fontSize: 12, color: '#64748b' }}>One-time or amortized GL entry (adjustments, accruals)</div>
+                </button>
+                <button style={{ display: 'block', width: '100%', textAlign: 'left', padding: '12px 14px', borderRadius: 10, border: '1px solid #cbd5e1', background: '#fff', cursor: 'pointer' }}
+                        onClick={() => { setShowTypePicker(false); setSalaryOpen(true) }}>
+                  <div style={{ fontWeight: 700, color: '#0f172a' }}>Salary</div>
+                  <div style={{ fontSize: 12, color: '#64748b' }}>Annual salary for a person — amortized, posts weekly</div>
+                </button>
+              </div>
+            </div>
+          )}
+          <SalaryFjeModal open={salaryOpen} onClose={() => setSalaryOpen(false)} onSaved={reloadJEs} />
           {showJeForm && (
             <div style={{
               position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
