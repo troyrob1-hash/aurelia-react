@@ -1,8 +1,8 @@
 import SubCafeBar from '@/components/ui/SubCafePrompt'
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, Fragment } from 'react'
 import { useToast } from '@/components/ui/Toast'
 import AllLocationsGrid from '@/components/AllLocationsGrid'
-import { Upload, Download, CheckCircle, Clock, AlertCircle, RefreshCw, Plus } from 'lucide-react'
+import { Upload, Download, CheckCircle, Clock, AlertCircle, RefreshCw, Plus, ChevronRight, ChevronDown } from 'lucide-react'
 import { useLocations } from '@/store/LocationContext'
 import { useAuthStore } from '@/store/authStore'
 import { usePeriod } from '@/store/PeriodContext'
@@ -197,19 +197,10 @@ export default function LaborPlanner() {
   const thirdCost   = Number(enrichedPnl?.cogs_3rd_party) || 0
   const wagesCost   = canonicalLabor - burdenCost - thirdCost      // residual → breakdown always sums to the total, whether or not legacy cogs_onsite_labor is still in the cost sum
 
-  // Canonical labor COST breakdown — each ONSITE_LABOR_FIELD read from the enriched
-  // pnl, so the rows SUM EXACTLY to canonicalLabor (the Total Labor KPI). This is
-  // what surfaces Café hourly (cogs_onsite_labor_hourly), which the GL-submission
-  // table below (glMap) never shows.
-  const laborCostLines = [
-    ['cogs_labor_salaries',      'Salaries & Wages',      'GL 50410'],
-    ['cogs_onsite_labor_hourly', 'Hourly (Café actual)',  'timekeeping'],
-    ['cogs_labor_401k',          '401k',                  'derived'],
-    ['cogs_labor_benefits',      'Benefits',              'derived'],
-    ['cogs_labor_taxes',         'Taxes',                 'derived'],
-    ['cogs_labor_bonus',         'Bonus',                 'derived'],
-    ['cogs_3rd_party',           '3rd Party Labor',       'GL 50420'],
-  ].map(([k, label, note]) => ({ k, label, note, val: Number(enrichedPnl?.[k]) || 0 }))
+  // The 50410 combined line's two components (salary JE vs Café hourly) — shown as an
+  // on-demand expand under the 50410 GL row rather than a separate breakdown block.
+  const salariesActual = Number(enrichedPnl?.cogs_labor_salaries) || 0
+  const hourlyActual   = Number(enrichedPnl?.cogs_onsite_labor_hourly) || 0
 
   // Labor summary calculations (submission detail — see canonical totals above)
   const totalLabor = rows.reduce((s, r) => s + (r.amount || 0), 0)
@@ -243,6 +234,7 @@ export default function LaborPlanner() {
   const [glMap, setGlMap]             = useState(DEFAULT_GL_MAP)
   const [cafeFile, setCafeFile]       = useState(null)   // a detected Café file handed to CafeLaborImport
   const [detecting, setDetecting]     = useState(false)  // peeking a picked file's headers
+  const [showLaborSplit, setShowLaborSplit] = useState(false)  // expand the 50410 row into salary vs hourly
   const [budgets, setBudgets]         = useState({})
   const [gfsSales, setGfsSales]       = useState(0)
   const [connectedIntegrations, setConnectedIntegrations] = useState({ '7shifts': true, adp: false, gusto: false })
@@ -865,24 +857,6 @@ export default function LaborPlanner() {
         </div>
       </div>
 
-      {/* ── Canonical labor cost breakdown — sums to the Total Labor KPI; surfaces
-             Café Hourly + salary + derived burden the GL table below can't show. ── */}
-      <div style={{ margin: '12px 0', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
-        <div style={{ padding: '8px 14px', background: '#f8fafc', fontSize: 12, fontWeight: 700, color: '#0f172a', borderBottom: '1px solid #e2e8f0' }}>
-          Labor cost (P&amp;L) — actual
-        </div>
-        {laborCostLines.map(l => (
-          <div key={l.k} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 14px', fontSize: 13, borderBottom: '1px solid #f1f5f9', opacity: l.val === 0 ? 0.5 : 1 }}>
-            <span style={{ color: '#334155' }}>{l.label} <span style={{ fontSize: 11, color: '#94a3b8' }}>· {l.note}</span></span>
-            <span style={{ fontVariantNumeric: 'tabular-nums', color: '#0f172a' }}>${fmt(l.val)}</span>
-          </div>
-        ))}
-        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 14px', fontSize: 13, fontWeight: 800, color: '#0f172a', background: '#f8fafc' }}>
-          <span>Total Onsite Labor</span>
-          <span style={{ fontVariantNumeric: 'tabular-nums' }}>${fmt(canonicalLabor)}</span>
-        </div>
-      </div>
-
       {/* ── GL structure shell (no data) or populated table ── */}
       {displayRows.length === 0 ? (
         <div className={styles.tableWrap}>
@@ -966,10 +940,24 @@ export default function LaborPlanner() {
                     {sRows.map((r, i) => {
                       const bud = budgets[r.gl] || 0
                       const v   = r.amount - bud
+                      // GL 50410 is the combined salary+hourly line; let a manager expand
+                      // it to see the two components (the one thing the removed breakdown
+                      // block showed that this books-view otherwise hides).
+                      const is50410 = r.gl === '50410'
                       return (
-                        <tr key={i}>
+                        <Fragment key={i}>
+                        <tr>
                           <td className={styles.glCode}>{r.gl || '—'}</td>
-                          <td className={styles.desc}>{r.label}</td>
+                          <td className={styles.desc}>
+                            {is50410 ? (
+                              <button onClick={() => setShowLaborSplit(x => !x)}
+                                title="Show salary vs hourly split"
+                                style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'none', border: 'none', padding: 0, cursor: 'pointer', font: 'inherit', color: 'inherit' }}>
+                                {showLaborSplit ? <ChevronDown size={13} color="#94a3b8" /> : <ChevronRight size={13} color="#94a3b8" />}
+                                {r.label}
+                              </button>
+                            ) : r.label}
+                          </td>
                           <td style={{ textAlign: 'right', padding: '4px 8px' }}>
                             {r.derived ? (
                               // Read-only: sourced from the enriched P&L (salary JE / Café /
@@ -1024,6 +1012,22 @@ export default function LaborPlanner() {
                           </td>
                           <td style={{ textAlign: 'right', color: '#999' }}>{pct(r.amount, gfsSales)}</td>
                         </tr>
+                        {is50410 && showLaborSplit && (
+                          [['Salaries & Wages', 'salary JE', salariesActual],
+                           ['Hourly (Café actual)', 'timekeeping', hourlyActual]].map(([label, note, val]) => (
+                            <tr key={label} style={{ background: '#fafbfc' }}>
+                              <td></td>
+                              <td style={{ paddingLeft: 30, color: '#64748b', fontSize: 12 }}>
+                                {label} <span style={{ color: '#94a3b8' }}>· {note}</span>
+                              </td>
+                              <td style={{ textAlign: 'right', color: '#64748b', fontSize: 12, fontVariantNumeric: 'tabular-nums', paddingRight: 8 }}>
+                                {val > 0 ? `$${fmt(val)}` : '—'}
+                              </td>
+                              <td colSpan={3}></td>
+                            </tr>
+                          ))
+                        )}
+                        </Fragment>
                       )
                     })}
                     <tr className={styles.sectionTotal}>
