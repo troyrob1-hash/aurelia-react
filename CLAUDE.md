@@ -32,7 +32,7 @@ Everything tenant-scoped flows from those custom claims — never hardcode `'foo
 
 ### Two Firestore namespaces (this trips people up)
 
-- **`tenants/{orgId}/...`** — application data: inventory, P&L, invoices, orders, transfers, budgets, labor/sales/waste submissions, audit trail.
+- **`tenants/{orgId}/...`** — application data: inventory, P&L, invoices, orders, transfers, budgets, labor/sales/waste submissions, audit trail, **`officialPnl`** (the imported NetSuite books — see the reconciliation loop below).
 - **`orgs/{orgId}/...`** — admin/settings data: users, locations, API keys, sessions, integrations, period locks.
 
 Both `orgId` values are the same `custom:tenantId` claim. Rules helpers `ownsTenant()` / `isAdmin()` / `isDirector()` / `isManager()` are defined in `firestore.rules` and applied per-collection. The Settings UI and Cloud Functions write to `orgs/`; everything operational writes to `tenants/`.
@@ -55,6 +55,16 @@ Both `orgId` values are the same `custom:tenantId` claim. Rules helpers `ownsTen
 ### Shared P&L sink
 
 All operational modules write into `tenants/{orgId}/pnl/{locId}/periods/{periodKey}` via helpers in `src/lib/pnl.js` (and `pnlRollup.js` / `usePnL.js`). Dashboard reads from the same path. `locId(name)` sanitizes location names to doc-id-safe strings (`name.replace(/[^a-zA-Z0-9]/g, '_')`). When adding a new data source that feeds P&L, write through `pnl.js` so Dashboard picks it up automatically.
+
+### Reconciliation loop — Official vs Running vs Budget (Phase 1)
+
+The **Running** P&L (what Aurelia reconstructs weekly, the shared sink above) is diffed against the **Official** books (NetSuite Enterprise P&L, imported monthly) at `/reconciliation` (`src/routes/Reconciliation.jsx`, Finance nav, tenant-wide read). Three moving parts:
+
+- **`officialPnl` namespace** — `tenants/{orgId}/officialPnl/{locId}/periods/{monthKey}` (monthKey is `YYYY-PMM`, no week). Written by `OfficialPnlImport.jsx` (director+ launch on the reconciliation view) via `parseOfficialPnl` (`src/lib/parseOfficialPnl.js`): parses the `Category | Subcategory | Line | NetSuite Account Name | Actual $ | Budget $ | …` export, resolves each row to a RECON_MAP official line **account-number-wins** (then name, then Line col, then alias), fails loud on wrong columns, and **never drops** an unmapped row (stored in `unmappedLines[]`, surfaced in the UI). Rules: read tenant-wide, **write director/vp/admin** (it's the source of record). The doc stores `lines[]` (per-line actual/budget/variance + netsuiteAccount) + `unmappedLines[]` + `sourceFile`/`importedBy`/`importedAt`.
+- **`computeRunningMonth` + `RECON_MAP`** (`src/lib/reconMap.js`) — `RECON_MAP` is a verified disjoint cover of Aurelia's leaf P&L atoms keyed by official-line name (`{ section, acct?, status, aurelia: [atom fields that sum to it] }`); `rollupToOfficialLines(atomSums)` rolls the weekly atoms up to official-line grain (a line with `aurelia: []` rolls up to `null` = "no running source", not `$0`). `computeRunningMonth(locId, monthKey, orgId)` sums the month's **weekly pnl docs + read-time ledger contributions** (post-calendar-fix a month is exactly its weeks) and returns `{ lines, atomSums, weekCount, weeksFound }`. The view flags a **partial month** when `weeksFound < weekCount` so a low Running isn't misread as a gap.
+- **Three states** drive rendering: **MAPPED** (18) — a running writer exists, show the `Official − Running` variance (flagged >$1); **COMING** (22) — the field exists but no running writer routes to it yet, show Official, Running is expected-low and never flagged; **EXTERNAL** (1) — structurally NetSuite-only (rent/D&A/allocations), Official only. **Labor lines are COMING** until Café hourly + salary fully populate real data — flip them back to MAPPED then. Budget shown per line comes from the export's own Budget $ (same grain/source as Official).
+
+**Overwrite semantic:** `writeOfficialPnl` uses `setDoc(..., { merge: true })` — Firestore overwrites **array** fields wholesale, so a re-imported month **replaces** `lines[]`/`unmappedLines[]` (a dropped line can't linger as a phantom variance; verified by a live round-trip), while `merge:true` still **preserves sibling fields** like reconciliation notes layered on later. A re-imported month is the corrected truth, not a merge.
 
 ### Autosave pattern for data-entry tabs
 
@@ -92,7 +102,7 @@ Cloud Function env (set via `firebase functions:secrets:set` or the Functions ru
 
 ## Gotchas
 
-- `scripts/` is in `.gitignore` — local seed/repair scripts live there and are not part of any deployable artifact. The migrations folder (`migrations/migrate-inventory-catalog.mjs`) is the migration record.
+- `scripts/` is in `.gitignore` — local seed/repair scripts live there and are not part of any deployable artifact. The migrations folder (`migrations/migrate-inventory-catalog.mjs`) is the migration record. **Ad-hoc test scripts also historically lived in gitignored `scripts/` (so they weren't tracked) — `tests/` is now the tracked home for money-path parser/rollup guards.** Current tracked guards: `tests/officialPnl.test.js` (17/17 — the Enterprise P&L resolver, unmapped-surfacing, fail-loud, monthKey), `tests/reconcile.test.js` (7/7 — official-line rollup + variance semantics), `tests/ledger-amortize.test.js` (JE amortization conserves). Money-path parsers (the Café column bug proved it) get a tracked test.
 - Tests `tests/rules.test.js` need the firestore emulator (port `8080` per `firebase.json`); `npm run test:rules` boots it automatically. `tests/smoke.test.js` hits real Firestore and is what GitHub Actions runs daily at 11:00 UTC (`.github/workflows/daily-smoke-test.yml`).
 - Files matching `*service-account*.json`, `*firebase-adminsdk*.json`, `*QC*Budget*.xlsx`, `*Qualcomm*.xlsx`, and `src/fixtures/real/` are gitignored — they hold credentials or real customer data.
 - The default-deny block at the bottom of `firestore.rules` is followed by additional rules nested inside it (`periodLocks`, `auditTrail`, `syncLog`, `integrations`, `purchaseOrders`, `posTransactions`, `notifications`). That nesting is intentional Firestore-rules syntax, not a typo — those collections are open to any authenticated user.
