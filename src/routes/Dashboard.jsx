@@ -8,7 +8,7 @@ import { db } from '@/lib/firebase'
 import { doc, getDoc } from 'firebase/firestore'
 import { readPnL, getPriorKey, getTrailingPeriodKeys, writePeriodClose, computeRevenue, computeOnsiteLabor, REV_SUBLINES } from '@/lib/pnl'
 import { usePeriodStatus } from '@/hooks/usePeriodStatus'
-import { usePnL, useMultiLocationPnL, usePnLHistory } from '@/lib/usePnL'
+import { usePnL, useLedgerEnrichedPnL, useMultiLocationPnL, useLedgerEnrichedMultiPnL, usePnLHistory } from '@/lib/usePnL'
 import { usePeriod } from '@/store/PeriodContext'
 import { ChevronDown, ChevronRight, RefreshCw, Download, ExternalLink } from 'lucide-react'
 import {
@@ -394,10 +394,10 @@ export default function Dashboard() {
   // stable empty data with zero Firestore cost. React hooks must be called
   // unconditionally so we pass the no-op inputs rather than conditionally
   // skipping the hook call.
-  const singleCurrent = usePnL(!isAll ? location : null, !isAll ? periodKey : null)
-  const singlePrior   = usePnL(!isAll ? location : null, !isAll ? priorKey  : null)
-  const multiCurrent  = useMultiLocationPnL(isAll ? locNames : [], isAll ? periodKey : null)
-  const multiPrior    = useMultiLocationPnL(isAll ? locNames : [], isAll ? priorKey  : null)
+  const singleCurrent = useLedgerEnrichedPnL(!isAll ? location : null, !isAll ? periodKey : null)
+  const singlePrior   = useLedgerEnrichedPnL(!isAll ? location : null, !isAll ? priorKey  : null)
+  const multiCurrent  = useLedgerEnrichedMultiPnL(isAll ? locNames : [], isAll ? periodKey : null)
+  const multiPrior    = useLedgerEnrichedMultiPnL(isAll ? locNames : [], isAll ? priorKey  : null)
 
   // Trailing 12 periods of historical data for KPI sparklines and trend chart.
   // Loaded once per (locations, periodKey) pair. Not a live subscription —

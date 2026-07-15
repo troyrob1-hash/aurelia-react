@@ -19,6 +19,7 @@
 import { doc, getDoc } from 'firebase/firestore'
 import { db } from './firebase'
 import { weeksInPeriod } from './pnl'   // the one authoritative Sun–Sat week-count (no 4th copy)
+import { computeLedgerContributions } from './ledgerContributions'
 
 export const STATUS = { MAPPED: 'MAPPED', COMING: 'COMING', EXTERNAL: 'EXTERNAL' }
 
@@ -113,11 +114,17 @@ export async function computeRunningMonth(locId, monthKey, orgId = 'fooda') {
   for (let w = 1; w <= n; w++) {
     const wk = `${year}-P${String(period).padStart(2, '0')}-W${w}`
     const snap = await getDoc(doc(db, 'tenants', orgId, 'pnl', locId, 'periods', wk))
-    if (!snap.exists()) continue
-    weeksFound++
-    for (const [k, v] of Object.entries(snap.data())) {
-      if (typeof v === 'number') atomSums[k] = (atomSums[k] || 0) + v
+    if (snap.exists()) {
+      weeksFound++
+      for (const [k, v] of Object.entries(snap.data())) {
+        if (typeof v === 'number') atomSums[k] = (atomSums[k] || 0) + v
+      }
     }
+    // Ledger contributions (e.g. salary → cogs_labor_salaries) are read-time — never
+    // stored on pnl — so the running month must add them per week too, or 50410 would
+    // read $0 in the reconciliation and stay COMING when it's actually being tracked.
+    const contribs = await computeLedgerContributions(locId, wk, orgId)
+    for (const [k, v] of Object.entries(contribs)) atomSums[k] = (atomSums[k] || 0) + v
   }
   return { lines: rollupToOfficialLines(atomSums), atomSums, weekCount: n, weeksFound }
 }

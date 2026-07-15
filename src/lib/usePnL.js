@@ -9,7 +9,8 @@
 // Both hooks return { data, loading, lastUpdated } and auto-cleanup on unmount.
 
 import { useState, useEffect, useRef } from 'react'
-import { subscribePnL, fetchPnLHistory, weeksInPeriod } from './pnl'
+import { subscribePnL, fetchPnLHistory, weeksInPeriod, locId, getLaborRates, enrichPnLLabor } from './pnl'
+import { ledgerContributionsForPeriod, ledgerContributionsMulti } from './ledgerContributions'
 import { useLocations } from '@/store/LocationContext'
 
 // Keys that are numeric and get summed in aggregation.
@@ -40,6 +41,61 @@ const NUMERIC_KEYS = [
   // AP / misc
   'ap_paid', 'ap_pending', 'waste_oz',
 ]
+
+// READ-TIME LEDGER ENRICHMENT — the JE→P&L bridge (model a). Wraps usePnL and
+// folds live journal-entry contributions (e.g. salary → cogs_labor_salaries on
+// GL 50410) into the in-memory pnl object, then derives burden. pnl docs are
+// NEVER mutated — enrichment is per-read and always the sum of the JE sources.
+// Every P&L reader that shows a JE-targeted line goes through this hook.
+export function useLedgerEnrichedPnL(location, period) {
+  const { data, loading, lastUpdated } = usePnL(location, period)
+  const [enriched, setEnriched] = useState(data)
+
+  useEffect(() => {
+    let cancelled = false
+    if (!location || !period) { setEnriched(data); return }
+    ;(async () => {
+      try {
+        const [contribs, rates] = await Promise.all([
+          ledgerContributionsForPeriod(locId(location), period),
+          getLaborRates(),
+        ])
+        if (!cancelled) setEnriched(enrichPnLLabor(data, contribs, rates))
+      } catch {
+        if (!cancelled) setEnriched(enrichPnLLabor(data, {}, undefined)) // fail-open: burden on stored base
+      }
+    })()
+    return () => { cancelled = true }
+  }, [location, period, data])
+
+  return { data: enriched, loading, lastUpdated }
+}
+
+// All-Locations variant — same read-time ledger enrichment on the aggregate
+// (salary + burden summed across the location set).
+export function useLedgerEnrichedMultiPnL(locations, period) {
+  const base = useMultiLocationPnL(locations, period)
+  const [enriched, setEnriched] = useState(base.data)
+
+  useEffect(() => {
+    let cancelled = false
+    if (!Array.isArray(locations) || !locations.length || !period) { setEnriched(base.data); return }
+    ;(async () => {
+      try {
+        const [contribs, rates] = await Promise.all([
+          ledgerContributionsMulti(locations.map(locId), period),
+          getLaborRates(),
+        ])
+        if (!cancelled) setEnriched(enrichPnLLabor(base.data, contribs, rates))
+      } catch {
+        if (!cancelled) setEnriched(enrichPnLLabor(base.data, {}, undefined))
+      }
+    })()
+    return () => { cancelled = true }
+  }, [JSON.stringify(locations), period, base.data])
+
+  return { ...base, data: enriched }
+}
 
 // Single-location subscription hook.
 export function usePnL(location, period) {
@@ -267,6 +323,15 @@ export function usePnLHistory(locations, periodKeys) {
           })
           aggregated[pk] = zeros
         })
+        // Read-time ledger enrichment per period (salary → cogs_labor_salaries +
+        // derived burden), so trend/EBITDA sparklines include ledger labor too.
+        const rates = await getLaborRates()
+        const locIds = locations.map(locId)
+        await Promise.all(periodKeys.map(async pk => {
+          const contribs = await ledgerContributionsMulti(locIds, pk).catch(() => ({}))
+          aggregated[pk] = enrichPnLLabor(aggregated[pk], contribs, rates)
+        }))
+        if (cancelled) return
         setByPeriod(aggregated)
       } catch (e) {
         console.error('usePnLHistory error:', e)

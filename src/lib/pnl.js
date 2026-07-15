@@ -114,6 +114,50 @@ export function computeOnsiteLabor(p) {
   return ONSITE_LABOR_FIELDS.reduce((s, k) => s + (Number(p[k]) || 0), 0)
 }
 
+// ── Labor burden (read-time derivation) ──────────────────────────────────────
+// Burden is NEVER stored — always derived from the base (salary + hourly). The
+// salary base itself comes from the LEDGER (computeLedgerContributions → 50410),
+// enriched into the in-memory pnl object; hourly comes from the Café import field.
+// Rates are director-editable at tenants/{org}/settings/laborRates, fail-open to
+// the locked defaults: 15% taxes, 22.5% benefits, 1.875% 401k on (salary+hourly),
+// 8% bonus on salary ONLY.
+export const LABOR_RATE_FALLBACK = { taxRate: 0.15, benefitsRate: 0.225, retirement401kRate: 0.01875, bonusRate: 0.08 }
+let _laborRates = null
+export async function getLaborRates() {
+  if (_laborRates) return _laborRates
+  try {
+    const snap = await getDoc(doc(db, 'tenants', _getOrgId(), 'settings', 'laborRates'))
+    _laborRates = snap.exists() ? { ...LABOR_RATE_FALLBACK, ...snap.data() } : { ...LABOR_RATE_FALLBACK }
+    if (!snap.exists()) console.warn('getLaborRates: settings/laborRates missing — using fallback', LABOR_RATE_FALLBACK)
+  } catch (e) {
+    console.warn('getLaborRates: settings/laborRates unreadable — using fallback:', e?.message)
+    _laborRates = { ...LABOR_RATE_FALLBACK }
+  }
+  return _laborRates
+}
+
+// PURE. Derive the four burden lines from the base. Bonus is salary-only.
+export function computeLaborBurden(salaries, hourly, rates = LABOR_RATE_FALLBACK) {
+  const sal = Number(salaries) || 0
+  const base = sal + (Number(hourly) || 0)
+  return {
+    cogs_labor_taxes:    base * (rates.taxRate ?? LABOR_RATE_FALLBACK.taxRate),
+    cogs_labor_benefits: base * (rates.benefitsRate ?? LABOR_RATE_FALLBACK.benefitsRate),
+    cogs_labor_401k:     base * (rates.retirement401kRate ?? LABOR_RATE_FALLBACK.retirement401kRate),
+    cogs_labor_bonus:    sal  * (rates.bonusRate ?? LABOR_RATE_FALLBACK.bonusRate),
+  }
+}
+
+// PURE. Merge ledger contributions into an IN-MEMORY pnl object and derive burden.
+// NOTHING is written to Firestore — this is the read-time enrichment the readers see.
+// contributions: { [glCode]: amount } from computeLedgerContributions.
+export function enrichPnLLabor(p, contributions = {}, rates = LABOR_RATE_FALLBACK) {
+  const out = { ...(p || {}) }
+  for (const [gl, amt] of Object.entries(contributions)) out[gl] = (Number(out[gl]) || 0) + (Number(amt) || 0)
+  const burden = computeLaborBurden(out.cogs_labor_salaries, out.cogs_onsite_labor_hourly, rates)
+  return { ...out, ...burden }   // burden SETS the four cogs_labor_* lines (no running source writes them)
+}
+
 // periodKey is now passed in from PeriodContext (e.g. '2026-P01-W2')
 // These helpers kept for backward compat but PeriodContext is the source of truth
 // DEPRECATED: returns an approximate W1 key and is wrong for any other week.

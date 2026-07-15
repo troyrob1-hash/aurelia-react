@@ -2,7 +2,7 @@ import { useAuthStore } from '@/store/authStore'
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { usePeriod } from '@/store/PeriodContext'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
-import { usePnL } from '@/lib/usePnL'
+import { useLedgerEnrichedPnL as usePnL } from '@/lib/usePnL'  // ledger-enriched (salary+burden) read
 import { db } from '@/lib/firebase'
 import { collection, addDoc, getDocs, query, where, orderBy, limit, doc, getDoc, serverTimestamp } from 'firebase/firestore'
 import { writePnL, weeksInPeriod, getPriorKey, computeRevenue } from '@/lib/pnl'
