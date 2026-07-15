@@ -6,7 +6,7 @@ import { useToast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/store/authStore'
 import { db } from '@/lib/firebase'
 import { doc, getDoc } from 'firebase/firestore'
-import { readPnL, getPriorKey, getTrailingPeriodKeys, writePeriodClose, computeRevenue, REV_SUBLINES } from '@/lib/pnl'
+import { readPnL, getPriorKey, getTrailingPeriodKeys, writePeriodClose, computeRevenue, computeOnsiteLabor, REV_SUBLINES } from '@/lib/pnl'
 import { usePeriodStatus } from '@/hooks/usePeriodStatus'
 import { usePnL, useMultiLocationPnL, usePnLHistory } from '@/lib/usePnL'
 import { usePeriod } from '@/store/PeriodContext'
@@ -70,9 +70,7 @@ const DEFAULT_SCHEMA = [
       { key: 'cogs_labor_taxes',     label: 'Onsite Labor Taxes',               indent: 2, drillTo: '/labor', budgetKey: 'budget_cogs_labor_taxes' },
       { key: 'cogs_labor_bonus',     label: 'Onsite Bonus',                     indent: 2, drillTo: '/labor', budgetKey: 'budget_cogs_labor_bonus' },
       { key: '_labor_subtotal',      label: 'Total Onsite Labor',               bold: true, indent: 1, budgetKey: 'budget_labor',
-        computeFn: p => (p.cogs_labor_salaries||0) + (p.cogs_labor_401k||0) + (p.cogs_labor_benefits||0)
-                      + (p.cogs_labor_taxes||0) + (p.cogs_labor_bonus||0)
-                      + (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)  // backward compat with old single-line writes
+        computeFn: p => computeOnsiteLabor(p)
       },
       // Location Costs — Equipment & Consumables
       { key: 'cogs_cleaning',        label: 'Cleaning Supplies & Chemicals',    indent: 2, budgetKey: 'budget_cogs_cleaning' },
@@ -105,9 +103,7 @@ const DEFAULT_SCHEMA = [
       // Total COGS
       { key: '_total_cogs',          label: 'Total COGS',                       bold: true, budgetKey: 'budget_cogs',
         computeFn: p => {
-          const labor = (p.cogs_labor_salaries||0) + (p.cogs_labor_401k||0) + (p.cogs_labor_benefits||0)
-                      + (p.cogs_labor_taxes||0) + (p.cogs_labor_bonus||0)
-                      + (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
+          const labor = computeOnsiteLabor(p)
           const ec    = (p.cogs_cleaning||0) + (p.cogs_equipment||0) + (p.cogs_ec_barista||0)
                       + (p.cogs_paper||0) + (p.cogs_supplies||0) + (p.cogs_uniforms||0)
           const retail = (p.cogs_retail_barista||0) + (p.cogs_retail_cafeteria||0) + (p.cogs_retail_managed||0)
@@ -124,9 +120,7 @@ const DEFAULT_SCHEMA = [
         computeFn: p => {
           // rev_* sub-lines are authoritative; revenue_total is a legacy fallback only.
           const revenue = computeRevenue(p)
-          const labor = (p.cogs_labor_salaries||0) + (p.cogs_labor_401k||0) + (p.cogs_labor_benefits||0)
-                      + (p.cogs_labor_taxes||0) + (p.cogs_labor_bonus||0)
-                      + (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
+          const labor = computeOnsiteLabor(p)
           const ec    = (p.cogs_cleaning||0) + (p.cogs_equipment||0) + (p.cogs_ec_barista||0)
                       + (p.cogs_paper||0) + (p.cogs_supplies||0) + (p.cogs_uniforms||0)
           const retail = (p.cogs_retail_barista||0) + (p.cogs_retail_cafeteria||0) + (p.cogs_retail_managed||0)
@@ -169,9 +163,7 @@ const DEFAULT_SCHEMA = [
       { key: '_ebitda', label: 'EBITDA', bold: true, highlight: true, budgetKey: 'budget_ebitda',
         computeFn: p => {
           const revenue = computeRevenue(p)
-          const labor = (p.cogs_labor_salaries||0) + (p.cogs_labor_401k||0) + (p.cogs_labor_benefits||0)
-                      + (p.cogs_labor_taxes||0) + (p.cogs_labor_bonus||0)
-                      + (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
+          const labor = computeOnsiteLabor(p)
           const ec    = (p.cogs_cleaning||0) + (p.cogs_equipment||0) + (p.cogs_ec_barista||0)
                       + (p.cogs_paper||0) + (p.cogs_supplies||0) + (p.cogs_uniforms||0)
           const retail = (p.cogs_retail_barista||0) + (p.cogs_retail_cafeteria||0) + (p.cogs_retail_managed||0)
@@ -188,9 +180,7 @@ const DEFAULT_SCHEMA = [
       { key: '_pct_ebitda_gfs', label: 'EBITDA % of GFS', pct: true, indent: 1,
         computeFn: p => {
           const revenue = computeRevenue(p)
-          const labor = (p.cogs_labor_salaries||0) + (p.cogs_labor_401k||0) + (p.cogs_labor_benefits||0)
-                      + (p.cogs_labor_taxes||0) + (p.cogs_labor_bonus||0)
-                      + (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
+          const labor = computeOnsiteLabor(p)
           const ec    = (p.cogs_cleaning||0) + (p.cogs_equipment||0) + (p.cogs_ec_barista||0)
                       + (p.cogs_paper||0) + (p.cogs_supplies||0) + (p.cogs_uniforms||0)
           const retail = (p.cogs_retail_barista||0) + (p.cogs_retail_cafeteria||0) + (p.cogs_retail_managed||0)
@@ -240,7 +230,7 @@ function formatAgo(date) {
 // Compute EBITDA from a raw pnl data object
 function computeEBITDA(p) {
   const rev     = computeRevenue(p)
-  const labor   = (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0)
+  const labor   = computeOnsiteLabor(p)
   const payproc = (p.cogs_payment_processing||0)   // real merchant-fee cost (GL 61020), not a 1.8%-of-GFS estimate
   const gm      = rev - (labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + payproc)
   return gm - (p.exp_comp_benefits||0)
@@ -248,7 +238,7 @@ function computeEBITDA(p) {
 
 function computePrimeCost(p) {
   const rev   = computeRevenue(p)
-  const labor = (p.cogs_onsite_labor||0) + (p.cogs_3rd_party||0) + (p.exp_comp_benefits||0)
+  const labor = computeOnsiteLabor(p) + (p.exp_comp_benefits||0)
   const cogs  = (p.cogs_inventory||0) + (p.cogs_purchases||0)
   return rev > 0 ? (labor + cogs) / rev : null
 }
@@ -296,14 +286,15 @@ function applyScenario(baselinePnl, scenario) {
   // delta, find the new total dollar amount, then scale both sub-lines.
   if (scenario.laborDelta !== 0) {
     const gfsForCalc = out.gfs_total || baselinePnl.gfs_total || 0
-    const currentLabor = (baselinePnl.cogs_onsite_labor || 0) + (baselinePnl.cogs_3rd_party || 0)
+    const currentLabor = computeOnsiteLabor(baselinePnl)
     if (gfsForCalc > 0 && currentLabor > 0) {
       const currentLaborPct = currentLabor / gfsForCalc
       const newLaborPct = currentLaborPct + (scenario.laborDelta / 100)
       const newLabor = Math.max(0, gfsForCalc * newLaborPct)
       const scale = currentLabor > 0 ? newLabor / currentLabor : 1
-      out.cogs_onsite_labor = (baselinePnl.cogs_onsite_labor || 0) * scale
-      out.cogs_3rd_party    = (baselinePnl.cogs_3rd_party    || 0) * scale
+      out.cogs_onsite_labor        = (baselinePnl.cogs_onsite_labor        || 0) * scale
+      out.cogs_onsite_labor_hourly = (baselinePnl.cogs_onsite_labor_hourly || 0) * scale
+      out.cogs_3rd_party           = (baselinePnl.cogs_3rd_party           || 0) * scale
     }
   }
 
@@ -522,7 +513,7 @@ export default function Dashboard() {
   // ── Derived values ───────────────────────────────────────────
   const gfs          = pnl.gfs_total || 0
   const revenue      = computeRevenue(pnl)
-  const labor        = (pnl.cogs_onsite_labor||0) + (pnl.cogs_3rd_party||0)
+  const labor        = computeOnsiteLabor(pnl)
   const payproc      = pnl.cogs_payment_processing || 0   // real merchant-fee cost, not 1.8% of GFS
   const totalCOGS    = labor + (pnl.cogs_inventory||0) + (pnl.cogs_purchases||0) + payproc
   const grossMargin  = revenue - totalCOGS
@@ -536,7 +527,7 @@ export default function Dashboard() {
   // Prior period
   const priorGFS    = priorPnl.gfs_total || 0
   const priorRev    = computeRevenue(priorPnl)
-  const priorLabor  = (priorPnl.cogs_onsite_labor||0) + (priorPnl.cogs_3rd_party||0)
+  const priorLabor  = computeOnsiteLabor(priorPnl)
   const priorPayp   = priorPnl.cogs_payment_processing || 0
   const priorCOGS   = priorLabor + (priorPnl.cogs_inventory||0) + (priorPnl.cogs_purchases||0) + priorPayp
   const priorEBITDA = (priorRev - priorCOGS) - (priorPnl.exp_comp_benefits||0)
@@ -556,7 +547,7 @@ export default function Dashboard() {
   const scenarioPnl = scenarioActive ? applyScenario(pnl, scenario) : pnl
   const scenGfs     = scenarioPnl.gfs_total || 0
   const scenRev     = computeRevenue(scenarioPnl)
-  const scenLabor   = (scenarioPnl.cogs_onsite_labor || 0) + (scenarioPnl.cogs_3rd_party || 0)
+  const scenLabor   = computeOnsiteLabor(scenarioPnl)
   const scenPayp    = scenarioPnl.cogs_payment_processing || 0
   const scenCogs    = scenLabor + (scenarioPnl.cogs_inventory || 0) + (scenarioPnl.cogs_purchases || 0) + scenPayp
   const scenGm      = scenRev - scenCogs
@@ -581,7 +572,7 @@ export default function Dashboard() {
       const p = history[k] || {}
       const g = p.gfs_total || 0
       const r = computeRevenue(p)
-      const l = (p.cogs_onsite_labor || 0) + (p.cogs_3rd_party || 0)
+      const l = computeOnsiteLabor(p)
       // Use the shared helpers so the sparkline matches the KPI cards exactly:
       // real payproc (cogs_payment_processing), and no labor double-count (the old
       // inline `l + cogsT - pp` expanded to 2·labor + food).

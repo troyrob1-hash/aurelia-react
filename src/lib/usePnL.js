@@ -23,7 +23,7 @@ const NUMERIC_KEYS = [
   'rev_catering_cogs', 'rev_catering_revenue', 'rev_catering_pp_fee',
   'rev_retail_barista', 'rev_retail_cafeteria', 'rev_retail_cogs_tax', 'rev_client_fees',
   // Labor
-  'cogs_onsite_labor', 'cogs_3rd_party', 'exp_comp_benefits', 'labor_total',
+  'cogs_onsite_labor', 'cogs_onsite_labor_hourly', 'cogs_3rd_party', 'exp_comp_benefits', 'labor_total',
   'cogs_labor_salaries', 'cogs_labor_401k', 'cogs_labor_benefits', 'cogs_labor_taxes', 'cogs_labor_bonus',
   // COGS — inventory + purchasing rollup + categorized GL lines
   'cogs_inventory', 'cogs_purchases', 'cogs_waste', 'closingValue', 'openingValue',

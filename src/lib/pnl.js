@@ -99,6 +99,21 @@ export function computeRevenue(p) {
   return rev !== 0 ? rev : (Number(p.revenue_total) || 0)
 }
 
+// Canonical TOTAL ONSITE LABOR — the single definition of the labor cost bucket,
+// so a new labor source is ONE edit here, not N reader updates (the divergence
+// class that caused the revenue bug). Sums, in order: FJE ledger labor (salaries,
+// 401k, benefits, taxes, bonus) + cogs_onsite_labor (legacy single-line) +
+// cogs_onsite_labor_hourly (Café Labor 2.3a) + cogs_3rd_party. Every Dashboard /
+// whyRules labor sum routes through this. Same treatment as computeRevenue.
+export const ONSITE_LABOR_FIELDS = [
+  'cogs_labor_salaries', 'cogs_labor_401k', 'cogs_labor_benefits', 'cogs_labor_taxes', 'cogs_labor_bonus',
+  'cogs_onsite_labor', 'cogs_onsite_labor_hourly', 'cogs_3rd_party',
+]
+export function computeOnsiteLabor(p) {
+  if (!p) return 0
+  return ONSITE_LABOR_FIELDS.reduce((s, k) => s + (Number(p[k]) || 0), 0)
+}
+
 // periodKey is now passed in from PeriodContext (e.g. '2026-P01-W2')
 // These helpers kept for backward compat but PeriodContext is the source of truth
 // DEPRECATED: returns an approximate W1 key and is wrong for any other week.
