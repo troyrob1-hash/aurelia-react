@@ -409,7 +409,10 @@ export async function writeLaborPnL(location, period, { onsiteLabor, thirdParty,
     // is the only field ONSITE_LABOR_FIELDS reads. This is what makes the plan
     // structurally incapable of double-counting against actuals.
     labor_planned_hourly: onsiteLabor,
-    cogs_3rd_party:    thirdParty,
+    // 3rd-party COST is now owned SOLELY by the read-time 3rd-party JE (New Entry →
+    // 3rd-Party Labor → cogs_3rd_party). The GL grid's 50420 is a PLAN, not a cost —
+    // so it can't double-count with the JE. (Same retirement as cogs_onsite_labor.)
+    labor_planned_3rd_party: thirdParty,
     exp_comp_benefits: compBenefits,
     labor_gl_rows:     glRows || [],
   })

@@ -14,6 +14,7 @@ import { Plus, Download, Search, CheckCircle, XCircle, Upload, AlertTriangle, Fi
 import { writePnL } from '@/lib/pnl'
 import { getInventory, saveInventory } from '@/lib/inventory'
 import SalaryFjeModal from '@/components/SalaryFjeModal'
+import ThirdPartyLaborModal from '@/components/ThirdPartyLaborModal'
 import styles from './Transfers.module.css'
 
 const STATUSES = ['Pending', 'Approved', 'Received', 'Rejected']
@@ -100,6 +101,7 @@ export default function Transfers() {
   const [showJeForm, setShowJeForm] = useState(false)
   const [showTypePicker, setShowTypePicker] = useState(false)  // New Entry → choose Standard vs Salary
   const [salaryOpen, setSalaryOpen] = useState(false)          // controls the salary entry modal (merged into New Entry)
+  const [thirdPartyOpen, setThirdPartyOpen] = useState(false)  // controls the 3rd-party labor entry modal
   const [jeForm, setJeForm] = useState({ ...EMPTY_JE })
   const [jeSaving, setJeSaving] = useState(false)
   const [jeTemplates, setJeTemplates] = useState([])
@@ -967,15 +969,21 @@ export default function Transfers() {
                   <div style={{ fontWeight: 700, color: '#0f172a' }}>Standard adjustment</div>
                   <div style={{ fontSize: 12, color: '#64748b' }}>One-time or amortized GL entry (adjustments, accruals)</div>
                 </button>
-                <button style={{ display: 'block', width: '100%', textAlign: 'left', padding: '12px 14px', borderRadius: 10, border: '1px solid #cbd5e1', background: '#fff', cursor: 'pointer' }}
+                <button style={{ display: 'block', width: '100%', textAlign: 'left', padding: '12px 14px', marginBottom: 10, borderRadius: 10, border: '1px solid #cbd5e1', background: '#fff', cursor: 'pointer' }}
                         onClick={() => { setShowTypePicker(false); setSalaryOpen(true) }}>
                   <div style={{ fontWeight: 700, color: '#0f172a' }}>Salary</div>
                   <div style={{ fontSize: 12, color: '#64748b' }}>Annual salary for a person — amortized, posts weekly</div>
+                </button>
+                <button style={{ display: 'block', width: '100%', textAlign: 'left', padding: '12px 14px', borderRadius: 10, border: '1px solid #cbd5e1', background: '#fff', cursor: 'pointer' }}
+                        onClick={() => { setShowTypePicker(false); setThirdPartyOpen(true) }}>
+                  <div style={{ fontWeight: 700, color: '#0f172a' }}>3rd-Party Labor</div>
+                  <div style={{ fontSize: 12, color: '#64748b' }}>Agency/temp invoice → GL 50420, no burden (this period, or amortized)</div>
                 </button>
               </div>
             </div>
           )}
           <SalaryFjeModal open={salaryOpen} onClose={() => setSalaryOpen(false)} onSaved={reloadJEs} />
+          <ThirdPartyLaborModal open={thirdPartyOpen} onClose={() => setThirdPartyOpen(false)} onSaved={reloadJEs} />
           {showJeForm && (
             <div style={{
               position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
