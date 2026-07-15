@@ -13,6 +13,7 @@ import {
 import { Plus, Download, Search, CheckCircle, XCircle, Upload, AlertTriangle, FileText } from 'lucide-react'
 import { writePnL } from '@/lib/pnl'
 import { getInventory, saveInventory } from '@/lib/inventory'
+import SalaryFjeModal from '@/components/SalaryFjeModal'
 import styles from './Transfers.module.css'
 
 const STATUSES = ['Pending', 'Approved', 'Received', 'Rejected']
@@ -182,6 +183,14 @@ export default function Transfers() {
       } catch (err) { console.error('JE load failed:', err) }
     })()
   }, [selectedLocation, periodKey])
+
+  // Reload the JE list (used after a salary FJE is added).
+  async function reloadJEs() {
+    try {
+      const snap = await getDocs(query(collection(db, 'tenants', orgId, 'journalEntries'), orderBy('createdAt', 'desc')))
+      setJournalEntries(snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(e => e.location === selectedLocation || e.location === 'all'))
+    } catch (err) { console.error('JE reload failed:', err) }
+  }
 
   async function handleJeSave() {
     if (!jeForm.glCode || !jeForm.amount || !jeForm.description) {
@@ -580,6 +589,7 @@ export default function Transfers() {
                   )}
                 </div>
               )}
+              <SalaryFjeModal onSaved={reloadJEs} />
               <button className={styles.btnPrimary} onClick={()=>{ setJeForm({ ...EMPTY_JE, location: selectedLocation }); setShowJeForm(true) }}>
                 <Plus size={15}/> New Entry
               </button>
