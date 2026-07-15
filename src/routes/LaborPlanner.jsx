@@ -197,6 +197,20 @@ export default function LaborPlanner() {
   const thirdCost   = Number(enrichedPnl?.cogs_3rd_party) || 0
   const wagesCost   = canonicalLabor - burdenCost - thirdCost      // residual → breakdown always sums to the total, whether or not legacy cogs_onsite_labor is still in the cost sum
 
+  // Canonical labor COST breakdown — each ONSITE_LABOR_FIELD read from the enriched
+  // pnl, so the rows SUM EXACTLY to canonicalLabor (the Total Labor KPI). This is
+  // what surfaces Café hourly (cogs_onsite_labor_hourly), which the GL-submission
+  // table below (glMap) never shows.
+  const laborCostLines = [
+    ['cogs_labor_salaries',      'Salaries & Wages',      'GL 50410'],
+    ['cogs_onsite_labor_hourly', 'Hourly (Café actual)',  'timekeeping'],
+    ['cogs_labor_401k',          '401k',                  'derived'],
+    ['cogs_labor_benefits',      'Benefits',              'derived'],
+    ['cogs_labor_taxes',         'Taxes',                 'derived'],
+    ['cogs_labor_bonus',         'Bonus',                 'derived'],
+    ['cogs_3rd_party',           '3rd Party Labor',       'GL 50420'],
+  ].map(([k, label, note]) => ({ k, label, note, val: Number(enrichedPnl?.[k]) || 0 }))
+
   // Labor summary calculations (submission detail — see canonical totals above)
   const totalLabor = rows.reduce((s, r) => s + (r.amount || 0), 0)
   const gfsTotal = pnl?.gfs_total || enrichedPnl?.gfs_total || 0
@@ -774,6 +788,24 @@ export default function LaborPlanner() {
           <div className={styles.kpiL}>GL Lines (detail)</div>
           <div className={styles.kpiV} style={{ color: '#7c3aed' }}>{rows.length || '—'}</div>
           <div className={styles.kpiSub}>{Object.keys(sections).length || '—'} sections</div>
+        </div>
+      </div>
+
+      {/* ── Canonical labor cost breakdown — sums to the Total Labor KPI; surfaces
+             Café Hourly + salary + derived burden the GL table below can't show. ── */}
+      <div style={{ margin: '12px 0', border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden' }}>
+        <div style={{ padding: '8px 14px', background: '#f8fafc', fontSize: 12, fontWeight: 700, color: '#0f172a', borderBottom: '1px solid #e2e8f0' }}>
+          Labor cost (P&amp;L) — actual
+        </div>
+        {laborCostLines.map(l => (
+          <div key={l.k} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 14px', fontSize: 13, borderBottom: '1px solid #f1f5f9', opacity: l.val === 0 ? 0.5 : 1 }}>
+            <span style={{ color: '#334155' }}>{l.label} <span style={{ fontSize: 11, color: '#94a3b8' }}>· {l.note}</span></span>
+            <span style={{ fontVariantNumeric: 'tabular-nums', color: '#0f172a' }}>${fmt(l.val)}</span>
+          </div>
+        ))}
+        <div style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 14px', fontSize: 13, fontWeight: 800, color: '#0f172a', background: '#f8fafc' }}>
+          <span>Total Onsite Labor</span>
+          <span style={{ fontVariantNumeric: 'tabular-nums' }}>${fmt(canonicalLabor)}</span>
         </div>
       </div>
 

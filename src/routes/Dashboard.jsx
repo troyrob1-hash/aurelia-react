@@ -63,12 +63,15 @@ const DEFAULT_SCHEMA = [
   {
     id: 'cogs', label: 'COGS', color: '#dc2626',
     lines: [
-      // Location Costs — Onsite Labor
+      // Location Costs — Onsite Labor. Every field ONSITE_LABOR_FIELDS sums must have
+      // a visible row, or the subtotal (computeOnsiteLabor) exceeds the shown rows.
       { key: 'cogs_labor_salaries',  label: 'Onsite Labor (Fooda) Salaries and Wages', indent: 2, drillTo: '/labor', budgetKey: 'budget_cogs_labor_salaries' },
+      { key: 'cogs_onsite_labor_hourly', label: 'Onsite Labor — Hourly',        indent: 2, drillTo: '/labor' },  // Café Actual Labor $
       { key: 'cogs_labor_401k',      label: 'Onsite Labor 401k',               indent: 2, drillTo: '/labor', budgetKey: 'budget_cogs_labor_401k' },
       { key: 'cogs_labor_benefits',  label: 'Onsite Labor Benefits',            indent: 2, drillTo: '/labor', budgetKey: 'budget_cogs_labor_benefits' },
       { key: 'cogs_labor_taxes',     label: 'Onsite Labor Taxes',               indent: 2, drillTo: '/labor', budgetKey: 'budget_cogs_labor_taxes' },
       { key: 'cogs_labor_bonus',     label: 'Onsite Bonus',                     indent: 2, drillTo: '/labor', budgetKey: 'budget_cogs_labor_bonus' },
+      { key: 'cogs_3rd_party',       label: '3rd Party Labor',                  indent: 2, drillTo: '/labor' },  // GL 50420
       { key: '_labor_subtotal',      label: 'Total Onsite Labor',               bold: true, indent: 1, budgetKey: 'budget_labor',
         computeFn: p => computeOnsiteLabor(p)
       },
