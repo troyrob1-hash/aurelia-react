@@ -18,6 +18,8 @@ import {
 } from 'recharts'
 import styles from './Dashboard.module.css'
 import WhyPanel from './components/WhyPanel'
+import OfficialPnlImport from '@/components/OfficialPnlImport'
+import { canApproveSales } from '@/lib/permissions'
 import { buildPeriodDiff } from '@/lib/whyRules'
 import { rollupPnL } from '@/lib/pnlRollup'
 
@@ -824,6 +826,9 @@ export default function Dashboard() {
             ))}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {/* Official P&L (NetSuite books) import — director/vp/admin only (matches the
+                officialPnl write rule). Interim home; moves to the reconciliation view. */}
+            {canApproveSales(user) && <OfficialPnlImport />}
             {isClosed && closeStatus.closedBy && (
               <span style={{ fontSize: 11, color: '#64748b' }}>
                 Closed by {closeStatus.closedBy}
