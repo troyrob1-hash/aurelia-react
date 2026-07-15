@@ -65,8 +65,11 @@ const DEFAULT_SCHEMA = [
     lines: [
       // Location Costs — Onsite Labor. Every field ONSITE_LABOR_FIELDS sums must have
       // a visible row, or the subtotal (computeOnsiteLabor) exceeds the shown rows.
-      { key: 'cogs_labor_salaries',  label: 'Onsite Labor (Fooda) Salaries and Wages', indent: 2, drillTo: '/labor', budgetKey: 'budget_cogs_labor_salaries' },
-      { key: 'cogs_onsite_labor_hourly', label: 'Onsite Labor — Hourly',        indent: 2, drillTo: '/labor' },  // Café Actual Labor $
+      // GL 50410 is ONE line in Fooda's chart of accounts, holding BOTH salaried and
+      // hourly wages. The fields stay separate (different writers: salary JE vs Café
+      // import) — only the DISPLAY combines them; computeOnsiteLabor still sums both.
+      { key: 'cogs_labor_salaries',  label: 'Onsite Labor (Fooda) Salaries and Wages', indent: 2, drillTo: '/labor', budgetKey: 'budget_cogs_labor_salaries',
+        computeFn: p => (p.cogs_labor_salaries || 0) + (p.cogs_onsite_labor_hourly || 0) },
       { key: 'cogs_labor_401k',      label: 'Onsite Labor 401k',               indent: 2, drillTo: '/labor', budgetKey: 'budget_cogs_labor_401k' },
       { key: 'cogs_labor_benefits',  label: 'Onsite Labor Benefits',            indent: 2, drillTo: '/labor', budgetKey: 'budget_cogs_labor_benefits' },
       { key: 'cogs_labor_taxes',     label: 'Onsite Labor Taxes',               indent: 2, drillTo: '/labor', budgetKey: 'budget_cogs_labor_taxes' },

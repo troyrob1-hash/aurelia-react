@@ -28,7 +28,7 @@ const INTEGRATIONS = [
 ]
 
 const DEFAULT_GL_MAP = {
-  '50410': { label: 'Onsite Labor (Fooda)', section: 'Location Costs' },
+  '50410': { label: 'Onsite Labor (Fooda) Salaries and Wages', section: 'Location Costs' },
   '50411': { label: '401k',                 section: 'Location Costs' },
   '50412': { label: 'Benefits',             section: 'Location Costs' },
   '50413': { label: 'Payroll Taxes',        section: 'Location Costs' },
@@ -581,8 +581,13 @@ export default function LaborPlanner() {
     // computeLaborBurden via enrichPnLLabor, hourly=Café import, 3rd=3rd-party JE),
     // so these rows are READ-ONLY here — this is the f4434cb P&L-statement fix
     // applied to the Labor tab's GL grid, which was a separate stale component.
+    // GL 50410 is ONE chart-of-accounts line holding BOTH salaried and hourly wages,
+    // so the row combines them for DISPLAY (fields stay separate underneath: salary
+    // JE vs Café import, different writers — merging fields would clobber). The rest
+    // are their own GL lines.
     const laborActuals = {
-      '50410': Number(enrichedPnl?.cogs_labor_salaries) || 0,   // salaries (GL 50410)
+      '50410': (Number(enrichedPnl?.cogs_labor_salaries) || 0)
+             + (Number(enrichedPnl?.cogs_onsite_labor_hourly) || 0),  // salaries + hourly (GL 50410)
       '50411': Number(enrichedPnl?.cogs_labor_401k) || 0,       // derived burden
       '50412': Number(enrichedPnl?.cogs_labor_benefits) || 0,   // derived burden
       '50413': Number(enrichedPnl?.cogs_labor_taxes) || 0,      // derived burden
@@ -594,11 +599,6 @@ export default function LaborPlanner() {
         ? { gl, label: byGl[gl]?.label || cfg.label, section: cfg.section, amount: laborActuals[gl], derived: true }
         : { gl, label: byGl[gl]?.label || cfg.label, section: byGl[gl]?.section || cfg.section, amount: byGl[gl]?.amount || 0 }
     ))
-    // Hourly is its own bucket (not a 5041x GL) — give it a Location Costs row, like
-    // the P&L statement's "Onsite Labor — Hourly" line.
-    const hourlyRow = { gl: 'hourly', label: 'Onsite Labor — Hourly (Cafe)', section: 'Location Costs', amount: Number(enrichedPnl?.cogs_onsite_labor_hourly) || 0, derived: true }
-    const iSal = mapped.findIndex(r => r.gl === '50410')
-    if (iSal >= 0) mapped.splice(iSal + 1, 0, hourlyRow); else mapped.push(hourlyRow)
     return [...mapped, ...extraRows]
   }, [rows, glMap, enrichedPnl])
   const sections = useMemo(() => {
