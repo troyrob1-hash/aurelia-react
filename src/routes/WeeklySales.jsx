@@ -2713,6 +2713,11 @@ export default function WeeklySales() {
                     color: ef.type === 'popup' ? '#1e40af' : '#92400e',
                   }}>
                     {ef.type === 'popup' ? '📊' : '🍽️'} {ef.summary.fileName} · {ef.summary.rowCount} rows · {ef.summary.vendorCount} vendors
+                    {ef.summary.unclassifiedCount > 0 && (
+                      <span style={{ marginLeft: 6, padding: '1px 7px', borderRadius: 999, background: '#fef2f2', color: '#b91c1c', fontWeight: 700 }}>
+                        ⚠ {ef.summary.unclassifiedCount} unclassified — review
+                      </span>
+                    )}
                   </span>
                 ))}
               </div>

@@ -1,7 +1,20 @@
 import * as XLSX from 'xlsx'
 
-const RETAIL_PATTERNS = [/11 dining/i, /barista/i, /cafeteria/i]
-function isRetailVendor(name) { return RETAIL_PATTERNS.some(p => p.test(name || '')) }
+// Popup vs Retail split. RETAIL = Fooda's own operating entity "11 Dining" (a
+// universal marker present in Restaurant Internal Name at every location, verified
+// against a real multi-site export). POPUP = everything else. A BLANK name is
+// 'unclassified' — surfaced for review, NEVER silently defaulted to popup.
+//
+// Do NOT key on Location Name or fuzzy barista/cafeteria word-matching: popup coffee
+// vendors (ZONZO Coffee, Copper Door Coffee) sit in "Barista"/"Retail" locations but
+// are POPUP — those signals mis-bucket them. Only the "11 Dining" entity is reliable.
+export function classifyVendor(restaurantInternalName) {
+  const n = String(restaurantInternalName || '').trim()
+  if (!n) return 'unclassified'
+  return /11\s*dining/i.test(n) ? 'retail' : 'popup'
+}
+// Within an already-RETAIL ("11 Dining") row, split the barista vs cafeteria sub-line.
+// Safe now because popup vendors never reach the retail branch.
 function isBarista(name) { return /barista/i.test(name || '') }
 
 function normalizeDate(val) {
@@ -30,6 +43,7 @@ function parsePopupExport(rows) {
     popup_net_revenue: 0, retail_net_revenue: 0,
     popup_events: 0, retail_events: 0,
     vendors: new Set(),
+    unclassified: [],   // rows with a blank Restaurant Internal Name — surfaced, not bucketed
   }
   let currentDate = null
   for (const row of rows) {
@@ -45,9 +59,15 @@ function parsePopupExport(rows) {
     const ppFee = parseFloat(row['Payment Processing Fee']) || 0
     const netRev = parseFloat(row['Net Revenue']) || 0
     const clientFees = parseFloat(row['Account Other Fee Net Amt']) || 0
+    const bucket = classifyVendor(vendor)
+    if (bucket === 'unclassified') {
+      // Blank Restaurant Internal Name — do NOT silently drift into popup. Surface it.
+      totals.unclassified.push({ date: currentDate, gfs })
+      continue
+    }
     totals.vendors.add(vendor)
     if (!daily[currentDate]) daily[currentDate] = { popup: 0, catering: 0, retail: 0 }
-    if (isRetailVendor(vendor)) {
+    if (bucket === 'retail') {
       totals.gfs_retail += gfs
       totals.retail_events++
       totals.retail_net_revenue += netRev
@@ -181,8 +201,11 @@ export async function parseEventExport(file) {
           vendorCount: data.vendors?.size || 0,
           vendors: [...(data.vendors || [])],
           daysWithData: Object.keys(daily).length,
+          unclassifiedCount: data.unclassified?.length || 0,
+          unclassified: [...(data.unclassified || [])],   // blank-vendor rows for review
         }
         delete data.vendors
+        delete data.unclassified
         resolve({ type, data, daily, summary })
       } catch (err) { reject(new Error('Failed to parse: ' + err.message)) }
     }
