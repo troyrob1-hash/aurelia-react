@@ -17,6 +17,19 @@ export function classifyVendor(restaurantInternalName) {
 // Safe now because popup vendors never reach the retail branch.
 function isBarista(name) { return /barista/i.test(name || '') }
 
+// Resolve the ACTUAL header key for the first matching candidate (case/space-tolerant),
+// so a column named "Total Commission" vs "Commission" is read correctly instead of
+// silently returning undefined→0. Returns the real key (read exact values with it), or
+// null when none of the candidates are present (caller fails loud).
+export function pickHeader(headers, candidates) {
+  const norm = (s) => String(s).trim().toLowerCase()
+  for (const c of candidates) {
+    const hit = headers.find(h => norm(h) === norm(c))
+    if (hit) return hit
+  }
+  return null
+}
+
 function normalizeDate(val) {
   if (!val) return null
   if (val instanceof Date) {
@@ -91,7 +104,11 @@ function parsePopupExport(rows) {
   return { totals, daily }
 }
 
-function parseCateringExport(rows) {
+// revCol / commCol are the resolved header keys (see pickHeader in the caller). Revenue
+// reads GROSS FOOD SALES for parity with popup (gfs_popup + gfs_catering + gfs_retail
+// on one basis) — NOT Total Price (which includes tax/delivery/fees). Commission reads
+// the actual per-row "Total Commission"/"Commission" column, never a computed rate.
+export function parseCateringExport(rows, revCol = 'Gross Food Sales', commCol = 'Commission') {
   const daily = {}
   const totals = {
     gfs_catering: 0,
@@ -104,17 +121,17 @@ function parseCateringExport(rows) {
     const rawDate = row['Event date'] || row['Event Date']
     if (rawDate) currentDate = normalizeDate(rawDate)
     if (!currentDate) continue
-    const price = parseFloat(row['Total Price']) || 0
-    if (price === 0) continue
+    const gfs = parseFloat(row[revCol]) || 0
+    if (gfs === 0) continue
     const vendor = row['Entity name'] || ''
-    const commission = parseFloat(row['Commission']) || 0
+    const commission = parseFloat(row[commCol]) || 0
     totals.vendors.add(vendor)
-    totals.gfs_catering += price
-    totals.rev_catering_revenue += price
-    totals.rev_catering_cogs += -(price - commission)
+    totals.gfs_catering += gfs
+    totals.rev_catering_revenue += gfs
+    totals.rev_catering_cogs += -(gfs - commission)
     totals.catering_events++
     if (!daily[currentDate]) daily[currentDate] = { popup: 0, catering: 0, retail: 0 }
-    daily[currentDate].catering += price
+    daily[currentDate].catering += gfs
   }
   return { totals, daily }
 }
@@ -158,18 +175,24 @@ export async function parseEventExport(file) {
           // Catering export — VALIDATE the signature. A small GENERIC daily-sales export
           // lands here purely by col-count; without these columns parseCateringExport
           // would skip every row and silently import nothing (the bug this fixes).
+          // Revenue basis = Gross Food Sales (parity with popup), NOT Total Price. Commission
+          // = whichever of Total Commission / Commission the export uses. FAIL LOUD if either
+          // is absent — never silently read the wrong basis or store 0 commission.
+          const revCol = pickHeader(headers, ['Gross Food Sales', 'Food Sales'])
+          const commCol = pickHeader(headers, ['Total Commission', 'Commission'])
           const missing = []
           if (!(hasCol('Event date') || hasCol('Event Date'))) missing.push('Event date')
-          if (!hasCol('Total Price')) missing.push('Total Price')
           if (!hasCol('Entity name')) missing.push('Entity name')
+          if (!revCol) missing.push('Gross Food Sales (catering revenue basis, to match popup)')
+          if (!commCol) missing.push('Total Commission / Commission (refusing to import catering at 0 commission)')
           if (missing.length) {
             reject(new Error(
-              `This doesn't look like a Fooda event export (popup or catering). Expected ` +
-              `catering columns like "Event date", "Total Price", "Entity name" — found: ${shownHeaders}${sheetInfo}`
+              `This doesn't look like a Fooda event export (popup or catering). Missing ` +
+              `catering column(s): ${missing.join(', ')} — found: ${shownHeaders}${sheetInfo}`
             ))
             return
           }
-          type = 'catering'; parsed = parseCateringExport(rows)
+          type = 'catering'; parsed = parseCateringExport(rows, revCol, commCol)
         } else {
           reject(new Error(
             `Unrecognized format (${colCount} cols) — not a Fooda popup (>=50 cols) or ` +
@@ -184,7 +207,7 @@ export async function parseEventExport(file) {
         if (Object.keys(daily).length === 0) {
           reject(new Error(
             `Parsed the ${type} file but found no usable rows — every row was empty, $0, or ` +
-            `undated (popup needs a dated row with Gross Food Sales; catering needs Total Price > 0).`
+            `undated (popup and catering both need a dated row with Gross Food Sales > 0).`
           ))
           return
         }
