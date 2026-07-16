@@ -117,6 +117,11 @@ const DEFAULT_SCHEMA = [
                + retail + (p.cogs_inventory||0) + (p.cogs_purchases||0)
         }
       },
+      // LAYER 2 — retail food-cost ratio, shown like the other "% of GFS" lines. Carries
+      // the estimate flag (estFn) when a count is missing so it never reads as a true COGS%.
+      { key: '_pct_cogs_retail', label: 'COGS % of Retail', pct: true, indent: 1,
+        computeFn: p => { const c = computeCogsRetail(p); return c.pct != null ? c.pct / 100 : null },
+        estFn: p => computeCogsRetail(p).isEstimate },
     ]
   },
   {
@@ -249,6 +254,32 @@ function computePrimeCost(p) {
   return rev > 0 ? (labor + cogs) / rev : null
 }
 
+// COGS % of RETAIL — the retail food-cost efficiency ratio (shared by all three layers:
+// the KPI card, the P&L line annotation, and the drill-down).
+//   COGS $  = opening + purchases − closing  (the CF valuation, stored as cogs_inventory;
+//             cogs_purchases is the hardened invoice sum). CF-authoritative closing where set.
+//   ratio   = COGS $ ÷ gfs_retail  (retail COGS ÷ retail sales — the matched operation, NOT total).
+// HONESTY GUARD: a TRUE COGS only when BOTH opening AND closing counts exist. If either is
+// missing, cogs_inventory collapses toward ~purchases (overstated) — the ratio is still
+// returned, but `isEstimate` is true so callers can flag it and never pass it off as a real
+// food-cost %. Retail = 0 → pct null (no divide-by-zero).
+export function computeCogsRetail(p) {
+  const opening   = p?.inv_opening || 0
+  const purchases = p?.cogs_purchases || 0
+  const closing   = p?.inv_closing || 0
+  const cogs      = p?.cogs_inventory != null ? p.cogs_inventory : Math.max(0, opening + purchases - closing)
+  const retail    = p?.gfs_retail || 0
+  const hasClosing = !!p?.inventoryCountedAt || closing > 0
+  const hasOpening = opening > 0
+  const isEstimate = !(hasClosing && hasOpening)
+  return {
+    opening, purchases, closing, cogs, retail,
+    pct: retail > 0 ? (cogs / retail) * 100 : null,
+    hasOpening, hasClosing, isEstimate,
+    flagReason: !isEstimate ? null : !hasClosing ? 'no closing count' : 'no opening count',
+  }
+}
+
 // Apply a scenario to a baseline pnl object. Returns a NEW object with the
 // same shape as the input — every consumer can read it like a real pnl.
 //
@@ -344,6 +375,7 @@ export default function Dashboard() {
   const [collapsed,    setCollapsed]    = useState({})
   const [refreshing,   setRefreshing]   = useState(false)
   const [whyLine,      setWhyLine]      = useState(null)  // {line, actual, budget, prior}
+  const [showCogsDetail, setShowCogsDetail] = useState(false)  // COGS %-of-retail drill-down
 
   // ── Scenario scratchpad state ──
   // Three sliders that produce a derived pnl for what-if modeling.
@@ -529,6 +561,10 @@ export default function Dashboard() {
   const budgetEBITDA = pnl.budget_ebitda || 0
   const varGFS       = budgetGFS    ? gfs    - budgetGFS    : null
   const varEBITDA    = budgetEBITDA ? ebitda - budgetEBITDA : null
+
+  // COGS % of retail — see computeCogsRetail. Shared by the KPI card, the P&L annotation,
+  // and the drill-down below.
+  const cr = computeCogsRetail(pnl)
 
   // Prior period
   const priorGFS    = priorPnl.gfs_total || 0
@@ -1026,6 +1062,24 @@ export default function Dashboard() {
             sparkColor: '#1D9E75',
             valueColor: '#0f172a',
           },
+          {
+            // Honest label: 'COGS % of Retail' only when it's a true COGS (both counts);
+            // otherwise 'Est. COGS ÷ Retail' so a purchases-inflated number never
+            // masquerades as a precise food-cost %. Click → drill-down (the why).
+            label: cr.isEstimate ? 'Est. COGS ÷ Retail' : 'COGS % of Retail',
+            value: cr.pct != null ? cr.pct.toFixed(1) + '%' : '—',
+            delta: null,
+            sub: cr.pct == null
+              ? 'no retail sales this period'
+              : cr.isEstimate
+                ? `⚠ estimate — ${cr.flagReason} · details ▾`
+                : `${fmtSmall$(cr.cogs)} COGS / ${fmtSmall$(cr.retail)} retail · details ▾`,
+            subColor: cr.isEstimate && cr.pct != null ? '#d97706' : '#94a3b8',
+            sparkData: [],   // no historical series for this card (Sparkline renders a placeholder)
+            sparkColor: '#BA7517',
+            valueColor: cr.isEstimate && cr.pct != null ? '#d97706' : '#0f172a',
+            onClick: () => setShowCogsDetail(v => !v),
+          },
         ]
         return (
           <div style={{
@@ -1035,16 +1089,17 @@ export default function Dashboard() {
             padding: '22px 28px',
             marginBottom: 24,
             display: 'grid',
-            gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
+            gridTemplateColumns: 'repeat(6, minmax(0, 1fr))',
             gap: 0,
           }}>
             {columns.map((c, i) => (
-              <div key={c.label} style={{
+              <div key={c.label} onClick={c.onClick} style={{
                 padding: i === 0 ? '0 24px 0 0'
                         : i === columns.length - 1 ? '0 0 0 24px'
                         : '0 24px',
                 borderRight: i < columns.length - 1 ? '0.5px solid #e5e7eb' : 'none',
                 minWidth: 0,
+                cursor: c.onClick ? 'pointer' : 'default',
               }}>
                 <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 500, marginBottom: 10 }}>
                   {c.label}
@@ -1064,6 +1119,42 @@ export default function Dashboard() {
           </div>
         )
       })()}
+
+      {/* ── LAYER 3 · COGS %-of-retail drill-down (audit + why the estimate flag) ── */}
+      {showCogsDetail && (
+        <div style={{
+          margin: '-12px 0 24px', padding: '16px 20px', borderRadius: 12,
+          border: `1px solid ${cr.isEstimate ? '#fde68a' : '#e5e7eb'}`,
+          background: cr.isEstimate ? '#fffbeb' : '#f8fafc',
+        }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: '#0f172a', marginBottom: 10 }}>
+            COGS % of Retail — how it’s calculated ({cleanLocName(location) || 'this location'} · {periodKey})
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: 8, fontSize: 14, color: '#334155', fontVariantNumeric: 'tabular-nums' }}>
+            <span>Opening <b>{fmt$(cr.opening)}</b></span><span>+</span>
+            <span>Purchases <b>{fmt$(cr.purchases)}</b></span><span>−</span>
+            <span>Closing <b>{fmt$(cr.closing)}</b></span><span>=</span>
+            <span><b>COGS {fmt$(cr.cogs)}</b></span>
+            <span style={{ margin: '0 4px' }}>÷</span>
+            <span>Retail sales <b>{fmt$(cr.retail)}</b></span><span>=</span>
+            <span style={{ fontWeight: 800, color: cr.isEstimate ? '#b45309' : '#0f766e' }}>{cr.pct != null ? cr.pct.toFixed(1) + '%' : '—'}</span>
+          </div>
+          {cr.isEstimate ? (
+            <div style={{ marginTop: 10, fontSize: 12.5, color: '#92400e', lineHeight: 1.5 }}>
+              ⚠ <b>Estimate — {cr.flagReason}.</b> {!cr.hasClosing
+                ? 'No closing inventory count was entered for this period, so COGS defaults to opening + purchases (nothing subtracted) — it reads HIGH. Enter the closing count on the Inventory tab for a true COGS. A high number here means “you haven’t counted,” not “food cost is out of control.”'
+                : 'No opening count from the prior period, so the calc is incomplete. Once the prior week is counted this becomes a true COGS.'}
+            </div>
+          ) : (
+            <div style={{ marginTop: 10, fontSize: 12.5, color: '#64748b', lineHeight: 1.5 }}>
+              True COGS — both opening and closing inventory counts are in for this period. Denominator is retail sales (the “11 Dining” bucket), so this is retail COGS ÷ retail sales — the matched operation.
+            </div>
+          )}
+          {cr.retail === 0 && (
+            <div style={{ marginTop: 8, fontSize: 12.5, color: '#64748b' }}>No retail sales this period — ratio not shown (would divide by zero).</div>
+          )}
+        </div>
+      )}
 
       {/* ── Scenario scratchpad ── */}
       {(() => {
@@ -1304,10 +1395,13 @@ export default function Dashboard() {
                   {!isCollapsed && section.lines.map(line => {
                     if (line.pct) {
                       const v = line.computeFn ? line.computeFn(pnl) : null
+                      const est = line.estFn ? line.estFn(pnl) : false
                       return (
                         <tr key={line.key} className={styles.pctRow}>
-                          <td className={styles.label} style={{ paddingLeft: 16 + (line.indent||0) * 14, fontStyle: 'italic', color: '#888' }}>{line.label}</td>
-                          <td className={styles.val} style={{ color: '#888' }}>{v != null ? fmtPct(v) : '—'}</td>
+                          <td className={styles.label} style={{ paddingLeft: 16 + (line.indent||0) * 14, fontStyle: 'italic', color: est ? '#b45309' : '#888' }}>
+                            {line.label}{est && v != null ? ' (est. — no count)' : ''}
+                          </td>
+                          <td className={styles.val} style={{ color: est ? '#b45309' : '#888' }}>{v != null ? fmtPct(v) : '—'}</td>
                           <td />
                           {applyToTable && scenarioActive && <td />}
                           <td /><td /><td />
