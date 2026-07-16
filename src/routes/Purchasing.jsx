@@ -78,6 +78,34 @@ function invoiceAmount(inv) {
   return 0
 }
 
+// An invoice's identity number: documentNumber (NetSuite) or invoiceNum (entered),
+// trimmed. Empty when neither is set — a BLANK number is NOT an identity.
+export function invoiceKey(inv) {
+  return String(inv?.documentNumber || inv?.invoiceNum || '').trim()
+}
+const invoiceTs = (i) => { const t = i?.updatedAt || i?.createdAt; return t?.seconds || t?._seconds || (typeof t === 'number' ? t : 0) }
+
+// Collapse duplicate docs so an invoice number counts ONCE. Same invoice number →
+// keep the most recently touched doc (tie-break: larger amount = more complete).
+// BLANK numbers are NEVER merged — two unnumbered invoices are two invoices. This is
+// the structural guard: even if duplicate docs exist (e.g. a PDF parsed 5×), the sum
+// can't double-count them.
+export function dedupeInvoices(list) {
+  const out = []
+  const best = new Map()   // number → chosen doc
+  for (const i of list) {
+    const n = invoiceKey(i)
+    if (!n) { out.push(i); continue }                       // blank number → always kept
+    const prev = best.get(n)
+    if (!prev ||
+        invoiceTs(i) > invoiceTs(prev) ||
+        (invoiceTs(i) === invoiceTs(prev) && invoiceAmount(i) > invoiceAmount(prev))) {
+      best.set(n, i)
+    }
+  }
+  return [...out, ...best.values()]
+}
+
 // Approval thresholds — amounts above these require director approval
 const APPROVAL_THRESHOLD = 500
 
@@ -328,23 +356,38 @@ export default function Purchasing() {
         setInvoices(prev => prev.map(i => i.id === editId ? { ...i, ...entry } : i))
         toast.success('Invoice updated')
       } else {
-        entry.createdBy = user?.name || user?.email
-        entry.createdAt = serverTimestamp()
-        entry.syncStatus = null  // ready for external sync (e.g. NetSuite)
-        const ref = await addDoc(collection(db, 'tenants', orgId, 'invoices'), entry)
-        setInvoices(prev => [{ id: ref.id, ...entry }, ...prev])
-        // Re-derive the P&L from ALL invoices in this (location, period) — never
-        // SET a single invoice's amount to a named line (writePnL SETs → it would
-        // overwrite prior invoices on that line). Pass the new invoice explicitly
-        // since setInvoices() hasn't propagated to the recompute closure yet.
-        if (entry.amount) {
-          await recomputePurchasingTotalsForPeriod(
-            entry.location || location || selectedLocation,
-            entry.periodKey || periodKey,
-            [{ id: ref.id, ...entry }],
-          )
+        // Number-based dedup at entry: if this invoice NUMBER already exists in the
+        // same (location, period), REPLACE that doc instead of creating a duplicate.
+        // Blank numbers never match — two unnumbered invoices are distinct.
+        const num = invoiceKey(entry)
+        const dupe = num ? invoices.find(i => i.location === entry.location && i.periodKey === entry.periodKey && invoiceKey(i) === num) : null
+        if (dupe) {
+          if (!window.confirm(`Invoice #${num} already exists for ${entry.location} · ${entry.periodKey} ($${(Number(dupe.amount) || 0).toFixed(2)}). Replace it instead of adding a duplicate?`)) {
+            setSaving(false); return
+          }
+          await updateDoc(doc(db, 'tenants', orgId, 'invoices', dupe.id), { ...entry, updatedAt: serverTimestamp() })
+          setInvoices(prev => prev.map(i => i.id === dupe.id ? { ...i, ...entry } : i))
+          if (entry.amount) await recomputePurchasingTotalsForPeriod(entry.location || location || selectedLocation, entry.periodKey || periodKey, [{ id: dupe.id, ...entry }])
+          toast.success(`Invoice #${num} replaced — no duplicate created`)
+        } else {
+          entry.createdBy = user?.name || user?.email
+          entry.createdAt = serverTimestamp()
+          entry.syncStatus = null  // ready for external sync (e.g. NetSuite)
+          const ref = await addDoc(collection(db, 'tenants', orgId, 'invoices'), entry)
+          setInvoices(prev => [{ id: ref.id, ...entry }, ...prev])
+          // Re-derive the P&L from ALL invoices in this (location, period) — never
+          // SET a single invoice's amount to a named line (writePnL SETs → it would
+          // overwrite prior invoices on that line). Pass the new invoice explicitly
+          // since setInvoices() hasn't propagated to the recompute closure yet.
+          if (entry.amount) {
+            await recomputePurchasingTotalsForPeriod(
+              entry.location || location || selectedLocation,
+              entry.periodKey || periodKey,
+              [{ id: ref.id, ...entry }],
+            )
+          }
+          toast.success('Invoice added — posted to P&L')
         }
-        toast.success('Invoice added — posted to P&L')
       }
       setForm(EMPTY_FORM); setShowForm(false); setEditId(null)
     } catch { toast.error('Failed to save invoice.') }
@@ -369,7 +412,12 @@ export default function Purchasing() {
   async function recomputePurchasingTotalsForPeriod(targetLocation, targetPeriod, extraInvoices = []) {
     const byId = new Map(invoices.map(i => [i.id, i]))
     for (const e of extraInvoices) byId.set(e.id, { ...(byId.get(e.id) || {}), ...e })
-    const periodInvoices = [...byId.values()].filter(i => i.periodKey === targetPeriod && i.status !== 'Void')
+    // Dedupe by invoice number WITHIN this (location, period) before summing — a
+    // duplicate doc (same number) can never double-count into cogs_purchases or a
+    // named line. Blank numbers are kept as distinct. byId is already location-scoped.
+    const periodInvoices = dedupeInvoices(
+      [...byId.values()].filter(i => i.periodKey === targetPeriod && i.status !== 'Void')
+    )
 
     // Partition every invoice into its Purchasing-OWNED line or the cogs_purchases
     // flatten bucket. Seed every owned line to 0 FIRST, so a line with no invoices
@@ -538,7 +586,14 @@ export default function Purchasing() {
         // week is surfaced, not silently trusted.
         const invDate = parsed.invoiceDate || new Date().toISOString().slice(0, 10)
         const parsedKey = dateToKey(invDate)
-        const invDoc = await addDoc(collection(db, 'tenants', orgId, 'invoices'), {
+        // Number-based dedup: re-parsing the SAME invoice (same number, location,
+        // posting-date week) UPDATES the existing doc instead of creating a duplicate
+        // (this is the #12353-parsed-5x bug). Blank numbers never match.
+        const invLoc = location || selectedLocation
+        const targetPer = parsedKey || periodKey
+        const pnum = String(parsed.invoiceNumber || '').trim()
+        const dupe = pnum ? invoices.find(i => i.location === invLoc && i.periodKey === targetPer && invoiceKey(i) === pnum) : null
+        const fields = {
           vendor: parsed.vendor || 'Unknown Vendor',
           vendorId: vendorMatch?.id || 'other',
           invoiceNum: parsed.invoiceNumber || '',
@@ -558,41 +613,25 @@ export default function Purchasing() {
           subtotal: parsed.subtotal || 0,
           tax: parsed.tax || 0,
           status: 'Pending',
-          location: location || selectedLocation,
-          periodKey: parsedKey || periodKey,
+          location: invLoc,
+          periodKey: targetPer,
           periodReview: !parsed.invoiceDate,
           source: 'pdf-ai-parse',
           fileName: file.name,
-          createdBy: user?.name || user?.email || 'unknown',
-          createdAt: serverTimestamp(),
-        })
-
-        // Add to local state immediately so it shows in the list
-        const newInv = {
-          id: invDoc.id,
-          vendor: parsed.vendor || 'Unknown Vendor',
-          vendorId: vendorMatch?.id || 'other',
-          invoiceNum: parsed.invoiceNumber || '',
-          invoiceDate: invDate,
-          dueDate: parsed.dueDate || '',
-          amount: parsed.total || 0,
-          amountPaid: 0,
-          glCode: aiGlCode,
-          glConfidence,
-          needsGlReview,
-          status: needsGlReview ? 'Needs GL Review' : 'Pending',
-          location: location || selectedLocation,
-          periodKey: parsedKey || periodKey,
-          periodReview: !parsed.invoiceDate,
-          source: 'pdf-ai-parse',
-          lineItems: parsed.lineItems || [],
         }
-        setInvoices(prev => [newInv, ...prev])
-        // Post to P&L immediately
-        // Re-derive from all invoices in the period (never SET one amount to a named
-        // line). newInv carries the just-created invoice (state not yet propagated).
+        let invId
+        if (dupe) {
+          await updateDoc(doc(db, 'tenants', orgId, 'invoices', dupe.id), { ...fields, updatedAt: serverTimestamp() })
+          invId = dupe.id
+        } else {
+          const ref = await addDoc(collection(db, 'tenants', orgId, 'invoices'), { ...fields, createdBy: user?.name || user?.email || 'unknown', createdAt: serverTimestamp() })
+          invId = ref.id
+        }
+        const newInv = { id: invId, ...fields, status: needsGlReview ? 'Needs GL Review' : 'Pending', lineItems: parsed.lineItems || [] }
+        setInvoices(prev => dupe ? prev.map(i => i.id === invId ? { ...i, ...newInv } : i) : [newInv, ...prev])
+        // Re-derive from all invoices in the period (never SET one amount to a named line).
         if (parsed.total) {
-          await recomputePurchasingTotalsForPeriod(location || selectedLocation, parsedKey || periodKey, [newInv])
+          await recomputePurchasingTotalsForPeriod(invLoc, targetPer, [newInv])
         }
         const glLabel = aiGlCode ? aiGlCode.replace('cogs_', '').replace('exp_', '').replace(/_/g, ' ') : 'unclassified'
         toast.success('Invoice parsed: ' + (parsed.vendor || 'Unknown') + ' — $' + (parsed.total || 0).toLocaleString() + (needsGlReview ? ' (needs GL review)' : ' → ' + glLabel) + (aiGlCode ? ' — posted to P&L' : ''))
@@ -635,9 +674,22 @@ export default function Purchasing() {
           createdAt:   serverTimestamp(),
           updatedAt:   serverTimestamp(),
         }
-        const ref = await addDoc(collection(db, 'tenants', orgId, 'invoices'), entry)
-        setInvoices(prev => [{ id: ref.id, ...entry }, ...prev])
-        importedInvoices.push({ id: ref.id, ...entry })
+        // Number-based dedup: a row whose invoice number already exists in the same
+        // (location, period) UPDATES that doc rather than importing a duplicate. Blank
+        // numbers never match. (Intra-batch repeats are also caught by the sum-time dedup.)
+        const cnum = invoiceKey(entry)
+        const dupe = cnum ? invoices.find(i => i.location === entry.location && i.periodKey === entry.periodKey && invoiceKey(i) === cnum) : null
+        let cid
+        if (dupe) {
+          await updateDoc(doc(db, 'tenants', orgId, 'invoices', dupe.id), { ...entry, updatedAt: serverTimestamp() })
+          cid = dupe.id
+          setInvoices(prev => prev.map(i => i.id === cid ? { ...i, ...entry } : i))
+        } else {
+          const ref = await addDoc(collection(db, 'tenants', orgId, 'invoices'), entry)
+          cid = ref.id
+          setInvoices(prev => [{ id: cid, ...entry }, ...prev])
+        }
+        importedInvoices.push({ id: cid, ...entry })
         imported++
       }
       // Re-derive the P&L for the imported (location, period) from the FULL invoice
