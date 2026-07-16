@@ -119,6 +119,65 @@ export function isNumberDuplicate(form, invoices, editId, location) {
   return (invoices || []).find(i => i.id !== editId && invoiceKey(i) === num && (i.location || '') === loc) || null
 }
 
+// GL code → human account name for the Summary "by GL" table.
+const GL_NAMES = {
+  '12000': 'Inventory - Cafeteria', '12002': 'Inventory - Barista',
+  cogs_cleaning: 'Cleaning Supplies', cogs_paper: 'Paper Products', cogs_equipment: 'Onsite Equipment',
+  cogs_ec_barista: 'Equipment/Consumables - Barista', cogs_supplies: 'Onsite Supplies',
+  cogs_uniforms: 'Uniforms', cogs_maintenance: 'Maintenance', cogs_purchases: 'Food/Product (uncategorized)',
+}
+export function glName(gl) { const g = String(gl || '').trim(); return GL_NAMES[g] || g || 'Uncategorized' }
+
+const median = (arr) => {
+  if (!arr.length) return 0
+  const s = [...arr].sort((a, b) => a - b), m = Math.floor(s.length / 2)
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2
+}
+
+// Per-vendor anomaly detection with a CONFIDENCE GUARD on baseline depth. Baseline =
+// rolling median invoice-count + median spend over the vendor's prior N periods
+// (EXCLUDING the current period), computed on DEDUPED invoices so counts/totals match
+// cogs_purchases. Confidence scales with history: >=3 prior periods → a real flag;
+// 1-2 → soft/tentative; 0 → no flag ("building baseline"), never a confident anomaly on
+// no history. Returns one row per vendor seen in the current or prior periods.
+export function computeVendorAnomalies(allInvoices, currentPeriod, N = 8) {
+  const byPeriod = {}
+  for (const i of (allInvoices || [])) {
+    if (i.status === 'Void' || !i.periodKey) continue
+    ;(byPeriod[i.periodKey] ||= []).push(i)
+  }
+  for (const pk of Object.keys(byPeriod)) byPeriod[pk] = dedupeInvoices(byPeriod[pk])
+  const priorPeriods = Object.keys(byPeriod).filter(pk => pk < currentPeriod).sort().slice(-N)
+  const current = byPeriod[currentPeriod] || []
+  const nameOf = (i) => i.vendor || i.vendorId || '(unknown)'
+  const vendors = new Set([
+    ...current.map(nameOf),
+    ...priorPeriods.flatMap(pk => byPeriod[pk].map(nameOf)),
+  ])
+  const out = []
+  for (const v of vendors) {
+    const cur = current.filter(i => nameOf(i) === v)
+    const currentCount = cur.length
+    const currentSpend = cur.reduce((s, i) => s + invoiceAmount(i), 0)
+    // prior periods where this vendor appeared (the confidence driver)
+    const seen = priorPeriods
+      .map(pk => { const vi = byPeriod[pk].filter(i => nameOf(i) === v); return { count: vi.length, spend: vi.reduce((s, i) => s + invoiceAmount(i), 0) } })
+      .filter(p => p.count > 0)
+    const historyDepth = seen.length
+    const baselineCount = median(seen.map(p => p.count))
+    const baselineSpend = median(seen.map(p => p.spend))
+    const tier = historyDepth >= 3 ? 'real' : historyDepth >= 1 ? 'soft' : 'new'
+    let kind = null
+    if (tier === 'new') kind = 'building'                              // no confident flag on no history
+    else if (currentCount === 0) kind = 'absent'                       // usually appears, missing this period
+    else if (baselineCount > 0 && currentCount <= baselineCount * 0.5) kind = 'below'   // likely MISSING invoices
+    else if (baselineCount > 0 && currentCount >= baselineCount * 1.75) kind = 'above'  // double-entry / spike
+    else if (baselineSpend !== 0 && Math.abs(currentSpend - baselineSpend) / Math.abs(baselineSpend) > 0.5) kind = 'spend'
+    out.push({ vendor: v, currentCount, currentSpend, baselineCount, baselineSpend, historyDepth, tier, kind })
+  }
+  return out.sort((a, b) => b.currentSpend - a.currentSpend)
+}
+
 // Approval thresholds — amounts above these require director approval
 const APPROVAL_THRESHOLD = 500
 
@@ -1217,8 +1276,9 @@ export default function Purchasing() {
         </div>
         <div className={styles.actions}>
           <div className={styles.viewToggle}>
-            <button className={`${styles.viewBtn} ${view === 'list' ? styles.viewActive : ''}`} onClick={() => setView('list')}>List</button>
+            <button className={`${styles.viewBtn} ${view === 'list' ? styles.viewActive : ''}`} onClick={() => setView('list')}>Invoices</button>
             <button className={`${styles.viewBtn} ${view === 'kanban' ? styles.viewActive : ''}`} onClick={() => setView('kanban')}>Board</button>
+            <button className={`${styles.viewBtn} ${view === 'summary' ? styles.viewActive : ''}`} onClick={() => setView('summary')}>Summary</button>
           </div>
           <button className={styles.btnIcon} onClick={exportCSV} title="Export CSV"><Download size={15} /></button>
           <label className={styles.btnSecondary}>
@@ -1518,7 +1578,110 @@ export default function Purchasing() {
         </div>
       )}
 
-      {loading ? <div className={styles.loading}>Loading...</div> : view === 'kanban' ? (
+      {loading ? <div className={styles.loading}>Loading...</div> : view === 'summary' ? (() => {
+
+        /* ── Summary view (Vendors + GL, dedupe-aware, with anomaly detection) ── */
+        const S = SUMMARY_STYLES
+        const cur = dedupeInvoices(invoices.filter(i => i.periodKey === periodKey && i.status !== 'Void'))
+        const totalSpend  = cur.reduce((s, i) => s + invoiceAmount(i), 0)
+        const vendorCount = new Set(cur.map(i => i.vendor || i.vendorId)).size
+        const creditCount = cur.filter(i => invoiceAmount(i) < 0).length
+
+        // by GL
+        const glMap = {}
+        for (const i of cur) { const g = String(i.glCode || ''); (glMap[g] ||= { total: 0, count: 0 }); glMap[g].total += invoiceAmount(i); glMap[g].count++ }
+        const glRows = Object.entries(glMap).map(([gl, v]) => ({ gl, name: glName(gl), ...v })).sort((a, b) => b.total - a.total)
+
+        // by vendor + anomalies (baseline over PRIOR periods, deduped)
+        const anomalies = computeVendorAnomalies(invoices, periodKey)
+        const anomByVendor = Object.fromEntries(anomalies.map(a => [a.vendor, a]))
+        const vendorMap = {}
+        for (const i of cur) { const v = i.vendor || i.vendorId; (vendorMap[v] ||= { count: 0, total: 0, credits: 0 }); vendorMap[v].count++; vendorMap[v].total += invoiceAmount(i); if (invoiceAmount(i) < 0) vendorMap[v].credits++ }
+        const vendorRows = [
+          ...Object.entries(vendorMap).map(([v, d]) => ({ vendor: v, ...d, anom: anomByVendor[v] })),
+          // vendors that normally appear but are ABSENT this period (not in current)
+          ...anomalies.filter(a => a.kind === 'absent' && !vendorMap[a.vendor]).map(a => ({ vendor: a.vendor, count: 0, total: 0, credits: 0, anom: a })),
+        ].sort((a, b) => b.total - a.total)
+
+        const anomText = (a) => {
+          if (!a) return null
+          if (a.kind === 'building') return { text: 'building baseline', tone: 'muted' }
+          if (!a.kind) return null
+          const b = a.baselineCount
+          const soft = a.tier === 'soft'
+          const base =
+            a.kind === 'below'  ? `${a.currentCount} inv, usually ~${b} — check for missing` :
+            a.kind === 'absent' ? `usually appears — absent this period` :
+            a.kind === 'above'  ? `${a.currentCount} inv, usually ~${b} — possible double-entry` :
+            a.kind === 'spend'  ? `spend ${fmt$(a.currentSpend)} vs usual ~${fmt$(a.baselineSpend)}` : null
+          if (!base) return null
+          return { text: (soft ? 'tentative — ' : '') + base, tone: soft ? 'soft' : 'alert' }
+        }
+
+        return (
+          <div>
+            <div style={S.kpiStrip}>
+              {[
+                { label: 'Total spend', value: fmt$(totalSpend) },
+                { label: 'Invoices', value: cur.length },
+                { label: 'Vendors', value: vendorCount },
+                { label: 'Credit memos', value: creditCount, warn: creditCount > 0 },
+              ].map(k => (
+                <div key={k.label} style={S.kpi}>
+                  <div style={S.kpiL}>{k.label}</div>
+                  <div style={{ ...S.kpiV, color: k.warn ? '#b45309' : '#0f172a' }}>{k.value}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={S.grid2}>
+              {/* BY VENDOR */}
+              <div style={S.card}>
+                <div style={S.cardH}>By vendor <span style={S.hint}>· baseline = median over prior periods (excl. this one)</span></div>
+                <table style={S.table}>
+                  <thead><tr><th style={S.th}>Vendor</th><th style={S.thR}>Inv</th><th style={S.thR}>Total</th><th style={S.th}>Anomaly</th></tr></thead>
+                  <tbody>
+                    {vendorRows.map(r => {
+                      const a = anomText(r.anom)
+                      const color = a?.tone === 'alert' ? '#b91c1c' : a?.tone === 'soft' ? '#b45309' : '#94a3b8'
+                      return (
+                        <tr key={r.vendor}>
+                          <td style={S.td}>{cleanLocName(r.vendor)}{r.credits > 0 && <span style={S.credit}> · {r.credits} credit</span>}</td>
+                          <td style={S.tdR}>{r.count}</td>
+                          <td style={{ ...S.tdR, color: r.total < 0 ? '#b91c1c' : '#0f172a' }}>{fmt$(r.total)}</td>
+                          <td style={{ ...S.td, color, fontSize: 11.5 }}>{a ? <>{a.tone === 'alert' ? '⚠ ' : a.tone === 'soft' ? '· ' : ''}{a.text}</> : ''}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* BY GL */}
+              <div style={S.card}>
+                <div style={S.cardH}>By GL account</div>
+                <table style={S.table}>
+                  <thead><tr><th style={S.th}>GL</th><th style={S.th}>Account</th><th style={S.thR}>Total</th></tr></thead>
+                  <tbody>
+                    {glRows.map(r => (
+                      <tr key={r.gl}>
+                        <td style={{ ...S.td, fontFamily: 'ui-monospace, monospace' }}>{r.gl || '—'}</td>
+                        <td style={S.td}>{r.name}</td>
+                        <td style={{ ...S.tdR, color: r.total < 0 ? '#b91c1c' : '#0f172a' }}>{fmt$(r.total)}</td>
+                      </tr>
+                    ))}
+                    <tr style={{ borderTop: '2px solid #e2e8f0' }}>
+                      <td style={{ ...S.td, fontWeight: 800 }} colSpan={2}>Total</td>
+                      <td style={{ ...S.tdR, fontWeight: 800 }}>{fmt$(totalSpend)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div style={S.hint}>Dedupe-aware — same set as cogs_purchases + named lines. Sum reconciles to the P&L purchasing total.</div>
+              </div>
+            </div>
+          </div>
+        )
+      })() : view === 'kanban' ? (
 
         /* ── Kanban board view ── */
         <div className={styles.kanban}>
@@ -2569,4 +2732,20 @@ export default function Purchasing() {
       )}
     </div>
   )
+}
+const SUMMARY_STYLES = {
+  kpiStrip: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 0, border: '1px solid #e5e7eb', borderRadius: 12, padding: '16px 0', marginBottom: 16, background: '#fff' },
+  kpi: { padding: '0 20px', borderRight: '1px solid #eef2f7' },
+  kpiL: { fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, marginBottom: 6 },
+  kpiV: { fontSize: 22, fontWeight: 700, fontVariantNumeric: 'tabular-nums' },
+  grid2: { display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: 16, alignItems: 'start' },
+  card: { border: '1px solid #e5e7eb', borderRadius: 12, overflow: 'hidden', background: '#fff' },
+  cardH: { padding: '10px 14px', fontSize: 13, fontWeight: 800, color: '#0f172a', borderBottom: '1px solid #eef2f7', background: '#f8fafc' },
+  hint: { fontSize: 11, fontWeight: 500, color: '#94a3b8', padding: '8px 14px' },
+  table: { width: '100%', borderCollapse: 'collapse', fontSize: 13 },
+  th: { textAlign: 'left', padding: '7px 14px', fontSize: 10.5, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.04em', borderBottom: '1px solid #eef2f7' },
+  thR: { textAlign: 'right', padding: '7px 14px', fontSize: 10.5, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.04em', borderBottom: '1px solid #eef2f7' },
+  td: { padding: '7px 14px', color: '#334155', borderTop: '1px solid #f1f5f9' },
+  tdR: { padding: '7px 14px', textAlign: 'right', color: '#0f172a', fontVariantNumeric: 'tabular-nums', borderTop: '1px solid #f1f5f9' },
+  credit: { fontSize: 11, color: '#b91c1c' },
 }
