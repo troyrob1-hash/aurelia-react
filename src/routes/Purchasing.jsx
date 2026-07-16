@@ -4,7 +4,7 @@ import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { useToast } from '@/components/ui/Toast'
 import AllLocationsGrid from '@/components/AllLocationsGrid'
-import { usePeriod } from '@/store/PeriodContext'
+import { usePeriod, dateToKey } from '@/store/PeriodContext'
 import { readPeriodClose, writePnL, locId, weeksInPeriod, toPnlLine, GL_NUMERIC_TO_PNL } from '@/lib/pnl'
 import { db, storage } from '@/lib/firebase'
 import {
@@ -308,12 +308,17 @@ export default function Purchasing() {
     setSaving(true)
     try {
       const vendorLabel = vendors.find(v => v.id === form.vendorId)?.label || form.vendorId
+      // ANCHOR RULE: an invoice belongs to the fiscal week of its POSTING DATE
+      // (invoiceDate), not the period on screen. Derive it from the date; only if the
+      // date is blank/unparseable fall back to the selected period AND flag for review.
+      const derivedKey = dateToKey(form.invoiceDate)
       const entry = {
         ...form,
         vendor:     vendorLabel,
         amount:     parseFloat(form.amount) || 0,
         amountPaid: parseFloat(form.amountPaid) || 0,
-        periodKey:  form.periodKey || periodKey,
+        periodKey:  derivedKey || form.periodKey || periodKey,
+        periodReview: !derivedKey,   // couldn't derive from invoiceDate → surface for review
         updatedBy:  user?.name || user?.email || 'unknown',
         updatedAt:  serverTimestamp(),
         location:   form.location || location || '',
@@ -402,7 +407,7 @@ export default function Purchasing() {
     // becomes a real cost. DO NOT move this stamp to create. Only stamp when missing
     // (`|| ` treats ''/undefined as missing); a valid existing period is never
     // overwritten — a late approval must not move a cost into a different week.
-    const targetPeriod = inv.periodKey || periodKey
+    const targetPeriod = inv.periodKey || dateToKey(inv.invoiceDate) || periodKey
     const targetLocation = inv.location || location || 'all'
     const patch = { status: 'Approved', approvedBy: user?.name || user?.email, approvedAt: serverTimestamp(), updatedAt: serverTimestamp() }
     if (!inv.periodKey) patch.periodKey = targetPeriod
@@ -426,7 +431,7 @@ export default function Purchasing() {
     // OrderHub Pending = commitment → ap_pending; it becomes a real cost, and enters
     // cogs_purchases, when approved/paid). Only stamp when missing; never overwrite a
     // valid existing period. DO NOT move this stamp to OrderHub create.
-    const targetPeriod = inv.periodKey || periodKey
+    const targetPeriod = inv.periodKey || dateToKey(inv.invoiceDate) || periodKey
     const targetLocation = inv.location || location || 'all'
     const patch = {
       status: 'Paid',
@@ -528,11 +533,16 @@ export default function Purchasing() {
         const aiGlCode = parsed.glCode || ''
         const glConfidence = parsed.glConfidence || 'low'
         const needsGlReview = !aiGlCode || glConfidence === 'low'
+        // Anchor to the POSTING DATE's fiscal week. If the parser couldn't extract a
+        // date, invoiceDate defaults to today and we flag periodReview so a guessed
+        // week is surfaced, not silently trusted.
+        const invDate = parsed.invoiceDate || new Date().toISOString().slice(0, 10)
+        const parsedKey = dateToKey(invDate)
         const invDoc = await addDoc(collection(db, 'tenants', orgId, 'invoices'), {
           vendor: parsed.vendor || 'Unknown Vendor',
           vendorId: vendorMatch?.id || 'other',
           invoiceNum: parsed.invoiceNumber || '',
-          invoiceDate: parsed.invoiceDate || new Date().toISOString().slice(0, 10),
+          invoiceDate: invDate,
           dueDate: parsed.dueDate || '',
           amount: parsed.total || 0,
           amountPaid: 0,
@@ -549,7 +559,8 @@ export default function Purchasing() {
           tax: parsed.tax || 0,
           status: 'Pending',
           location: location || selectedLocation,
-          periodKey: periodKey,
+          periodKey: parsedKey || periodKey,
+          periodReview: !parsed.invoiceDate,
           source: 'pdf-ai-parse',
           fileName: file.name,
           createdBy: user?.name || user?.email || 'unknown',
@@ -562,7 +573,7 @@ export default function Purchasing() {
           vendor: parsed.vendor || 'Unknown Vendor',
           vendorId: vendorMatch?.id || 'other',
           invoiceNum: parsed.invoiceNumber || '',
-          invoiceDate: parsed.invoiceDate || new Date().toISOString().slice(0, 10),
+          invoiceDate: invDate,
           dueDate: parsed.dueDate || '',
           amount: parsed.total || 0,
           amountPaid: 0,
@@ -571,7 +582,8 @@ export default function Purchasing() {
           needsGlReview,
           status: needsGlReview ? 'Needs GL Review' : 'Pending',
           location: location || selectedLocation,
-          periodKey: periodKey,
+          periodKey: parsedKey || periodKey,
+          periodReview: !parsed.invoiceDate,
           source: 'pdf-ai-parse',
           lineItems: parsed.lineItems || [],
         }
@@ -580,7 +592,7 @@ export default function Purchasing() {
         // Re-derive from all invoices in the period (never SET one amount to a named
         // line). newInv carries the just-created invoice (state not yet propagated).
         if (parsed.total) {
-          await recomputePurchasingTotalsForPeriod(location || selectedLocation, periodKey, [newInv])
+          await recomputePurchasingTotalsForPeriod(location || selectedLocation, parsedKey || periodKey, [newInv])
         }
         const glLabel = aiGlCode ? aiGlCode.replace('cogs_', '').replace('exp_', '').replace(/_/g, ' ') : 'unclassified'
         toast.success('Invoice parsed: ' + (parsed.vendor || 'Unknown') + ' — $' + (parsed.total || 0).toLocaleString() + (needsGlReview ? ' (needs GL review)' : ' → ' + glLabel) + (aiGlCode ? ' — posted to P&L' : ''))
@@ -615,7 +627,8 @@ export default function Purchasing() {
           // See INTEGRATIONS_ARCHITECTURE.md section 1.
           status:      (isAdmin && useBackfill && row['Status']) ? row['Status'] : 'Pending',
           location:    row['Location'] || location || '',
-          periodKey,
+          periodKey:   dateToKey(row['Date'] || row['invoice_date']) || periodKey,
+          periodReview: !dateToKey(row['Date'] || row['invoice_date']),
           notes:       row['Notes'] || '',
           syncStatus:  null,  // ready for external sync (e.g. NetSuite)
           createdBy:   user?.name || user?.email,
@@ -633,7 +646,11 @@ export default function Purchasing() {
       // prior amounts (the writePnL-SET data-loss bug). Filtering by period inside
       // recompute drops any imported rows that belong to a different period.
       if (importedInvoices.length > 0) {
-        await recomputePurchasingTotalsForPeriod(location || selectedLocation, periodKey, importedInvoices)
+        // Rows now anchor to their own invoiceDate's week, so an import can span several
+        // periods — recompute each distinct one, not just the on-screen period.
+        for (const pk of [...new Set(importedInvoices.map(i => i.periodKey))]) {
+          await recomputePurchasingTotalsForPeriod(location || selectedLocation, pk, importedInvoices)
+        }
       }
       toast.success("Imported " + imported + " invoices — posted to P&L")
     } catch { toast.error('Import failed — check file format') }

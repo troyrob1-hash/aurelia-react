@@ -39,6 +39,28 @@ export function formatPeriodKey(year, period, week) {
   return `${year}-P${String(period).padStart(2,'0')}-W${week}`
 }
 
+// Any calendar date (YYYY-MM-DD string or Date) → its fiscal-week periodKey
+// (YYYY-PMM-Wn) via the Sun–Sat calendar. A week never crosses a month boundary,
+// so the date's month picks the period and its day picks the week. Returns null if
+// the date is missing/unparseable (caller decides the fallback). This is the
+// canonical "posting date → the week it belongs to" — an invoice's date decides
+// its week, independent of what period is on screen.
+export function dateToKey(val) {
+  if (!val) return null
+  let y, m, d
+  if (val instanceof Date) { y = val.getFullYear(); m = val.getMonth() + 1; d = val.getDate() }
+  else {
+    const mt = String(val).match(/^(\d{4})-(\d{2})-(\d{2})/)
+    if (!mt) return null
+    y = +mt[1]; m = +mt[2]; d = +mt[3]
+  }
+  const wks = getPeriodWeeks(y, m)
+  for (let i = 0; i < wks.length; i++) {
+    if (d >= wks[i].start.getDate() && d <= wks[i].end.getDate()) return formatPeriodKey(y, m, i + 1)
+  }
+  return null
+}
+
 export function getPeriodLabel(year, period) {
   const months = ['January','February','March','April','May','June',
                   'July','August','September','October','November','December']
