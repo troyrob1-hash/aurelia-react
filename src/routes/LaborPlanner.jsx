@@ -6,8 +6,9 @@ import { Upload, Download, CheckCircle, Clock, AlertCircle, RefreshCw, Plus, Che
 import { useLocations } from '@/store/LocationContext'
 import { useAuthStore } from '@/store/authStore'
 import { usePeriod } from '@/store/PeriodContext'
-import { readPeriodClose, computeOnsiteLabor, computeLaborBurden, getLaborRates } from '@/lib/pnl'
+import { readPeriodClose, computeOnsiteLabor, computeLaborBurden, getLaborRates, enrichPnLLabor, locId } from '@/lib/pnl'
 import { writeLaborPnL } from '@/lib/pnl'
+import { computeLedgerContributions } from '@/lib/ledgerContributions'
 import { useLedgerEnrichedPnL } from '@/lib/usePnL'
 import CafeLaborImport from '@/components/CafeLaborImport'
 import { db } from '@/lib/firebase'
@@ -74,7 +75,7 @@ export default function LaborPlanner() {
   const location = selectedLocation === 'all' ? null : selectedLocation
 
   // ── Fix 1: use periodKey from PeriodContext ──────────────────
-  const { periodKey } = usePeriod()
+  const { periodKey, year, period, weeks } = usePeriod()
 
   const [periodView, setPeriodView]   = useState('Weekly')
   const [rows, setRows]               = useState([])
@@ -234,6 +235,7 @@ export default function LaborPlanner() {
   const [cafeFile, setCafeFile]       = useState(null)   // a detected Café file handed to CafeLaborImport
   const [detecting, setDetecting]     = useState(false)  // peeking a picked file's headers
   const [showLaborSplit, setShowLaborSplit] = useState(false)  // expand the 50410 row into salary vs hourly
+  const [pace, setPace]               = useState(null)         // labor pace/trend (see the pace effect below)
   const [budgets, setBudgets]         = useState({})
   const [gfsSales, setGfsSales]       = useState(0)
   const [connectedIntegrations, setConnectedIntegrations] = useState({ '7shifts': true, adp: false, gusto: false })
@@ -331,6 +333,40 @@ export default function LaborPlanner() {
     loadIntegrations()
     loadPendingSubmission()
   }, [orgId, periodKey, location]) // re-runs when period changes
+
+  // ── Labor PACE / TREND ──────────────────────────────────────────────────────
+  // Sum actual labor and (evenly-prorated) budget over the ELAPSED weeks of the
+  // current period (weeks whose end date <= today), then extrapolate to month-end.
+  // TREND signal, not exact variance: the budget is prorated monthly/weeks, so a
+  // partial W1/last week carries a full week's budget. Guarded against zero budget.
+  useEffect(() => {
+    if (!location || location === 'all' || !weeks?.length) { setPace(null); return }
+    let cancelled = false
+    ;(async () => {
+      const today = new Date()
+      const elapsed = weeks.filter(w => w.end <= today).length
+      const total = weeks.length
+      if (elapsed === 0) { if (!cancelled) setPace({ elapsed: 0, total, empty: 'notStarted' }); return }
+      const rates = await getLaborRates()
+      const lid = locId(location)
+      let actualToDate = 0, budgetToDate = 0
+      for (let w = 1; w <= elapsed; w++) {
+        const wk = `${year}-P${String(period).padStart(2, '0')}-W${w}`
+        const [snap, contribs] = await Promise.all([
+          getDoc(doc(db, 'tenants', orgId, 'pnl', lid, 'periods', wk)),
+          computeLedgerContributions(lid, wk, orgId),
+        ])
+        const pdata = snap.exists() ? snap.data() : {}
+        actualToDate += computeOnsiteLabor(enrichPnLLabor(pdata, contribs, rates)) // salary+hourly+3rd + derived burden
+        budgetToDate += Number(pdata.budget_labor) || 0
+      }
+      if (cancelled) return
+      const monthlyBudget = budgetToDate > 0 ? (budgetToDate / elapsed) * total : 0 // even proration → per-week × total
+      const projected = actualToDate / (elapsed / total)                            // extrapolate current pace to month-end
+      setPace({ actualToDate, budgetToDate, monthlyBudget, projected, elapsed, total })
+    })()
+    return () => { cancelled = true }
+  }, [orgId, location, year, period]) // weeks derived from year/period
 
   // Peek a picked file's first ~20 rows and classify it. The two labor formats are
   // DISJOINT: Café has "Week of Event" / "Actual Labor $" columns; the GL report has
@@ -860,6 +896,31 @@ export default function LaborPlanner() {
         </div>
       </div>
 
+      {/* ── Labor pace / trend — actual-to-date vs prorated budget-to-date ── */}
+      {location && location !== 'all' && pace && (() => {
+        const P = PACE_STYLES
+        if (pace.empty === 'notStarted') return (
+          <div style={P.panel}><span style={P.title}>Labor pace</span><span style={P.muted}>Current period just started — no completed weeks yet.</span></div>
+        )
+        if (!(pace.budgetToDate > 0)) return (
+          <div style={P.panel}><span style={P.title}>Labor pace</span><span style={P.muted}>No labor budget for this location/period — <b>import budget</b> to see pace vs plan.</span></div>
+        )
+        const ratio = pace.actualToDate / pace.budgetToDate
+        const badge = ratio > 1.05 ? { t: 'TRENDING OVER', bg: '#fef2f2', c: '#b91c1c', bd: '#fecaca' }
+          : ratio < 0.95 ? { t: 'UNDER', bg: '#eff6ff', c: '#1d4ed8', bd: '#bfdbfe' }
+          : { t: 'ON TRACK', bg: '#f0fdf4', c: '#166534', bd: '#bbf7d0' }
+        const projPct = pace.monthlyBudget > 0 ? (pace.projected / pace.monthlyBudget - 1) * 100 : null
+        return (
+          <div style={P.panel}>
+            <span style={P.title}>Labor pace</span>
+            <span style={P.line}><b>${fmt(pace.actualToDate)}</b> actual vs <b>${fmt(pace.budgetToDate)}</b> budgeted <span style={P.muted}>(through week {pace.elapsed} of {pace.total})</span></span>
+            <span style={{ ...P.badge, background: badge.bg, color: badge.c, border: `1px solid ${badge.bd}` }}>{badge.t} · {(ratio * 100).toFixed(0)}%</span>
+            <span style={P.proj}>At this pace, projected <b>${fmt(pace.projected)}</b> vs ${fmt(pace.monthlyBudget)} budget{projPct != null && <> ({projPct >= 0 ? '+' : ''}{projPct.toFixed(0)}%)</>}</span>
+            <span style={P.note}>Trend signal — budget is prorated evenly per week, not exact week-level variance.</span>
+          </div>
+        )
+      })()}
+
       {/* ── GL structure shell (no data) or populated table ── */}
       {displayRows.length === 0 ? (
         <div className={styles.tableWrap}>
@@ -1089,4 +1150,14 @@ export default function LaborPlanner() {
       />
     </div>
   )
+}
+
+const PACE_STYLES = {
+  panel: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, margin: '4px 0 14px', padding: '10px 14px', border: '1px solid #e2e8f0', borderRadius: 10, background: '#f8fafc' },
+  title: { fontSize: 12, fontWeight: 800, color: '#0f172a', textTransform: 'uppercase', letterSpacing: 0.3 },
+  line: { fontSize: 13, color: '#334155' },
+  badge: { fontSize: 11, fontWeight: 800, padding: '3px 10px', borderRadius: 999, letterSpacing: 0.3 },
+  proj: { fontSize: 13, color: '#334155' },
+  muted: { color: '#94a3b8', fontWeight: 500 },
+  note: { fontSize: 11, color: '#94a3b8', flexBasis: '100%' },
 }
