@@ -106,6 +106,19 @@ export function dedupeInvoices(list) {
   return [...out, ...best.values()]
 }
 
+// Pure duplicate predicate for the soft "already entered?" warning. A REAL duplicate =
+// the SAME invoice NUMBER already entered for this location — one invoice keyed twice.
+// Numberless entries (Amazon/Webstaurant/personal-card) are legitimately repeatable
+// within a week (same vendor, even same amount), so vendor+amount+week is NOT a
+// duplicate signal — warning on it just trains users to click through. Aligns with
+// dedupeInvoices, which never merges blank numbers. Excludes the row being edited.
+export function isNumberDuplicate(form, invoices, editId, location) {
+  const num = invoiceKey(form)
+  if (!num) return null                                     // no number → never a "duplicate"
+  const loc = form.location || location || ''
+  return (invoices || []).find(i => i.id !== editId && invoiceKey(i) === num && (i.location || '') === loc) || null
+}
+
 // Approval thresholds — amounts above these require director approval
 const APPROVAL_THRESHOLD = 500
 
@@ -312,16 +325,7 @@ export default function Purchasing() {
 
   // Duplicate detection — same vendor + similar amount + within 30 days
   function checkDuplicate(form) {
-    const amount = parseFloat(form.amount) || 0
-    const date   = new Date(form.invoiceDate)
-    const dup = invoices.find(i => {
-      if (editId && i.id === editId) return false
-      if (i.vendorId !== form.vendorId) return false
-      const diff = Math.abs(i.amount - amount)
-      const daysDiff = Math.abs((new Date(i.invoiceDate) - date) / 86400000)
-      return diff < 1 && daysDiff <= 30
-    })
-    return dup || null
+    return isNumberDuplicate(form, invoices, editId, location)
   }
 
   async function handleSave(e, skipDupCheck = false) {
@@ -329,7 +333,7 @@ export default function Purchasing() {
     // Duplicate check
     const dup = checkDuplicate(form)
     if (dup && !skipDupCheck) {
-      setDupWarning(`Possible duplicate: ${fmt$(dup.amount)} from same vendor on ${dup.invoiceDate}. Save anyway?`)
+      setDupWarning(`Invoice #${invoiceKey(dup)} was already entered for this location (${fmt$(dup.amount)}, ${dup.invoiceDate}). Save anyway?`)
       return
     }
     setDupWarning(null)
