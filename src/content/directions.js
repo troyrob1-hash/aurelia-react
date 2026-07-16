@@ -4,22 +4,30 @@
  * This is the ONLY file to edit to change the Help page. src/routes/Directions.jsx
  * is a dumb renderer that maps over this data — do not put copy in the JSX.
  *
+ * Structure:
+ *   INTRO       — orientation (the two top-bar controls, period close, data flow)
+ *   START_HERE  — item list first
+ *   REPORTS     — the six real monthly-report inputs (+ one manual log). This is the
+ *                 spec, taken from Fooda's Unit Monthly Report workbook (V26-03).
+ *                 Each report carries a `tag`: 'live' (Aurelia accepts it now),
+ *                 'coming' (documented but not wired yet), or is a manual log.
+ *   CADENCE     — weekly vs month-end
+ *   TABS        — what each app tab does
+ *   FAQ
+ *
  * Conventions:
- *   - `[TROY: ...]` markers are process questions only Troy can answer. As of this
- *     revision they are all filled in — if you add a new one, the renderer will
- *     highlight it as a visible callout so it doesn't get buried.
- *   - `workflow` is an ordered list (rendered 1., 2., 3.).
- *   - `uploads[].columns` are the EXACT header / report names Aurelia looks for.
- *   - `gotchas` are the sharp edges we've hit; keep them blunt and specific.
+ *   - `[TROY: ...]` markers render as a highlighted callout (all filled today).
+ *   - `uploads[].columns` / `report.columns` are EXACT header/report names.
  */
 
 export const INTRO = {
   heading: 'How Aurelia works',
   lede:
-    'Aurelia is the operations suite for running a cafe P&L: enter what happened this week ' +
-    '(sales, counts, invoices, labor), and the Dashboard assembles it into an income statement. ' +
-    'This page explains each tab — what it is for, the main workflow, what files it accepts (with the ' +
-    'exact report/column names), and the traps we have already hit.',
+    'Aurelia builds your café’s P&L from a handful of reports you already pull each month. ' +
+    'You upload your item list once, then feed in six reports (labor, café sales, catering, purchases, ' +
+    'the enterprise P&L, occupancy) on a weekly/month-end rhythm — and the Dashboard assembles the income ' +
+    'statement. This page is the field guide: which report, where it lives, exactly how to pull it, and what ' +
+    'Aurelia does with it.',
   blocks: [
     {
       h: 'Two controls sit on top of everything',
@@ -43,16 +51,10 @@ export const INTRO = {
         'revenue, Inventory feeds COGS, Purchasing feeds purchases, Labor feeds labor, Budgets feeds the budget ' +
         'column. Fix a number on its source tab and the Dashboard follows.',
     },
-    {
-      h: 'Submit → Approve locks the week (Sales & Labor)',
-      body:
-        'Weekly Sales and Labor use a submit/approve flow. A manager submits (status "pending"); a director ' +
-        'approves (status "approved") which locks that week. "Rejected" or "reopened" puts it back to editable.',
-    },
   ],
 }
 
-// Prominent, rendered ABOVE the per-tab sections — the first thing a new manager does.
+// Prominent, rendered ABOVE the reports — the first thing a new manager does.
 export const START_HERE = {
   heading: 'Start here: upload your item list',
   body: [
@@ -63,6 +65,263 @@ export const START_HERE = {
     'Inventory → "Item list" (amber button). This loads item DEFINITIONS — names, pack sizes, prices, ' +
       'vendors, GL codes. NOT counts. You enter counts after, by typing them or using the green "Upload counts" button.',
   ],
+}
+
+// The reports front door — "tape this to your monitor."
+export const REPORTS_INTRO = {
+  heading: 'Reports to pull',
+  lede:
+    'Five reports feed Aurelia — Labor, Café sales, Catering sales, the Enterprise P&L, and the Annual Budget. ' +
+    'Pull the three weekly ones (Labor, Café, Catering) every week so the running P&L stays useful; the Enterprise ' +
+    'P&L is month-end (available the 20th) and the Annual Budget is once a year. Two others — Custom Purchases and ' +
+    'A/R Aging — are REFERENCE ONLY: Aurelia already covers purchases in the Purchasing tab, and does not track A/R. ' +
+    'The table below is the cheat-sheet; step-by-step for each is underneath.',
+  tableauHome: 'https://us-east-1.online.tableau.com/#/site/fooda/home',
+  tableauTip:
+    'In Tableau, use the SEARCH BAR at the top to find each report by name, then FAVORITE it (the star) so it ' +
+    'sits on your home page and you never hunt for it again.',
+  operatingNotes: [
+    'Export everything as a CROSSTAB CSV — the export icon → "Crosstab" → CSV. (Not "Data" — Crosstab gives the laid-out columns Aurelia expects.)',
+    'Fiscal weeks run SUNDAY–SATURDAY. Week 1 = the 1st through the first Saturday; the last week = the last Sunday through month-end. A week never crosses a month boundary, so a month has 5 or 6 weeks depending on the calendar.',
+    'The Enterprise P&L (the official books) is only AVAILABLE THE 20TH of the following month — that timing is the workflow. You cannot close or reconcile a month against it before then.',
+  ],
+}
+
+// status: 'active'  = Aurelia actually uses this report (shown in the pull table).
+//         'reference' = listed for reference only — Aurelia covers it elsewhere or
+//                       doesn't track it (shown in a separate "Reference only" list).
+// tag:    'live' = wired in Aurelia today · 'coming' = documented spec, not wired yet.
+// manual: true = a hand-entered log, not a file import (excluded from the pull table).
+// format: how to export it (e.g. 'Crosstab CSV').
+export const REPORTS = [
+  {
+    id: 'r-labor',
+    num: 1,
+    name: 'Labor',
+    where: 'Tableau',
+    report: 'Summary by Site  (under "Café Labor Efficiency Tracking")',
+    status: 'active',
+    tag: 'live',
+    format: 'Crosstab CSV',
+    cadence: 'Weekly',
+    feeds: 'Labor tab (hourly labor)',
+    filtersShort: 'Site Name = your site · "Week" dropdown = "Last 8 weeks"',
+    steps: [
+      'In Tableau, search for "Café Labor Efficiency Tracking" and open the "Summary by Site" view.',
+      'Check that Site Name matches your site.',
+      'Set the "Week" dropdown to "Last 8 weeks."',
+      'Export to .csv using the export icon — a box with a downward arrow — on the right edge of the report.',
+    ],
+    columns: [
+      'Site Name', 'Week of Event', 'Scheduled Labor', 'Actual Labor', 'Labor Variance',
+      'Schedule Labor $', 'Actual Labor $', 'Labor $ Variance', 'Sales', 'Actual Labor as % of GFS',
+    ],
+    notes: [
+      'This is HOURLY labor only. Manager salaries are entered separately in Setup — they are not in this report.',
+    ],
+    aurelia: 'Upload it on the Labor tab. Aurelia records hourly labor by week onto the P&L.',
+  },
+  {
+    id: 'r-cafe',
+    num: 2,
+    name: 'Café sales',
+    where: 'Tableau',
+    report: 'Popup Event Summary - Market Operations → Vendor/Partner Financials - Popup Event Summary',
+    status: 'active',
+    tag: 'live',
+    format: 'Crosstab CSV',
+    cadence: 'Weekly',
+    feeds: 'Weekly Sales → Popup + Retail',
+    filtersShort: 'Event dates = first & last of the month · account internal name = yours',
+    steps: [
+      'In Tableau, search for "Vendor/Partner Financials - Popup Event Summary" (it sits under "Popup Event Summary - Market Operations").',
+      'Set the event dates to the FIRST and LAST day of the month.',
+      'Ensure the account internal name matches yours.',
+      'Export to .csv.',
+    ],
+    columns: [],
+    notes: [
+      'Aurelia routes it automatically: anything under 11 Dining (Cafeteria/Barista) → Retail; every other vendor → Popup.',
+    ],
+    aurelia: 'Upload it with the catering file via Import Events on Weekly Sales — posts popup + retail revenue.',
+  },
+  {
+    id: 'r-catering',
+    num: 3,
+    name: 'Catering sales',
+    where: 'Tableau',
+    report: 'Event Summary - Catering → Event Restaurant Details - Event Summary - Catering',
+    status: 'active',
+    tag: 'live',
+    format: 'Crosstab CSV · date range back 2 months',
+    cadence: 'Weekly',
+    feeds: 'Weekly Sales → Catering',
+    filtersShort: 'Date range back 2 months · account check as café sales',
+    steps: [
+      'In Tableau, search for "Event Summary - Catering" and open "Event Restaurant Details - Event Summary - Catering."',
+      'Set the date range to go back 2 months (catering events settle late, so the wider window catches them).',
+      'Confirm the account matches yours.',
+      'Export as a Crosstab CSV.',
+    ],
+    columns: [],
+    notes: [],
+    aurelia: 'Upload it with the café file via Import Events on Weekly Sales — posts catering revenue.',
+  },
+  {
+    id: 'r-custom',
+    name: 'Custom purchases',
+    where: 'NetSuite',
+    report: 'Custom Purchases Summary FOR CR  (invoiced via Ramp)',
+    status: 'reference',
+    tag: 'coming',
+    format: 'Excel-icon download',
+    cadence: '—',
+    feeds: 'Purchasing (already covered)',
+    refNote: 'Reference only — NOT needed in Aurelia. The Purchasing tab already captures these purchases (import the invoice, or enter it), with dedup and posting-date week handled. Pull this only if you want the raw NetSuite list.',
+    filtersShort: 'Dates = the month · Site = your account only',
+    steps: [
+      'In NetSuite, set the dates to the month.',
+      'Click the two up-arrows and "more" beside the dates.',
+      'Under "Site ANY of," uncheck "all," find your account, click OK, then Refresh.',
+      'Download via the Excel icon at the bottom right.',
+    ],
+    columns: [
+      'Site', 'Vendor Invoice Date', 'Name', 'Amount (Gross)', 'Account (Line): Name', 'Document Number',
+    ],
+    notes: [
+      'The GL arrives as a combined string, e.g. "12000 - Inventory - Cafeteria."',
+      'Negative amounts are credit memos.',
+    ],
+    aurelia: 'Covered by the Purchasing tab — you do not need to pull or import this separately.',
+  },
+  {
+    id: 'r-enterprise',
+    num: 4,
+    name: 'Enterprise P&L',
+    where: 'Tableau',
+    report: 'Enterprise P&L - Actuals vs. Budget',
+    status: 'active',
+    tag: 'live',
+    format: 'Crosstab CSV',
+    cadence: 'Month-end (the 20th)',
+    feeds: 'Reconciliation tab (the official P&L)',
+    filtersShort: 'Month = previous month · your site checked · expand Subcategory → Line → NetSuite Account Name',
+    steps: [
+      'In Tableau, search for "Enterprise P&L - Actuals vs. Budget."',
+      'Under "Month," select the PREVIOUS month.',
+      'Ensure your site is checked under "Site."',
+      'Hover and click the + next to "Subcategory" — "Line" opens.',
+      'Hover and click the + next to "Line" — "NetSuite Account Name" appears.',
+      'THEN run the report (do the expands first, or the account detail is missing).',
+      'Export as a Crosstab CSV.',
+    ],
+    columns: [],
+    notes: [
+      'AVAILABLE THE 20TH OF THE FOLLOWING MONTH — that timing IS the workflow. You cannot reconcile the month against it before then.',
+      'This is the OFFICIAL P&L — the number Aurelia checks itself against.',
+    ],
+    aurelia: 'Import it on the Reconciliation tab (director/vp/admin). Aurelia diffs its running P&L against these official lines, per line.',
+  },
+  {
+    id: 'r-budget',
+    num: 5,
+    name: 'Annual Budget',
+    where: 'Tableau',
+    report: 'Enterprise P&L  (full year)',
+    status: 'active',
+    tag: 'live',
+    format: 'Crosstab CSV',
+    cadence: 'Annual (early January)',
+    feeds: 'Budgets tab',
+    filtersShort: 'Full fiscal year · your site · same Subcategory → Line → NetSuite Account Name expands',
+    steps: [
+      'In Tableau, open "Enterprise P&L" and set the range to the FULL fiscal year.',
+      'Do the same expands as the monthly Enterprise P&L: Subcategory → + → Line → + → NetSuite Account Name.',
+      'Run, then export as a Crosstab CSV.',
+    ],
+    columns: [],
+    notes: [
+      'Run this ONCE, in early January, when the year’s budget is finalized.',
+      'Aurelia prorates the annual budget evenly across each fiscal week — that feeds the Labor pace signal and the per-line budget/variance columns.',
+    ],
+    aurelia: 'Import it on the Budgets tab (admin). Aurelia sets the annual budget, prorated per fiscal week.',
+  },
+  {
+    id: 'r-ar-aging',
+    name: 'A/R Aging',
+    where: 'NetSuite',
+    report: 'A/R Aging Detail - NetSuite',
+    status: 'reference',
+    tag: 'coming',
+    format: '—',
+    cadence: '—',
+    feeds: '(not tracked)',
+    refNote: 'Reference only — Aurelia does NOT track accounts receivable. Listed so you know where it lives if finance asks for it.',
+    filtersShort: '—',
+    steps: [
+      'In NetSuite, open "A/R Aging Detail" for your site.',
+      'This is for reference — Aurelia has no A/R import.',
+    ],
+    columns: [],
+    notes: [],
+    aurelia: 'Not tracked in Aurelia — reference only.',
+  },
+  {
+    id: 'r-occupancy',
+    name: 'Occupancy',
+    where: 'Building management',
+    report: 'Daily badge swipes / headcount',
+    status: 'reference',
+    tag: 'coming',
+    format: '—',
+    cadence: '—',
+    feeds: '(not tracked)',
+    refNote: 'Reference only — Aurelia does not track occupancy today. Get it from building management if you need it separately.',
+    filtersShort: '—',
+    steps: [
+      'Get the daily badge swipes / headcount from building management (there is no report to export).',
+    ],
+    columns: [],
+    notes: [],
+    aurelia: 'Not tracked in Aurelia — reference only.',
+  },
+  {
+    id: 'r-running',
+    name: 'Non-invoiced purchases',
+    where: 'Purchasing tab (manual entry)',
+    report: 'Amazon / Webstaurant / personal-card purchases',
+    status: 'active',
+    tag: 'live',
+    manual: true,
+    cadence: 'As they happen',
+    feeds: 'Purchasing',
+    filtersShort: '—',
+    steps: [
+      'Not an import — there is no report. Amazon, Webstaurant, or anything bought on a personal card never arrives as a formal invoice, so enter each on the Purchasing tab.',
+      'Per purchase: Vendor · Date · Amount · GL. No invoice number needed — a numberless purchase saves and posts to the fiscal week of its date.',
+    ],
+    columns: [],
+    notes: [
+      'The invoice number is OPTIONAL here. Two numberless purchases from the same vendor in the same week both count — Aurelia never merges numberless entries.',
+    ],
+    aurelia: 'Live — enter each on the Purchasing tab. It posts to cogs_purchases in the fiscal week of the purchase date.',
+  },
+]
+
+export const CADENCE = {
+  heading: 'How often to pull each one',
+  weekly: {
+    label: 'Weekly',
+    items: ['Labor', 'Café sales', 'Catering sales', 'Custom purchases'],
+  },
+  monthEnd: {
+    label: 'Month-end',
+    items: ['Enterprise P&L — available the 20th of the following month', 'Occupancy'],
+  },
+  note:
+    'Pull the weekly reports every week — that is what keeps the running P&L useful mid-month instead of a ' +
+    'once-a-month scramble. The Enterprise P&L is the month-end reconciliation (the official number), and ' +
+    'occupancy is entered at month-end. Running purchases (#7) get logged as they happen.',
 }
 
 export const TABS = [
@@ -127,24 +386,25 @@ export const TABS = [
     urlName: 'Weekly Sales',
     url: '/sales',
     purpose:
-      'Get the week’s sales into the P&L — you do NOT have to hand-key them. Import the two Fooda reports and ' +
-      'Aurelia fills in Gross Food Sales and Revenue for you, then a director signs off.',
+      'Get the week’s sales into the P&L — you do NOT hand-key them. Import the two Fooda Tableau reports ' +
+      '(café sales #2 and catering #3 in "Reports to pull") and Aurelia fills in GFS and Revenue, then a director signs off.',
     workflow: [
       'Pick the location; the week comes from the period selector.',
-      'Click Import Events and select BOTH Fooda reports together (see below). Aurelia routes the revenue automatically.',
+      'Click Import Events and select BOTH reports together — café sales and catering. Aurelia routes the revenue automatically.',
       'Preview the summary, then Confirm & Post to P&L.',
       '(Optional) Hand-key a day by category if you ever need to — but the import is the normal path.',
       'Submit for approval; a director approves ("approved"), which LOCKS the week. "Rejected"/"reopened" makes it editable again.',
     ],
     uploads: [
       {
-        name: 'Import Events — upload BOTH Fooda reports together',
+        name: 'Import Events — upload BOTH Tableau reports together',
         note:
-          'Click Import Events and select both files at once. Aurelia auto-detects each and routes revenue: anything ' +
-          'under 11 Dining (Cafeteria/Barista) → Retail; every other vendor → Popup. Preview, then Confirm & Post to P&L.',
+          'Select both files at once. Aurelia auto-detects each and routes revenue: anything under 11 Dining ' +
+          '(Cafeteria/Barista) → Retail; every other vendor → Popup. Preview, then Confirm & Post to P&L. See ' +
+          '"Reports to pull" #2 and #3 for how to pull each one.',
         columns: [
-          { col: 'Event Line Items - Catering', desc: '→ catering revenue' },
-          { col: 'Vendor_Partner Financials - Popup Event Summary', desc: '→ popup + retail revenue' },
+          { col: 'Vendor/Partner Financials - Popup Event Summary', desc: '→ café sales: popup + retail revenue (#2)' },
+          { col: 'Event Restaurant Details - Event Summary - Catering', desc: '→ catering revenue (#3)' },
         ],
       },
     ],
@@ -238,7 +498,8 @@ export const TABS = [
     url: '/purchasing',
     purpose:
       'The accounts-payable tab: enter vendor invoices, approve them, and mark them paid. This is the single source ' +
-      'of truth for purchase costs — approving/paying an invoice is what books it into COGS.',
+      'of truth for purchase costs — approving/paying an invoice is what books it into COGS. (The NetSuite custom-purchases ' +
+      'feed #4 and the running-purchases log #7 in "Reports to pull" are the eventual bulk inputs here — not wired yet.)',
     workflow: [
       'Add an invoice — by hand, by dropping a PDF (AI reads it), or by CSV import.',
       'Approve the invoice (Pending → Approved). Approval books the cost into the period.',
@@ -282,7 +543,8 @@ export const TABS = [
           'Other coded lines route the same way to their own P&L line (50430 equipment, 50431 barista equipment & ' +
           'consumables, 50440 supplies, 50450 maintenance, 65050 uniforms). Anything without a mapped code flattens ' +
           'into cogs_purchases. So coding an invoice correctly is what makes cleaning and paper show up as their own ' +
-          'lines instead of hiding inside food purchases.',
+          'lines instead of hiding inside food purchases. NetSuite delivers the GL as a combined string ' +
+          '("12000 - Inventory - Cafeteria") — Aurelia reads the numeric code off the front.',
       },
     ],
     troy: [],
@@ -372,28 +634,29 @@ export const TABS = [
     urlName: 'Labor',
     url: '/labor',
     purpose:
-      'Enter the week’s labor cost by GL code and submit it for sign-off. Feeds Onsite Labor, 3rd-Party Labor and ' +
-      'Comp & Benefits on the P&L.',
+      'Get the week’s labor onto the P&L. The source is the Tableau "Café Labor Efficiency Tracking" export ' +
+      '(report #1 in "Reports to pull") — HOURLY labor by week. Manager salaries are entered separately in Setup.',
     workflow: [
       'Pick the location; the week comes from the period selector.',
-      'Import the labor file — California Labor.xlsx — or type amounts into the GL table by hand.',
+      'Pull report #1 (Café Labor Efficiency Tracking → Summary by Site, "Last 8 weeks") and upload it here — or type amounts into the GL table by hand.',
       'Amounts autosave; submit for approval (status "pending").',
       'A director approves ("Approve & Close Period"), which signs off and locks the week.',
     ],
     uploads: [
       {
-        name: 'GL labor import — California Labor.xlsx (Excel / CSV)',
-        note: 'Standard or "Mosaic" layouts are auto-detected; Aurelia prefers a labor/payroll sheet in the workbook. Columns:',
+        name: 'Labor import — Café Labor Efficiency Tracking export (#1)',
+        note: 'Weekly hourly labor by site. Columns in the export:',
         columns: [
-          { col: 'GL Code (GL / Account)', desc: 'the labor GL code' },
-          { col: 'Amount (Value)', desc: 'the amount for that code' },
-          { col: 'Mosaic layout', desc: 'a first cell like "50410 - Onsite Labor…" is also parsed' },
+          { col: 'Site Name', desc: 'must match your site' },
+          { col: 'Week of Event', desc: 'the labor week' },
+          { col: 'Actual Labor $', desc: 'actual hourly labor dollars' },
+          { col: 'Actual Labor as % of GFS', desc: 'labor efficiency' },
         ],
       },
     ],
     gotchas: [
-      'The labor GL family: 50410 Onsite Labor, 50411 401k, 50412 Benefits, 50413 Payroll Taxes, 50414 Bonus — all roll up as Onsite Labor. 50420 is 3rd-Party Labor and is broken out on its own. 68xxx codes are Comp & Benefits.',
-      'Rule of thumb: Onsite Labor = every 504xx code EXCEPT 50420. Do not let a food invoice get coded to 50412/50413/50414 — those are labor benefit codes, not food.',
+      'HOURLY labor only. Manager salaries are entered separately in Setup — don’t expect them in this report.',
+      'The labor GL family (for hand entry / coding): 50410 Onsite Labor, 50411 401k, 50412 Benefits, 50413 Payroll Taxes, 50414 Bonus — all roll up as Onsite Labor. 50420 is 3rd-Party Labor, broken out on its own. 68xxx codes are Comp & Benefits.',
     ],
     troy: [],
   },
@@ -402,27 +665,35 @@ export const TABS = [
 export const FAQ = [
   {
     q: 'What do I do first?',
-    a: 'Upload your item list. Nothing works before that — counting, ordering, valuation and invoicing all key off your location’s catalog. See "Start here".',
+    a: 'Upload your item list (see "Start here"). Then pull the six reports — the "Reports to pull" table is the cheat-sheet.',
+  },
+  {
+    q: 'Which reports do I actually pull each week?',
+    a: 'Labor, café sales, catering, and custom purchases — weekly. The Enterprise P&L and occupancy are month-end (the Enterprise P&L isn’t available until the 20th of the following month).',
   },
   {
     q: 'Do I have to hand-key sales?',
-    a: 'No. Use Import Events and upload both Fooda reports (Event Line Items - Catering, and Vendor_Partner Financials - Popup Event Summary). Aurelia posts the revenue for you.',
+    a: 'No. Use Import Events and upload both Tableau reports together — "Vendor/Partner Financials - Popup Event Summary" (café) and "Event Restaurant Details - Event Summary - Catering". Aurelia posts the revenue for you.',
   },
   {
-    q: 'How do I upload invoices?',
-    a: 'Drag the PDF in — Aurelia reads vendor, dates, amounts and GL code. You can also import a CSV, or enter one by hand.',
+    q: 'Where do I pull the labor report, and why is my manager salary missing?',
+    a: 'Tableau → "Café Labor Efficiency Tracking" → "Summary by Site", Week = "Last 8 weeks". It’s HOURLY labor only by design; manager salaries are entered separately in Setup.',
+  },
+  {
+    q: 'Why can’t I upload my custom purchases / enterprise P&L / occupancy yet?',
+    a: 'Those aren’t wired into Aurelia yet — the retrieval steps are documented as the spec so you can pull them on cadence now. Custom purchases come from NetSuite; the Enterprise P&L is the official month-end number.',
+  },
+  {
+    q: 'What’s the difference between custom purchases and running purchases?',
+    a: 'Custom purchases (#4) are invoiced through Ramp and pulled from NetSuite. Running purchases (#7) are personal-card / reimbursement buys (Amazon, Webstaurant) that never become invoices — you log those by hand.',
   },
   {
     q: 'Do I enter food / chem / paper totals separately?',
-    a: 'No. Code the GL and it lands on the right line automatically: 12000–12003 → purchases/COGS, 65070 → Cleaning, 65080 → Paper.',
+    a: 'No. Code the GL and it lands on the right line automatically: 12000–12003 → purchases/COGS, 65070 → Cleaning, 65080 → Paper. NetSuite’s combined GL string ("12000 - Inventory - Cafeteria") is fine — Aurelia reads the number off the front.',
   },
   {
     q: 'What’s the difference between the two Inventory upload buttons?',
     a: 'Amber "Item list" = definitions, no counts. Green "Upload counts" = counts, previewed before they’re written.',
-  },
-  {
-    q: 'Why isn’t my item counted when I only entered units?',
-    a: 'It is now — eaches-only counts register. An item with loose units but no full cases still counts toward value.',
   },
   {
     q: 'Why isn’t my Order Hub order showing as a cost?',
