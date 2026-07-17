@@ -1181,16 +1181,32 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       // week is re-saved. UI reads opening live and is unaffected; this
       // protects downstream consumers that read the stored field.
       let freshOpening = openingValue
+      // Best-effort init from cached opening; overwritten by the authoritative prior read
+      // below when priorKey is present. On a read error we keep this (a cached nonzero
+      // opening implies a real prior close) rather than regressing a genuine delta to 0.
+      let priorCountExists = (openingValue || 0) > 0
       if (priorKey) {
         try {
           const priorPnlSnap = await getDoc(doc(db, 'tenants', orgId, 'pnl', locId, 'periods', priorKey))
-          freshOpening = priorPnlSnap.exists() ? (priorPnlSnap.data().closingValue || 0) : 0
+          // "Prior was actually COUNTED" = prior doc has a closingValue. A doc that exists
+          // from purchasing/labor alone (no closingValue) is NOT a real prior close.
+          const priorClosing = priorPnlSnap.exists() ? priorPnlSnap.data().closingValue : null
+          priorCountExists = priorClosing != null
+          freshOpening = priorCountExists ? (priorClosing || 0) : 0
           if (freshOpening !== openingValue) setOpeningValue(freshOpening)
         } catch (e) {
           console.warn('Failed to refresh opening from prior week at save; using cached value', e)
         }
       }
-      const cogs = Math.max(0, freshOpening + purchases - closingValue)
+      // Option (a): cogs_inventory is the pure inventory DELTA (opening − closing), NOT
+      // purchases-inclusive and NOT clamped — a genuine stock-up week (real prior close,
+      // closing > opening) is legitimately negative and offsets that week's purchases at
+      // aggregation (see computeFoodCogs in pnl.js). Purchases live solely in cogs_purchases.
+      // FIRST-COUNT GUARD: with no real prior close, opening defaults to 0 and (0 − closing)
+      // would be a spurious full-negative delta that wrongly cancels the week's real
+      // purchases — store 0 instead (food COGS = purchases alone). Same condition the
+      // opening value itself derives from.
+      const cogs = priorCountExists ? (freshOpening - closingValue) : 0
 
       // valuationMode gate (cutover build 2) — read the per-location authority
       // flag at WRITE TIME (design: no listener needed for correctness). The
@@ -1359,16 +1375,32 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       // See saveCounts — refresh opening from prior week's CURRENT closingValue
       // so the stored field doesn't go stale relative to live reads.
       let freshOpening = openingValue
+      // Best-effort init from cached opening; overwritten by the authoritative prior read
+      // below when priorKey is present. On a read error we keep this (a cached nonzero
+      // opening implies a real prior close) rather than regressing a genuine delta to 0.
+      let priorCountExists = (openingValue || 0) > 0
       if (priorKey) {
         try {
           const priorPnlSnap = await getDoc(doc(db, 'tenants', orgId, 'pnl', locId, 'periods', priorKey))
-          freshOpening = priorPnlSnap.exists() ? (priorPnlSnap.data().closingValue || 0) : 0
+          // "Prior was actually COUNTED" = prior doc has a closingValue. A doc that exists
+          // from purchasing/labor alone (no closingValue) is NOT a real prior close.
+          const priorClosing = priorPnlSnap.exists() ? priorPnlSnap.data().closingValue : null
+          priorCountExists = priorClosing != null
+          freshOpening = priorCountExists ? (priorClosing || 0) : 0
           if (freshOpening !== openingValue) setOpeningValue(freshOpening)
         } catch (e) {
           console.warn('Failed to refresh opening from prior week at save; using cached value', e)
         }
       }
-      const cogs = Math.max(0, freshOpening + purchases - closingValue)
+      // Option (a): cogs_inventory is the pure inventory DELTA (opening − closing), NOT
+      // purchases-inclusive and NOT clamped — a genuine stock-up week (real prior close,
+      // closing > opening) is legitimately negative and offsets that week's purchases at
+      // aggregation (see computeFoodCogs in pnl.js). Purchases live solely in cogs_purchases.
+      // FIRST-COUNT GUARD: with no real prior close, opening defaults to 0 and (0 − closing)
+      // would be a spurious full-negative delta that wrongly cancels the week's real
+      // purchases — store 0 instead (food COGS = purchases alone). Same condition the
+      // opening value itself derives from.
+      const cogs = priorCountExists ? (freshOpening - closingValue) : 0
 
       // valuationMode gate (cutover build 2) — same as saveCounts. Count docs
       // above always persisted; the LIVE P&L + Path B writes below are skipped

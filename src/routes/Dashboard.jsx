@@ -6,7 +6,7 @@ import { useToast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/store/authStore'
 import { db } from '@/lib/firebase'
 import { doc, getDoc } from 'firebase/firestore'
-import { readPnL, getPriorKey, getTrailingPeriodKeys, writePeriodClose, computeRevenue, computeOnsiteLabor, REV_SUBLINES } from '@/lib/pnl'
+import { readPnL, getPriorKey, getTrailingPeriodKeys, writePeriodClose, computeRevenue, computeOnsiteLabor, computeFoodCogs, REV_SUBLINES } from '@/lib/pnl'
 import { usePeriodStatus } from '@/hooks/usePeriodStatus'
 import { usePnL, useLedgerEnrichedPnL, useMultiLocationPnL, useLedgerEnrichedMultiPnL, usePnLHistory } from '@/lib/usePnL'
 import { usePeriod } from '@/store/PeriodContext'
@@ -114,7 +114,7 @@ const DEFAULT_SCHEMA = [
                       + (p.cogs_paper||0) + (p.cogs_supplies||0) + (p.cogs_uniforms||0)
           const retail = (p.cogs_retail_barista||0) + (p.cogs_retail_cafeteria||0) + (p.cogs_retail_managed||0)
           return labor + ec + (p.cogs_maintenance||0) + (p.cogs_payment_processing||0)
-               + retail + (p.cogs_inventory||0) + (p.cogs_purchases||0)
+               + retail + computeFoodCogs(p)
         }
       },
       // LAYER 2 — retail food-cost ratio, shown like the other "% of GFS" lines. Carries
@@ -136,7 +136,7 @@ const DEFAULT_SCHEMA = [
                       + (p.cogs_paper||0) + (p.cogs_supplies||0) + (p.cogs_uniforms||0)
           const retail = (p.cogs_retail_barista||0) + (p.cogs_retail_cafeteria||0) + (p.cogs_retail_managed||0)
           const cogs  = labor + ec + (p.cogs_maintenance||0) + (p.cogs_payment_processing||0)
-                      + retail + (p.cogs_inventory||0) + (p.cogs_purchases||0)
+                      + retail + computeFoodCogs(p)
           return revenue - cogs
         }
       },
@@ -179,7 +179,7 @@ const DEFAULT_SCHEMA = [
                       + (p.cogs_paper||0) + (p.cogs_supplies||0) + (p.cogs_uniforms||0)
           const retail = (p.cogs_retail_barista||0) + (p.cogs_retail_cafeteria||0) + (p.cogs_retail_managed||0)
           const cogs  = labor + ec + (p.cogs_maintenance||0) + (p.cogs_payment_processing||0)
-                      + retail + (p.cogs_inventory||0) + (p.cogs_purchases||0)
+                      + retail + computeFoodCogs(p)
           const gp    = revenue - cogs
           const exp   = (p.exp_office_supplies||0) + (p.exp_mktg_cashier||0) + (p.exp_mktg_coupons||0)
                       + (p.exp_mktg_marketing||0) + (p.exp_mktg_other||0) + (p.exp_technology||0)
@@ -196,7 +196,7 @@ const DEFAULT_SCHEMA = [
                       + (p.cogs_paper||0) + (p.cogs_supplies||0) + (p.cogs_uniforms||0)
           const retail = (p.cogs_retail_barista||0) + (p.cogs_retail_cafeteria||0) + (p.cogs_retail_managed||0)
           const cogs  = labor + ec + (p.cogs_maintenance||0) + (p.cogs_payment_processing||0)
-                      + retail + (p.cogs_inventory||0) + (p.cogs_purchases||0)
+                      + retail + computeFoodCogs(p)
           const gp    = revenue - cogs
           const exp   = (p.exp_office_supplies||0) + (p.exp_mktg_cashier||0) + (p.exp_mktg_coupons||0)
                       + (p.exp_mktg_marketing||0) + (p.exp_mktg_other||0) + (p.exp_technology||0)
@@ -243,31 +243,32 @@ function computeEBITDA(p) {
   const rev     = computeRevenue(p)
   const labor   = computeOnsiteLabor(p)
   const payproc = (p.cogs_payment_processing||0)   // real merchant-fee cost (GL 61020), not a 1.8%-of-GFS estimate
-  const gm      = rev - (labor + (p.cogs_inventory||0) + (p.cogs_purchases||0) + payproc)
+  const gm      = rev - (labor + computeFoodCogs(p) + payproc)
   return gm - (p.exp_comp_benefits||0)
 }
 
 function computePrimeCost(p) {
   const rev   = computeRevenue(p)
   const labor = computeOnsiteLabor(p) + (p.exp_comp_benefits||0)
-  const cogs  = (p.cogs_inventory||0) + (p.cogs_purchases||0)
+  const cogs  = computeFoodCogs(p)
   return rev > 0 ? (labor + cogs) / rev : null
 }
 
 // COGS % of RETAIL — the retail food-cost efficiency ratio (shared by all three layers:
 // the KPI card, the P&L line annotation, and the drill-down).
-//   COGS $  = opening + purchases − closing  (the CF valuation, stored as cogs_inventory;
-//             cogs_purchases is the hardened invoice sum). CF-authoritative closing where set.
+//   COGS $  = computeFoodCogs(p) = max(0, inventory delta + purchases)  (the single
+//             canonical food-COGS roll-up; cogs_inventory is the pure opening−closing
+//             delta, cogs_purchases the hardened invoice sum, added once). CF-auth closing where set.
 //   ratio   = COGS $ ÷ gfs_retail  (retail COGS ÷ retail sales — the matched operation, NOT total).
 // HONESTY GUARD: a TRUE COGS only when BOTH opening AND closing counts exist. If either is
-// missing, cogs_inventory collapses toward ~purchases (overstated) — the ratio is still
-// returned, but `isEstimate` is true so callers can flag it and never pass it off as a real
-// food-cost %. Retail = 0 → pct null (no divide-by-zero).
+// missing, the inventory delta is absent and COGS collapses toward ~purchases (overstated) —
+// the ratio is still returned, but `isEstimate` is true so callers can flag it and never pass
+// it off as a real food-cost %. Retail = 0 → pct null (no divide-by-zero).
 export function computeCogsRetail(p) {
   const opening   = p?.inv_opening || 0
   const purchases = p?.cogs_purchases || 0
   const closing   = p?.inv_closing || 0
-  const cogs      = p?.cogs_inventory != null ? p.cogs_inventory : Math.max(0, opening + purchases - closing)
+  const cogs      = computeFoodCogs(p)
   const retail    = p?.gfs_retail || 0
   const hasClosing = !!p?.inventoryCountedAt || closing > 0
   const hasOpening = opening > 0
@@ -339,7 +340,7 @@ function applyScenario(baselinePnl, scenario) {
   // Current food cost = inventory + purchases. Same approach.
   if (scenario.foodCostDelta !== 0) {
     const revForCalc = computeRevenue(out) || computeRevenue(baselinePnl)
-    const currentFood = (baselinePnl.cogs_inventory || 0) + (baselinePnl.cogs_purchases || 0)
+    const currentFood = computeFoodCogs(baselinePnl)
     if (revForCalc > 0 && currentFood > 0) {
       const currentFoodPct = currentFood / revForCalc
       const newFoodPct = currentFoodPct + (scenario.foodCostDelta / 100)
@@ -553,7 +554,7 @@ export default function Dashboard() {
   const revenue      = computeRevenue(pnl)
   const labor        = computeOnsiteLabor(pnl)
   const payproc      = pnl.cogs_payment_processing || 0   // real merchant-fee cost, not 1.8% of GFS
-  const totalCOGS    = labor + (pnl.cogs_inventory||0) + (pnl.cogs_purchases||0) + payproc
+  const totalCOGS    = labor + computeFoodCogs(pnl) + payproc
   const grossMargin  = revenue - totalCOGS
   const ebitda       = grossMargin - (pnl.exp_comp_benefits||0)
   const primeCost    = computePrimeCost(pnl)
@@ -571,7 +572,7 @@ export default function Dashboard() {
   const priorRev    = computeRevenue(priorPnl)
   const priorLabor  = computeOnsiteLabor(priorPnl)
   const priorPayp   = priorPnl.cogs_payment_processing || 0
-  const priorCOGS   = priorLabor + (priorPnl.cogs_inventory||0) + (priorPnl.cogs_purchases||0) + priorPayp
+  const priorCOGS   = priorLabor + computeFoodCogs(priorPnl) + priorPayp
   const priorEBITDA = (priorRev - priorCOGS) - (priorPnl.exp_comp_benefits||0)
 
   // Budget pacing
@@ -591,7 +592,7 @@ export default function Dashboard() {
   const scenRev     = computeRevenue(scenarioPnl)
   const scenLabor   = computeOnsiteLabor(scenarioPnl)
   const scenPayp    = scenarioPnl.cogs_payment_processing || 0
-  const scenCogs    = scenLabor + (scenarioPnl.cogs_inventory || 0) + (scenarioPnl.cogs_purchases || 0) + scenPayp
+  const scenCogs    = scenLabor + computeFoodCogs(scenarioPnl) + scenPayp
   const scenGm      = scenRev - scenCogs
   const scenEbitda  = scenGm - (scenarioPnl.exp_comp_benefits || 0)
   const scenPrime   = computePrimeCost(scenarioPnl)   // canonical (the old inline form double-counted labor)

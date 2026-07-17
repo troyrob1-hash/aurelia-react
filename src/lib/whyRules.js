@@ -23,7 +23,7 @@
 
 import { db } from './firebase'
 import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore'
-import { getPriorKey, computeRevenue, computeOnsiteLabor } from './pnl'
+import { getPriorKey, computeRevenue, computeOnsiteLabor, computeFoodCogs } from './pnl'
 
 // ============================================================================
 // Entry point
@@ -894,14 +894,14 @@ export function buildPeriodDiff(pnl, priorPnl, history, trailingKeys, locationLa
   const rev       = computeRevenue(pnl)
   const labor     = computeOnsiteLabor(pnl)
   const payproc   = pnl.cogs_payment_processing || 0   // real merchant-fee cost (GL 61020), not 1.8% of GFS
-  const cogs      = labor + (pnl.cogs_inventory || 0) + (pnl.cogs_purchases || 0) + (pnl.cogs_waste || 0) + payproc
+  const cogs      = labor + computeFoodCogs(pnl) + (pnl.cogs_waste || 0) + payproc
   const ebitda    = rev - cogs - (pnl.exp_comp_benefits || 0)
 
   const priorGfs   = priorPnl?.gfs_total || 0
   const priorRev   = computeRevenue(priorPnl)
   const priorLabor = computeOnsiteLabor(priorPnl)
   const priorPayp  = priorPnl?.cogs_payment_processing || 0
-  const priorCogs  = priorLabor + (priorPnl?.cogs_inventory || 0) + (priorPnl?.cogs_purchases || 0) + (priorPnl?.cogs_waste || 0) + priorPayp
+  const priorCogs  = priorLabor + computeFoodCogs(priorPnl) + (priorPnl?.cogs_waste || 0) + priorPayp
   const priorEbitda = priorRev - priorCogs - (priorPnl?.exp_comp_benefits || 0)
 
   // No prior data — give a snapshot summary instead of a comparison
@@ -934,8 +934,8 @@ export function buildPeriodDiff(pnl, priorPnl, history, trailingKeys, locationLa
       direction: laborDelta > 0 ? 'negative' : 'positive',
     })
   }
-  const foodCostDelta = (pnl.cogs_inventory || 0) + (pnl.cogs_purchases || 0) + (pnl.cogs_waste || 0)
-                      - ((priorPnl?.cogs_inventory || 0) + (priorPnl?.cogs_purchases || 0) + (priorPnl?.cogs_waste || 0))
+  const foodCostDelta = (computeFoodCogs(pnl) + (pnl.cogs_waste || 0))
+                      - (computeFoodCogs(priorPnl) + (priorPnl?.cogs_waste || 0))
   if (Math.abs(foodCostDelta) > 100) {
     drivers.push({
       kind: foodCostDelta > 0 ? 'higher food costs' : 'reduced food costs',
@@ -975,7 +975,7 @@ export function buildPeriodDiff(pnl, priorPnl, history, trailingKeys, locationLa
         const r = computeRevenue(p)
         const l = computeOnsiteLabor(p)
         const pp = p.cogs_payment_processing || 0
-        const c = l + (p.cogs_inventory || 0) + (p.cogs_purchases || 0) + (p.cogs_waste || 0) + pp
+        const c = l + computeFoodCogs(p) + (p.cogs_waste || 0) + pp
         return r - c - (p.exp_comp_benefits || 0)
       })
       .filter(v => v !== 0 && !isNaN(v))

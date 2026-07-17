@@ -390,9 +390,38 @@ export async function writeSalesPnL(location, period, salesData) {
   }
 }
 
-// Inventory week close → COGS (opening - closing)
-export async function writeInventoryPnL(location, period, { closingValue, openingValue, purchases }) {
-  const cogs_inventory = Math.max(0, (openingValue || 0) + (purchases || 0) - closingValue)
+// The ONE canonical food-COGS roll-up. cogs_inventory is the PURE inventory delta
+// (opening − closing, legitimately negative on a stock-up week); cogs_purchases is the
+// hardened invoice sum. The two food atoms are added EXACTLY ONCE here, and the only
+// clamp lives here (final food COGS never goes negative). Every consumer — Dashboard
+// Total COGS / EBITDA / prime / gross profit, the Why panel, reconciliation — routes
+// through this. Result: the purchases atom can never be double-counted, and
+// cogs_inventory can never freeze a stale purchases snapshot (it no longer contains
+// purchases at all). No closing count → cogs_inventory absent → food COGS = purchases alone.
+export function computeFoodCogs(p) {
+  return Math.max(0, (p?.cogs_inventory || 0) + (p?.cogs_purchases || 0))
+}
+
+// Inventory week close → inventory DELTA (opening − closing). NOT purchases-inclusive and
+// NOT clamped at write: a genuine stock-up week (real prior close, closing > opening) is
+// legitimately negative and must offset that week's purchases at aggregation (see
+// computeFoodCogs). Purchases live SOLELY in cogs_purchases, so nothing here freezes a
+// purchases snapshot that later goes stale.
+//
+// FIRST-COUNT GUARD: store the delta ONLY when a real prior close exists. On a no-prior
+// week the opening defaults to 0, so (0 − closing) would be a spurious full-negative delta
+// that wrongly cancels the week's real purchases — store 0 instead (food COGS = purchases
+// alone). "Opening came from a real prior close" and "we store a delta" are the SAME
+// condition. Caller passes priorCountExists; absent that, fall back to openingValue > 0.
+// This is the canonical, unit-tested contract; the client (useInventory) and CF
+// (functions/index.js) inline the IDENTICAL guard against their own live prior read.
+export function inventoryDelta({ openingValue, closingValue, priorCountExists }) {
+  const hasPrior = priorCountExists != null ? priorCountExists : ((openingValue || 0) > 0)
+  return hasPrior ? ((openingValue || 0) - (closingValue || 0)) : 0
+}
+
+export async function writeInventoryPnL(location, period, { closingValue, openingValue, purchases, priorCountExists }) {
+  const cogs_inventory = inventoryDelta({ openingValue, closingValue, priorCountExists })
   await writePnL(location, period, {
     inv_closing: closingValue,
     inv_opening: openingValue || 0,

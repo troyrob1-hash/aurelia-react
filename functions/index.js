@@ -1643,13 +1643,18 @@ exports.aggregateInventoryValuationShadow = onDocumentWritten(
     // client does at write time. Reads the live `closingValue`, not the shadow.
     const priorKey = cfGetPriorKey(periodKey);
     let openingValue = 0;
+    // FIRST-COUNT GUARD signal: "prior was actually COUNTED" = prior doc carries a
+    // closingValue. A doc that exists from purchasing/labor alone is NOT a real prior close.
+    let priorCountExists = false;
     if (priorKey) {
       const priorSnap = await db
         .collection("tenants").doc(orgId)
         .collection("pnl").doc(locId)
         .collection("periods").doc(priorKey)
         .get();
-      openingValue = priorSnap.exists ? (Number(priorSnap.data().closingValue) || 0) : 0;
+      const priorClosing = priorSnap.exists ? priorSnap.data().closingValue : null;
+      priorCountExists = priorClosing != null;
+      openingValue = priorCountExists ? (Number(priorClosing) || 0) : 0;
     }
 
     // valuationMode flag — read OUTSIDE the txn. FAIL-SAFE INVERTED vs the client:
@@ -1692,8 +1697,14 @@ exports.aggregateInventoryValuationShadow = onDocumentWritten(
       if (pnl.cf_lastEventTime != null && pnl.cf_lastEventTime >= eventMillis) {
         return { wrote: false }; // a newer/equal aggregation committed first
       }
-      const purchases = Number(pnl.cogs_purchases) || 0;
-      const cogsInventory = Math.max(0, openingValue + purchases - closingValue);
+      // Option (a): cogs_inventory is the pure inventory DELTA (opening − closing), NOT
+      // purchases-inclusive and NOT clamped — a genuine stock-up week (real prior close,
+      // closing > opening) is legitimately negative and offsets that week's purchases at
+      // aggregation (computeFoodCogs, src/lib/pnl.js). Purchases live solely in cogs_purchases.
+      // FIRST-COUNT GUARD: with no real prior close, opening defaults to 0 and (0 − closing)
+      // would be a spurious full-negative delta that wrongly cancels the week's real
+      // purchases — store 0 instead (food COGS = purchases alone).
+      const cogsInventory = priorCountExists ? (openingValue - closingValue) : 0;
 
       // SHADOW fields — written in EVERY mode, forever (the divergence monitor).
       const writes = {
