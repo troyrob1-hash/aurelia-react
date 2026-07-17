@@ -71,8 +71,8 @@ export const START_HERE = {
 export const REPORTS_INTRO = {
   heading: 'Reports to pull',
   lede:
-    'Five reports feed Aurelia — Labor, Café sales, Catering sales, the Enterprise P&L, and the Annual Budget. ' +
-    'Pull the three weekly ones (Labor, Café, Catering) every week so the running P&L stays useful; the Enterprise ' +
+    'Six reports feed Aurelia — Labor, Café sales, Catering sales, the Enterprise P&L, the Annual Budget, and Sales Items (shrinkage). ' +
+    'Pull the weekly ones (Labor, Café, Catering, Sales Items) every week so the running P&L and shrinkage stay useful; the Enterprise ' +
     'P&L is month-end (available the 20th) and the Annual Budget is once a year. Two others — Custom Purchases and ' +
     'A/R Aging — are REFERENCE ONLY: Aurelia already covers purchases in the Purchasing tab, and does not track A/R. ' +
     'The table below is the cheat-sheet; step-by-step for each is underneath.',
@@ -245,6 +245,35 @@ export const REPORTS = [
       'Aurelia prorates the annual budget evenly across each fiscal week — that feeds the Labor pace signal and the per-line budget/variance columns.',
     ],
     aurelia: 'Import it on the Budgets tab (admin). Aurelia sets the annual budget, prorated per fiscal week.',
+  },
+  {
+    id: 'r-sales-items',
+    num: 6,
+    name: 'Sales Items (Shrinkage)',
+    where: 'Tableau',
+    report: 'Cafe Product Mix',
+    status: 'active',
+    tag: 'live',
+    format: 'Crosstab CSV',
+    cadence: 'Weekly',
+    feeds: 'Shrinkage Analysis → Import Sales',
+    filtersShort: 'Include "Account Internal Name" · Weekday breakdown ON · your site(s)',
+    steps: [
+      'In Tableau, search for "Cafe Product Mix" and open it.',
+      'ADD the "Account Internal Name" dimension to the view (this is what splits San Diego into its cafés — AZ/AY/S/N/Q/R/WT). Without it San Diego comes in campus-grain and will not reconcile per café.',
+      'Turn the WEEKDAY breakdown ON (the weekday rows under each item — Aurelia reads these, not the weekly Total).',
+      'Set the date range to cover the weeks you want to reconcile.',
+      'Export as a Crosstab CSV.',
+    ],
+    columns: [
+      'Site', 'Account Internal Name', 'Restaurant', 'Item Name', 'Weekday of Event Date', 'Week of Event Date columns',
+    ],
+    notes: [
+      'MUST include "Account Internal Name." It is the per-café key — Aurelia maps the 9 POS accounts to the 6 café locations (the San Diego satellites AY→AZ, N→S, R→Q lump into their parent café). Pull it campus-grain and San Diego cannot reconcile per café.',
+      'Weekday breakdown must be ON. Aurelia sums the weekday rows (not the per-week Total) so a calendar week that straddles a month boundary is split into the correct fiscal weeks.',
+      'This is the SOLD side of shrinkage — what the POS rang up. Aurelia diffs it against what was counted (Inventory) to surface unexplained loss.',
+    ],
+    aurelia: 'Import it on Shrinkage Analysis via the Import Sales button — loads per-item, per-week POS sales (the SOLD feed) keyed to the same café IDs inventory uses.',
   },
   {
     id: 'r-ar-aging',

@@ -97,7 +97,7 @@ export default function CafeProductMixImport({ onImported }) {
   return (
     <>
       <label style={S.btn} title="Import the Cafe Product Mix export (the SOLD feed → salesItems)">
-        <Upload size={14} /> {busy ? 'Reading…' : 'Import Product Mix'}
+        <Upload size={14} /> {busy ? 'Reading…' : 'Import Sales'}
         <input type="file" accept=".csv,.xlsx,.xls" style={{ display: 'none' }} onChange={handleFile} disabled={busy || writing} />
       </label>
 
