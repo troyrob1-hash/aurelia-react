@@ -23,6 +23,7 @@ const LaborPlanner = lazy(() => import('@/routes/LaborPlanner'))
 const Settings    = lazy(() => import('@/routes/Settings'))
 const BudgetImport = lazy(() => import('@/routes/BudgetImport'))
 const Reconciliation = lazy(() => import('@/routes/Reconciliation'))
+const Shrinkage   = lazy(() => import('@/routes/Shrinkage'))
 const Directions  = lazy(() => import('@/routes/Directions'))
 const Home = lazy(() => import('@/routes/Home'))
 function PendingApproval() {
@@ -98,6 +99,7 @@ export default function App() {
           <Route path="transfers" element={<Suspense fallback={<LoadingScreen />}><Transfers /></Suspense>} />
           <Route path="labor"     element={<Suspense fallback={<LoadingScreen />}><LaborPlanner /></Suspense>} />
           <Route path="reconciliation" element={<Suspense fallback={<LoadingScreen />}><Reconciliation /></Suspense>} />
+          <Route path="shrinkage" element={<Suspense fallback={<LoadingScreen />}><Shrinkage /></Suspense>} />
           <Route path="directions" element={<Suspense fallback={<LoadingScreen />}><Directions /></Suspense>} />
           <Route path="settings"  element={<Suspense fallback={<LoadingScreen />}><AdminOnly><Settings /></AdminOnly></Suspense>} />
           <Route path="budget-import" element={<Suspense fallback={<LoadingScreen />}><AdminOnly><BudgetImport /></AdminOnly></Suspense>} />

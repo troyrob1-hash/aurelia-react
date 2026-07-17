@@ -15,6 +15,8 @@
 //   row is used only as a CHECKSUM. dateToKey is imported (not re-implemented) so
 //   this never becomes a 4th drifting copy of the fiscal calendar.
 import { dateToKey as canonicalDateToKey } from '@/store/PeriodContext'
+import { db } from '@/lib/firebase'
+import { doc, writeBatch, serverTimestamp } from 'firebase/firestore'
 
 // ── Account Internal Name → Aurelia locId (a BUSINESS RULE, not a heuristic) ──
 // The 9 café accounts resolve to the 6 locIds the pnl/inventory docs already use
@@ -88,6 +90,7 @@ export function parseCafeProductMix(rows, { dateToKey = canonicalDateToKey } = {
 
   const out = new Map()               // `${locId}__${periodKey}__${slug}` → record
   const unmapped = new Map()          // accountName → qty (surfaced)
+  const namesBySlug = new Map()       // slug → Set(distinct raw itemNames) — collision detector
   let checksumTotal = 0, weekdaySum = 0
   let site = null, acct = null, rest = null, item = null
 
@@ -117,20 +120,81 @@ export function parseCafeProductMix(rows, { dateToKey = canonicalDateToKey } = {
       const periodKey = dateToKey(date); if (!periodKey) continue
       weekdaySum += v
       const slug = itemSlug(item)
+      if (!namesBySlug.has(slug)) namesBySlug.set(slug, new Set())
+      namesBySlug.get(slug).add(item)
       const key = `${locId}__${periodKey}__${slug}`
       let rec = out.get(key)
-      if (!rec) { rec = { locId, periodKey, itemName: item, itemSlug: slug, qtySold: 0, weekdayBreakdown: {} }; out.set(key, rec) }
+      if (!rec) { rec = { locId, periodKey, itemName: item, itemSlug: slug, qtySold: 0, weekdayBreakdown: {}, mergedNames: new Set() }; out.set(key, rec) }
       rec.qtySold += v
+      rec.mergedNames.add(item)
       const dk = wd.toLowerCase()
       rec.weekdayBreakdown[dk] = (rec.weekdayBreakdown[dk] || 0) + v
     }
   }
 
+  // Slugs whose distinct raw names collapsed to one key. The merge is ACCEPTED
+  // (usually the same product typed two ways, e.g. "X - Sea Salt" vs "X_Sea Salt"),
+  // but every collision is surfaced so a *bad* one (two genuinely different products)
+  // can't hide. The writer logs these; the import UI shows them as a warning.
+  const collisions = [...namesBySlug.entries()]
+    .filter(([, names]) => names.size > 1)
+    .map(([slug, names]) => ({ slug, names: [...names] }))
+
+  // Finalize records: mergedNames Set → array (keep the raw name too).
+  const items = [...out.values()].map((r) => ({ ...r, mergedNames: [...r.mergedNames] }))
+
   return {
-    items: [...out.values()],
+    items,
     checksumTotal,
     weekdaySum,
     unmappedAccounts: [...unmapped.entries()].map(([account, qty]) => ({ account, qty })),
+    collisions,
     weekLabels: weekCols.map((w) => w.label),
   }
+}
+
+// ── Writer ──────────────────────────────────────────────────────────────────
+// Write parsed records to tenants/{orgId}/salesItems/{locId}/periods/{periodKey}/
+// items/{itemSlug}. IDEMPOTENT: setDoc(merge:true) with the fully-recomputed qty
+// means a re-import of the same export REPLACES each item's qtySold rather than
+// doubling it (last-write-wins per item; merge preserves any sibling fields layered
+// on later, e.g. a shrinkage note). Batched at 450 ops (Firestore's 500 cap).
+//
+// The raw itemName is stored (not just the slug), plus mergedNames[] — the distinct
+// raw names that fed a slug — so a collision is inspectable on the doc itself. Any
+// collision is also logged to the console at write time so a BAD merge (two truly
+// different products sharing a slug) surfaces instead of hiding behind a summed qty.
+export async function writeSalesItems(orgId, parsed, { importedBy, sourceFile } = {}) {
+  if (!orgId) throw new Error('writeSalesItems: missing orgId')
+  const { items, collisions = [] } = parsed
+  if (!items || !items.length) throw new Error('writeSalesItems: nothing to write')
+
+  // Collision log — accept the merge, but make a bad one loud.
+  if (collisions.length) {
+    console.warn(`[salesItems] ${collisions.length} slug collision(s) — distinct names merged into one doc (qty summed):`)
+    for (const c of collisions) console.warn(`  ${c.slug}  <=  ${c.names.join('  ||  ')}`)
+  }
+
+  let batch = writeBatch(db)
+  let ops = 0, wrote = 0
+  for (const r of items) {
+    const ref = doc(db, 'tenants', orgId, 'salesItems', r.locId, 'periods', r.periodKey, 'items', r.itemSlug)
+    batch.set(ref, {
+      itemName: r.itemName,               // raw name kept for readability/inspection
+      itemSlug: r.itemSlug,
+      qtySold: r.qtySold,
+      weekdayBreakdown: r.weekdayBreakdown || {},
+      mergedNames: r.mergedNames && r.mergedNames.length > 1 ? r.mergedNames : null,  // only when a merge happened
+      locId: r.locId,
+      periodKey: r.periodKey,
+      source: 'cafe_product_mix',
+      sourceFile: sourceFile || null,
+      importedBy: importedBy || 'unknown',
+      importedAt: serverTimestamp(),
+    }, { merge: true })
+    ops++; wrote++
+    if (ops >= 450) { await batch.commit(); batch = writeBatch(db); ops = 0 }
+  }
+  if (ops > 0) await batch.commit()
+  return { wrote, collisions: collisions.length }
 }

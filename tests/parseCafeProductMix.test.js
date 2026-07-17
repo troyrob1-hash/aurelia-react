@@ -91,6 +91,28 @@ describe('parseCafeProductMix — satellite lumping (AY → AZ)', () => {
   })
 })
 
+describe('parseCafeProductMix — slug collision surfaced (merge accepted, recorded)', () => {
+  // Two differently-punctuated names slug to the same key → merge, but surface it.
+  const rows = [
+    ['', '', '', '', 'Week of Event Date', '', ''],
+    HEADER,
+    row('CR_QualcommSanDiego', 'Qualcomm - San Diego - Q', '11 Dining LLC - Cafeteria', 'Love Corn - Sea Salt', 'Total', 3, null),
+    row(null, null, null, null, 'Monday', 3, null),        // Jun 22 → P06
+    row('CR_QualcommSanDiego', 'Qualcomm - San Diego - Q', '11 Dining LLC - Cafeteria', 'Love Corn_Sea Salt', 'Total', 2, null),
+    row(null, null, null, null, 'Monday', 2, null),        // Jun 22 → P06, same slug
+  ]
+  const { items, collisions } = parseCafeProductMix(rows, { dateToKey })
+  it('merges to one doc, sums qty, and records both names', () => {
+    const rec = items.filter((r) => r.itemSlug === 'love-corn-sea-salt')
+    expect(rec).toHaveLength(1)
+    expect(rec[0].qtySold).toBe(5)                          // 3 + 2 merged
+    expect(rec[0].mergedNames.sort()).toEqual(['Love Corn - Sea Salt', 'Love Corn_Sea Salt'])
+    expect(collisions).toHaveLength(1)
+    expect(collisions[0].slug).toBe('love-corn-sea-salt')
+    expect(collisions[0].names).toHaveLength(2)
+  })
+})
+
 describe('parseCafeProductMix — unmapped account surfaced', () => {
   const rows = [
     ['', '', '', '', 'Week of Event Date', '', ''],
