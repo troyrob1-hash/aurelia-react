@@ -39,13 +39,13 @@ const NAV = [
   { to: '/orders',     icon: ShoppingCart,    label: 'Order Hub',    category: 'Procurement' },
   { to: '/sales',      icon: TrendingUp,      label: 'Weekly Sales', category: 'Revenue' },
   { to: '/inventory',  icon: Package,         label: 'Inventory',    category: 'Stock' },
+  { to: '/shrinkage',  icon: Boxes,           label: 'Shrinkage',    category: 'Shrinkage' },
   { to: '/waste',      icon: Trash2,          label: 'Waste Log',    category: 'Shrinkage' },
   { to: '/purchasing', icon: FileText,        label: 'Purchasing',   category: 'AP' },
   { to: '/budgets',    icon: PieChart,        label: 'Budgets',      category: 'Planning' },
   { to: '/transfers',  icon: ArrowLeftRight,  label: 'Operating Ledger', category: 'Finance' },
 { to: '/labor',      icon: Users,           label: 'Labor',        category: 'Labor' },
   { to: '/reconciliation', icon: Scale,      label: 'Reconciliation', category: 'Finance' },
-  { to: '/shrinkage',  icon: Boxes,          label: 'Shrinkage Analysis', category: 'Finance' },
 ]
 
 export default function AppShell() {
