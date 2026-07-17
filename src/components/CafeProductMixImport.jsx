@@ -20,6 +20,8 @@ import { useAuthStore } from '@/store/authStore'
 import { useToast } from '@/components/ui/Toast'
 import { parseCafeProductMix, writeSalesItems } from '@/lib/parseCafeProductMix'
 
+const ACCEPTED = /\.(xlsx|xls|csv)$/i   // the export formats Tableau produces
+
 export default function CafeProductMixImport({ onImported }) {
   const { user } = useAuthStore()
   const orgId = user?.tenantId
@@ -28,11 +30,15 @@ export default function CafeProductMixImport({ onImported }) {
   const [busy, setBusy] = useState(false)
   const [writing, setWriting] = useState(false)
   const [preview, setPreview] = useState(null)   // { fileName, parsed }
+  const [dragActive, setDragActive] = useState(false)
 
-  async function handleFile(e) {
-    const file = e.target.files?.[0]
-    e.target.value = ''
+  // Shared parse path for both click-to-browse and drag-drop → parse → preview.
+  async function processFile(file) {
     if (!file) return
+    if (!ACCEPTED.test(file.name)) {
+      toast.error(`"${file.name}" isn't a spreadsheet — drop a .xlsx, .xls, or .csv export.`)
+      return
+    }
     setBusy(true)
     try {
       const buf = await file.arrayBuffer()
@@ -46,6 +52,28 @@ export default function CafeProductMixImport({ onImported }) {
       toast.error(err.message || 'Could not parse the Cafe Product Mix file.')
     }
     setBusy(false)
+  }
+
+  function handleFile(e) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    processFile(file)
+  }
+
+  function handleDragOver(e) {
+    e.preventDefault()
+    if (!busy && !writing) setDragActive(true)
+  }
+  function handleDragLeave(e) {
+    e.preventDefault()
+    setDragActive(false)
+  }
+  function handleDrop(e) {
+    e.preventDefault()
+    setDragActive(false)
+    if (busy || writing) return
+    const file = e.dataTransfer?.files?.[0]
+    processFile(file)
   }
 
   // Preview rollups — identical math to the offline dry-run.
@@ -96,8 +124,19 @@ export default function CafeProductMixImport({ onImported }) {
   const S = STYLES
   return (
     <>
-      <label style={S.btn} title="Import the Cafe Product Mix export (the SOLD feed → salesItems)">
-        <Upload size={14} /> {busy ? 'Reading…' : 'Import Sales'}
+      <label
+        style={{ ...S.dropZone, ...(dragActive ? S.dropZoneActive : {}) }}
+        title="Import the Cafe Product Mix export (the SOLD feed → salesItems)"
+        onDragOver={handleDragOver}
+        onDragEnter={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        <Upload size={16} color={dragActive ? '#0f766e' : '#64748b'} />
+        <span style={S.dropText}>
+          {busy ? 'Reading…' : dragActive ? 'Drop to import' : 'Import Sales'}
+        </span>
+        <span style={S.dropHint}>{dragActive ? '' : 'drag a .xlsx / .csv here, or click to browse'}</span>
         <input type="file" accept=".csv,.xlsx,.xls" style={{ display: 'none' }} onChange={handleFile} disabled={busy || writing} />
       </label>
 
@@ -182,6 +221,10 @@ export default function CafeProductMixImport({ onImported }) {
 
 const STYLES = {
   btn: { display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 14px', fontSize: 12, fontWeight: 600, background: '#fff', color: '#0f172a', border: '1px solid #cbd5e1', borderRadius: 8, cursor: 'pointer' },
+  dropZone: { display: 'inline-flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4, padding: '14px 22px', minWidth: 260, fontSize: 13, fontWeight: 700, color: '#0f172a', background: '#f8fafc', border: '2px dashed #cbd5e1', borderRadius: 12, cursor: 'pointer', transition: 'border-color .15s, background .15s' },
+  dropZoneActive: { borderColor: '#0f766e', background: '#f0fdfa' },
+  dropText: { fontSize: 13, fontWeight: 700 },
+  dropHint: { fontSize: 11, fontWeight: 500, color: '#94a3b8' },
   overlay: { position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000, padding: 20 },
   modal: { background: '#fff', borderRadius: 14, width: 'min(760px,97vw)', maxHeight: '92vh', display: 'flex', flexDirection: 'column', boxShadow: '0 20px 60px rgba(0,0,0,.3)' },
   head: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', padding: '16px 20px', borderBottom: '1px solid #e2e8f0' },
