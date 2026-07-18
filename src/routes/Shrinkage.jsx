@@ -8,6 +8,7 @@
 //   4. Shrinkage  — bought − sold − counted variance
 // Only Increment 1 (the import) is wired today; 2–4 land on this same view.
 import CafeProductMixImport from '@/components/CafeProductMixImport'
+import ItemMapUnmapped from '@/components/ItemMapUnmapped'
 
 export default function Shrinkage() {
   const S = STYLES
@@ -35,8 +36,18 @@ export default function Shrinkage() {
           slug merges) and only writes on confirm.
         </p>
         <p style={S.next}>
-          Increments 2–4 (item mapping, unit normalization, the shrinkage variance) build out here.
+          Increments 3–4 (unit normalization, the shrinkage variance) build out here.
         </p>
+      </div>
+
+      <div style={S.card}>
+        <div style={S.step}>Increment 2 · Item map</div>
+        <p style={S.body}>
+          Sold items and purchase lines auto-map by name/code — no approval queue. What
+          didn't auto-map lands here, ranked by sales volume so you map the items that
+          matter first. Coverage tells you when the tail goes optional.
+        </p>
+        <ItemMapUnmapped />
       </div>
     </div>
   )
