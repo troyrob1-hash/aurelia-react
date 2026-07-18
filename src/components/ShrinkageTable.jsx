@@ -10,6 +10,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import { Search, AlertTriangle } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
+import SubCafeBar from '@/components/ui/SubCafePrompt'
 import { usePeriod } from '@/store/PeriodContext'
 import { db } from '@/lib/firebase'
 import { doc, getDoc, getDocs, collection } from 'firebase/firestore'
@@ -23,7 +24,7 @@ const fmt$ = (v) => v == null ? '—' : '$' + (Number(v) || 0).toLocaleString('e
 export default function ShrinkageTable() {
   const { user } = useAuthStore()
   const orgId = user?.tenantId
-  const { selectedLocation } = useLocations()
+  const { selectedLocation, isParentLocation, getParentName } = useLocations()
   const { periodKey } = usePeriod()
   const [loading, setLoading] = useState(true)
   const [rows, setRows] = useState([])
@@ -138,6 +139,20 @@ export default function ShrinkageTable() {
           <div style={S.sub}>{cleanLocName(location)} · {periodKey}</div>
         </div>
       </div>
+
+      {/* Sub-café drill-down (same as Inventory/Purchasing/etc.): a parent campus surfaces
+          its cafés; picking one scopes the variance to that café's locId — where the
+          salesItems + inventory data actually live. */}
+      {isParentLocation?.(selectedLocation) && (
+        <div style={{ marginBottom: 16 }}>
+          <SubCafeBar parentName={selectedLocation} activeSubCafe={null} />
+        </div>
+      )}
+      {getParentName?.(selectedLocation) && (
+        <div style={{ marginBottom: 16 }}>
+          <SubCafeBar parentName={getParentName(selectedLocation)} activeSubCafe={selectedLocation} />
+        </div>
+      )}
 
       {/* KPI cards */}
       <div style={S.kpis}>
