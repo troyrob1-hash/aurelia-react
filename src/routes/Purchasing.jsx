@@ -6,6 +6,7 @@ import { useToast } from '@/components/ui/Toast'
 import AllLocationsGrid from '@/components/AllLocationsGrid'
 import { usePeriod, dateToKey } from '@/store/PeriodContext'
 import { readPeriodClose, writePnL, locId, weeksInPeriod, toPnlLine, GL_NUMERIC_TO_PNL } from '@/lib/pnl'
+import { INVOICE_LINES_PROMPT, processInvoice } from '@/lib/parseInvoiceLines'
 import { db, storage } from '@/lib/firebase'
 import {
   collection, query, orderBy, getDocs, addDoc, updateDoc,
@@ -605,8 +606,11 @@ export default function Purchasing() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            model: 'claude-sonnet-4-20250514',
-            max_tokens: 2000,
+            // Vendor-robust line-item extraction (itemCode/upc/pack/eaches) + full GL
+            // classification. max_tokens raised for the richer per-line schema (a 29-line
+            // Sysco invoice overruns 2000). Model updated off the deprecated pin.
+            model: 'claude-sonnet-4-6',
+            max_tokens: 8000,
             messages: [{
               role: 'user',
               content: [
@@ -616,7 +620,7 @@ export default function Purchasing() {
                 },
                 {
                   type: 'text',
-                  text: 'Extract invoice data from this PDF. Also classify the expense into one GL code based on what is being purchased. GL codes: cogs_equipment (equipment, hardware, scanners, machines), cogs_supplies (general supplies), cogs_cleaning (cleaning products, chemicals), cogs_paper (paper products, consumables, packaging), cogs_maintenance (repairs, maintenance), exp_technology (software, IT services), exp_office_supplies (office supplies, stationery), exp_professional (professional services, consulting), exp_facilities (facilities, rent, utilities), exp_travel (travel, meals, entertainment), exp_mktg_marketing (marketing, advertising), exp_other (anything else). Return ONLY valid JSON with no other text, no backticks, no markdown. Format: {"vendor":"vendor name","invoiceNumber":"inv number or empty string","invoiceDate":"YYYY-MM-DD or empty string","dueDate":"YYYY-MM-DD or empty string","glCode":"best matching GL code or empty string","glConfidence":"high or low","lineItems":[{"description":"item description","quantity":1,"unitPrice":10.00,"total":10.00}],"subtotal":0,"tax":0,"total":0}'
+                  text: INVOICE_LINES_PROMPT,
                 }
               ]
             }],
@@ -637,6 +641,11 @@ export default function Purchasing() {
           toast.error('Could not parse invoice — try a clearer PDF')
           return
         }
+
+        // Enrich the parsed lines: recompute eaches, apply the pack/code disambiguation
+        // rules, and validate Σtotal→subtotal + Σeaches→checksum. Pure — no money-path
+        // impact; the invoice AMOUNT below still comes straight from parsed.total.
+        const { vendor: vendorKey, lines: enrichedLines, validation: parseValidation } = processInvoice(parsed)
 
         // Create invoice from parsed data
         // Map to the same field names the invoice list expects
@@ -662,17 +671,31 @@ export default function Purchasing() {
           invoiceNum: parsed.invoiceNumber || '',
           invoiceDate: invDate,
           dueDate: parsed.dueDate || '',
-          amount: parsed.total || 0,
+          amount: parsed.total || 0,          // UNCHANGED money path — grand total → cogs_purchases
           amountPaid: 0,
           glCode: aiGlCode,
           glConfidence,
           needsGlReview,
-          lineItems: (parsed.lineItems || []).map(li => ({
-            description: li.description || '',
-            quantity: li.quantity || 1,
-            unitPrice: li.unitPrice || 0,
-            total: li.total || 0,
+          // Richer line schema (ADDITIVE): the old { description, quantity, unitPrice,
+          // total } are preserved (quantity = casesOrdered) so existing consumers +
+          // invoiceAmount's Σ(lineItems.total) fallback keep working; the new fields
+          // (itemCode/upc/pack/eaches) ride alongside for the shrinkage +Purchased feed.
+          lineItems: enrichedLines.map(l => ({
+            description: l.description || '',
+            quantity: l.casesOrdered ?? 1,
+            unitPrice: l.unitPrice || 0,
+            total: l.total || 0,
+            itemCode: l.itemCode || '',
+            upc: l.upc || '',
+            casesOrdered: l.casesOrdered,
+            packCount: l.packCount,
+            eachesPerCase: l.eachesPerCase,
+            eachesTotal: l.eachesTotal,
+            size: l.size || '',
+            warnings: l.warnings || [],
           })),
+          vendorKey,                          // normalized vendor for the (vendor,itemCode) mapping key
+          parseValidation,                    // { subtotalOk, eachesOk, linesPackUnresolved, linesCodeUnresolved }
           subtotal: parsed.subtotal || 0,
           tax: parsed.tax || 0,
           status: 'Pending',
@@ -690,7 +713,7 @@ export default function Purchasing() {
           const ref = await addDoc(collection(db, 'tenants', orgId, 'invoices'), { ...fields, createdBy: user?.name || user?.email || 'unknown', createdAt: serverTimestamp() })
           invId = ref.id
         }
-        const newInv = { id: invId, ...fields, status: needsGlReview ? 'Needs GL Review' : 'Pending', lineItems: parsed.lineItems || [] }
+        const newInv = { id: invId, ...fields, status: needsGlReview ? 'Needs GL Review' : 'Pending' }  // fields already carries the enriched lineItems
         setInvoices(prev => dupe ? prev.map(i => i.id === invId ? { ...i, ...newInv } : i) : [newInv, ...prev])
         // Re-derive from all invoices in the period (never SET one amount to a named line).
         if (parsed.total) {

@@ -55,11 +55,18 @@ Also return invoice-level fields:
 - netConsumerQty: if the invoice prints a total consumer/each quantity checksum
   (e.g. Reyes category subtotals like "3/72" summing to a net each count), return that
   total each-count; else null.
-- glCode: best GL from {cogs_food, cogs_supplies, cogs_paper, cogs_cleaning} for a
-  distributor food/supply invoice (most distributor lines are cogs_food).
+- glCode: classify the WHOLE invoice into ONE GL code based on what's purchased:
+  cogs_food (food/beverage/snacks — most distributor invoices), cogs_supplies (general
+  supplies), cogs_cleaning (cleaning products/chemicals), cogs_paper (paper/consumables/
+  packaging), cogs_equipment (equipment, hardware, scanners, machines), cogs_maintenance
+  (repairs, maintenance), exp_technology (software, IT), exp_office_supplies, exp_professional
+  (professional/consulting), exp_facilities (facilities/rent/utilities), exp_travel,
+  exp_mktg_marketing, exp_other (anything else). Empty string if unsure.
+- glConfidence: "high" or "low".
+- dueDate: YYYY-MM-DD or "".
 
 Return ONLY valid JSON, no markdown, no backticks:
-{"vendor":"","invoiceNumber":"","invoiceDate":"","subtotal":0,"tax":0,"total":0,"netConsumerQty":null,"glCode":"","lineItems":[{"itemCode":"","upc":"","casesOrdered":0,"packCount":null,"eachesPerCase":null,"size":"","description":"","unitPrice":0,"total":0,"warnings":[]}]}`
+{"vendor":"","invoiceNumber":"","invoiceDate":"","dueDate":"","subtotal":0,"tax":0,"total":0,"netConsumerQty":null,"glCode":"","glConfidence":"low","lineItems":[{"itemCode":"","upc":"","casesOrdered":0,"packCount":null,"eachesPerCase":null,"size":"","description":"","unitPrice":0,"total":0,"warnings":[]}]}`
 
 // ── Vendor normalization ──────────────────────────────────────────────────────
 const VENDOR_ALIASES = [
