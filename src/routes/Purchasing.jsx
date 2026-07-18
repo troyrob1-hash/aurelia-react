@@ -60,7 +60,7 @@ const STATUS_META = {
 // (pnl.js GL_NUMERIC_TO_PNL values: cogs_cleaning/paper/equipment/ec_barista/
 // supplies/uniforms/maintenance). These are the ONLY lines the recompute writes and
 // zeroes. Every OTHER named line is owned by a DIFFERENT module and must NEVER be
-// written here — cogs_shrinkage (WasteLog), cogs_retail_* (retail), cogs_onsite_labor
+// written here — cogs_shrinkage (ShrinkageTable), cogs_retail_* (retail), cogs_onsite_labor
 // / cogs_3rd_party (Labor / writeLaborPnL). An invoice not targeting an owned line
 // flattens into cogs_purchases (money conserved, no cross-module clobber).
 const PURCHASING_OWNED_LINES = new Set(Object.values(GL_NUMERIC_TO_PNL))

@@ -6,14 +6,14 @@
 // Look mirrors the /waste "Shrinkage Analysis" table (KPI cards + full-column table +
 // search/sort). Honest cells: a missing feed shows "—" and the row is flagged incomplete.
 
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { Search, AlertTriangle } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { usePeriod } from '@/store/PeriodContext'
 import { db } from '@/lib/firebase'
 import { doc, getDoc, getDocs, collection } from 'firebase/firestore'
-import { locId, getPriorKey } from '@/lib/pnl'
+import { locId, getPriorKey, writePnL } from '@/lib/pnl'
 import { loadMappings } from '@/lib/itemMap'
 import { computeShrinkageRows, shrinkageKpis } from '@/lib/shrinkage'
 
@@ -98,6 +98,27 @@ export default function ShrinkageTable() {
   }, [orgId, location, periodKey, scoped])
 
   const kpis = useMemo(() => shrinkageKpis(rows), [rows])
+
+  // ── The ONE canonical cogs_shrinkage → P&L writer. ────────────────────────────
+  // Posts ONLY the honest total (kpis.totalLoss — complete rows only, the empty-count-
+  // fixed number), NEVER the fake-zero-inflated total. Guarded three ways:
+  //   1. writes nothing unless ≥1 row is COMPLETE (an all-incomplete table = no counts
+  //      yet → posts nothing; never zeroes or posts a phantom 0 over an existing value);
+  //   2. writes only when that total actually CHANGES for this loc/period (lastPosted ref);
+  //   3. best-effort — a locked period is swallowed, never breaks the view.
+  // A genuinely zero-shrinkage but fully-counted period (completeCount ≥ 1, total 0) DOES
+  // post 0 — that's real, not a phantom. Only "no complete rows" writes nothing.
+  const lastPosted = useRef('')
+  useEffect(() => {
+    if (!scoped || !periodKey || !orgId) return
+    if (kpis.completeCount < 1) return                       // no real data → write nothing
+    const rounded = Math.round(kpis.totalLoss * 100) / 100
+    const key = `${location}__${periodKey}__${rounded}`
+    if (lastPosted.current === key) return                   // unchanged → skip redundant write
+    lastPosted.current = key
+    writePnL(location, periodKey, { cogs_shrinkage: rounded }).catch(() => {})
+  }, [kpis.totalLoss, kpis.completeCount, location, periodKey, scoped, orgId])
+
   const filtered = useMemo(() => {
     let r = rows
     if (search) { const s = search.toLowerCase(); r = r.filter((x) => x.name?.toLowerCase().includes(s)) }
