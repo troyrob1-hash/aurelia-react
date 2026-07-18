@@ -23,7 +23,7 @@ import {
   loadMappings, writeMapping, newMappingDoc, setCafeUse, canonicalIdFor, purchaseKeyId,
 } from '@/lib/itemMap'
 
-export default function ItemMapUnmapped() {
+export default function ItemMapUnmapped({ onCount } = {}) {
   const { user } = useAuthStore()
   const orgId = user?.tenantId
   const { visibleLocations } = useLocations()
@@ -125,6 +125,10 @@ export default function ItemMapUnmapped() {
         const fz = fuzzyBest(g.description, candidates)
         return { ...g, proposal: fz.match ? { name: fz.match.name, id: fz.match.id, score: fz.score } : null, variantRisk: fz.variantRisk }
       }), [purchaseUnmapped, candidates])
+
+  // Report the "needs review" count (unmapped sold items + unmapped purchase codes) so a
+  // host can badge it — e.g. the "Mapping (N need review)" link on the Shrinkage page.
+  useEffect(() => { onCount?.(ranked.length + rankedPurchase.length) }, [ranked.length, rankedPurchase.length, onCount])
 
   async function mapTo(item, canonicalName, catalogItemId) {
     setBusyId(item.name)
