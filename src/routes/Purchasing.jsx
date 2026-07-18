@@ -7,6 +7,7 @@ import AllLocationsGrid from '@/components/AllLocationsGrid'
 import { usePeriod, dateToKey } from '@/store/PeriodContext'
 import { readPeriodClose, writePnL, locId, weeksInPeriod, toPnlLine, GL_NUMERIC_TO_PNL } from '@/lib/pnl'
 import { INVOICE_LINES_PROMPT, processInvoice } from '@/lib/parseInvoiceLines'
+import { resolvePurchaseLines } from '@/lib/itemMap'
 import { db, storage } from '@/lib/firebase'
 import {
   collection, query, orderBy, getDocs, addDoc, updateDoc,
@@ -647,6 +648,21 @@ export default function Purchasing() {
         // impact; the invoice AMOUNT below still comes straight from parsed.total.
         const { vendor: vendorKey, lines: enrichedLines, validation: parseValidation } = processInvoice(parsed)
 
+        // Purchased-side auto-map (code-first): resolve each parsed line against the
+        // itemMap by (vendorKey, itemCode)/upc. Known codes → canonicalId attached (feeds
+        // shrinkage's +Purchased). New codes → canonicalId null = flagged for the unmapped
+        // list (the list derives from lines with no canonicalId — no separate collection).
+        // Best-effort: a resolve failure (e.g. index rules not yet deployed) leaves lines
+        // unresolved and NEVER blocks the invoice write. Money path untouched below.
+        let resolvedLines = enrichedLines.map(l => ({ ...l, canonicalId: null }))
+        try {
+          resolvedLines = await resolvePurchaseLines(orgId, vendorKey, enrichedLines)
+        } catch (resolveErr) {
+          console.warn('purchase-line resolve failed (lines stored unresolved):', resolveErr)
+        }
+        const resolvedCount = resolvedLines.filter(l => l.canonicalId).length
+        const newCodeCount = resolvedLines.filter(l => !l.canonicalId && (l.itemCode || l.upc)).length
+
         // Create invoice from parsed data
         // Map to the same field names the invoice list expects
         const vendorMatch = vendors.find(v => v.label?.toLowerCase().includes((parsed.vendor || '').toLowerCase()))
@@ -680,7 +696,7 @@ export default function Purchasing() {
           // total } are preserved (quantity = casesOrdered) so existing consumers +
           // invoiceAmount's Σ(lineItems.total) fallback keep working; the new fields
           // (itemCode/upc/pack/eaches) ride alongside for the shrinkage +Purchased feed.
-          lineItems: enrichedLines.map(l => ({
+          lineItems: resolvedLines.map(l => ({
             description: l.description || '',
             quantity: l.casesOrdered ?? 1,
             unitPrice: l.unitPrice || 0,
@@ -693,6 +709,7 @@ export default function Purchasing() {
             eachesTotal: l.eachesTotal,
             size: l.size || '',
             warnings: l.warnings || [],
+            canonicalId: l.canonicalId || null,   // code-first resolve; null = unmapped (surfaced in the list)
           })),
           vendorKey,                          // normalized vendor for the (vendor,itemCode) mapping key
           parseValidation,                    // { subtotalOk, eachesOk, linesPackUnresolved, linesCodeUnresolved }
@@ -720,7 +737,8 @@ export default function Purchasing() {
           await recomputePurchasingTotalsForPeriod(invLoc, targetPer, [newInv])
         }
         const glLabel = aiGlCode ? aiGlCode.replace('cogs_', '').replace('exp_', '').replace(/_/g, ' ') : 'unclassified'
-        toast.success('Invoice parsed: ' + (parsed.vendor || 'Unknown') + ' — $' + (parsed.total || 0).toLocaleString() + (needsGlReview ? ' (needs GL review)' : ' → ' + glLabel) + (aiGlCode ? ' — posted to P&L' : ''))
+        const mapSummary = resolvedLines.length ? ` · ${resolvedCount}/${resolvedLines.length} lines mapped${newCodeCount ? `, ${newCodeCount} new code(s) to review` : ''}` : ''
+        toast.success('Invoice parsed: ' + (parsed.vendor || 'Unknown') + ' — $' + (parsed.total || 0).toLocaleString() + (needsGlReview ? ' (needs GL review)' : ' → ' + glLabel) + (aiGlCode ? ' — posted to P&L' : '') + mapSummary)
         return
       }
 

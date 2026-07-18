@@ -10,14 +10,14 @@
 // Partial mapping is the normal state — unmapped items simply don't show shrinkage yet.
 
 import { useState, useEffect, useMemo } from 'react'
-import { CheckCircle2, Coffee, ChevronRight } from 'lucide-react'
+import { CheckCircle2, Coffee, ChevronRight, Package } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
 import { useToast } from '@/components/ui/Toast'
 import { db } from '@/lib/firebase'
 import { collectionGroup, getDocs, collection } from 'firebase/firestore'
 import {
   rankUnmappedByVolume, coverageStats, fuzzyBest, classifyMatch, itemTokens, brandOf,
-  loadMappings, writeMapping, newMappingDoc, setCafeUse, canonicalIdFor,
+  loadMappings, writeMapping, newMappingDoc, setCafeUse, canonicalIdFor, purchaseKeyId,
 } from '@/lib/itemMap'
 
 export default function ItemMapUnmapped() {
@@ -26,6 +26,7 @@ export default function ItemMapUnmapped() {
   const toast = useToast()
   const [loading, setLoading] = useState(true)
   const [soldTotals, setSoldTotals] = useState([])   // [{ name, qtySold }]
+  const [purchaseUnmapped, setPurchaseUnmapped] = useState([])  // [{ key, vendor, itemCode, upc, description, spend, eaches }]
   const [mappings, setMappings] = useState([])
   const [catalog, setCatalog] = useState([])         // fuzzy candidates
   const [busyId, setBusyId] = useState(null)
@@ -41,6 +42,28 @@ export default function ItemMapUnmapped() {
       byName[x.itemName] = (byName[x.itemName] || 0) + (Number(x.qtySold) || 0)
     })
     setSoldTotals(Object.entries(byName).map(([name, qtySold]) => ({ name, qtySold })))
+
+    // Purchase-side unmapped = invoice lines with canonicalId:null (read-time derived,
+    // so a code mapped later drops out here on next load without any backfill). Group by
+    // stable code so repeats across invoices sum into one row; rank by spend.
+    const invSnap = await getDocs(collection(db, 'tenants', orgId, 'invoices'))
+    const byKey = {}
+    invSnap.forEach((d) => {
+      const inv = d.data()
+      const vendorKey = inv.vendorKey || (inv.vendor || '').toLowerCase().replace(/[^a-z0-9]+/g, '_')
+      for (const l of inv.lineItems || []) {
+        if (l.canonicalId) continue                       // already resolved
+        const code = String(l.itemCode || '').trim(), upc = String(l.upc || '').trim()
+        if (!code && !upc) continue                       // code-unresolved lines have no stable key → skip here
+        const key = upc ? `upc__${upc}` : purchaseKeyId(vendorKey, code)
+        const g = byKey[key] || (byKey[key] = { key, vendor: vendorKey, itemCode: code, upc, description: l.description || '', spend: 0, eaches: 0 })
+        g.spend += Number(l.total) || 0
+        g.eaches += Number(l.eachesTotal) || 0
+        if (!g.description && l.description) g.description = l.description
+      }
+    })
+    setPurchaseUnmapped(Object.values(byKey))
+
     setMappings(await loadMappings(orgId))
     const catSnap = await getDocs(collection(db, 'tenants', orgId, 'inventoryCatalog'))
     setCatalog(catSnap.docs.map((d) => { const x = d.data(); const nm = x.name || x.itemName || d.id; return { id: d.id, name: nm, _tokens: itemTokens(nm), _brand: brandOf(nm) } }))
@@ -75,6 +98,16 @@ export default function ItemMapUnmapped() {
     rankUnmappedByVolume(soldTotals), mappedNames
   ), [soldTotals, mappedNames])
 
+  // Purchase codes to map — ranked by spend (desc), each with a fuzzy suggestion on its
+  // distributor description (same tap-to-confirm pattern as the sold side).
+  const rankedPurchase = useMemo(() =>
+    purchaseUnmapped
+      .slice().sort((a, b) => b.spend - a.spend)
+      .map((g) => {
+        const fz = fuzzyBest(g.description, candidates)
+        return { ...g, proposal: fz.match ? { name: fz.match.name, id: fz.match.id, score: fz.score } : null, variantRisk: fz.variantRisk }
+      }), [purchaseUnmapped, candidates])
+
   async function mapTo(item, canonicalName, catalogItemId) {
     setBusyId(item.name)
     try {
@@ -96,6 +129,36 @@ export default function ItemMapUnmapped() {
       const m = newMappingDoc({ canonicalName: item.name, soldAliases: [item.name], status: 'cafe_use', source: 'manual', createdBy: user?.email || 'unknown' })
       await writeMapping(orgId, m, user?.email || 'unknown')
       toast.success(`"${item.name.slice(0, 28)}" marked café-use — excluded from shrinkage`)
+      await load()
+    } catch (e) { toast.error(e.message) }
+    setBusyId(null)
+  }
+
+  // Map a purchase code → a canonical item. Attaches { vendor, itemCode, upc } to the
+  // canonical's purchaseKeys, which writeMapping indexes into purchaseKeyIndex — so this
+  // (and every future invoice line with that code) auto-resolves from now on.
+  async function mapPurchaseTo(group, canonicalName, catalogItemId) {
+    setBusyId(group.key)
+    try {
+      const existing = mappings.find((m) => m.canonicalName === canonicalName)
+      const pk = { vendor: group.vendor, itemCode: group.itemCode || null, upc: group.upc || null }
+      const mapping = existing
+        ? { ...existing, purchaseKeys: [...(existing.purchaseKeys || []), pk] }
+        : newMappingDoc({ canonicalName, catalogItemId: catalogItemId || null, purchaseKeys: [pk], source: 'manual', createdBy: user?.email || 'unknown' })
+      await writeMapping(orgId, mapping, user?.email || 'unknown')
+      toast.success(`Mapped ${group.vendor} ${group.itemCode || group.upc} → ${canonicalName.slice(0, 26)}`)
+      await load()
+    } catch (e) { toast.error(e.message) }
+    setBusyId(null)
+  }
+  async function markPurchaseCafe(group) {
+    setBusyId(group.key)
+    try {
+      const nm = group.description || `${group.vendor} ${group.itemCode || group.upc}`
+      const pk = { vendor: group.vendor, itemCode: group.itemCode || null, upc: group.upc || null }
+      const m = newMappingDoc({ canonicalName: nm, purchaseKeys: [pk], status: 'cafe_use', source: 'manual', createdBy: user?.email || 'unknown' })
+      await writeMapping(orgId, m, user?.email || 'unknown')
+      toast.success(`${group.vendor} ${group.itemCode || group.upc} marked café-use — COGS only`)
       await load()
     } catch (e) { toast.error(e.message) }
     setBusyId(null)
@@ -157,6 +220,44 @@ export default function ItemMapUnmapped() {
         </div>
       ))}
       {ranked.length > 120 && <div style={S.muted}>+ {ranked.length - 120} more (lower volume — map later or leave)</div>}
+
+      {/* Purchase-side unmapped — the destination for the import's "N new codes to review" */}
+      {rankedPurchase.length > 0 && (
+        <>
+          <div style={{ ...S.listHead, marginTop: 22, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Package size={13} /> Purchase codes to map — highest spend first ({rankedPurchase.length})
+          </div>
+          {rankedPurchase.slice(0, 80).map((g) => (
+            <div key={g.key} style={S.row}>
+              <div style={S.spend} title="spend across invoices">${g.spend.toFixed(0)}</div>
+              <div style={S.name}>
+                {g.description || '(no description)'}
+                <span style={S.cum}> · {g.vendor} {g.itemCode || g.upc}{g.eaches ? ` · ${g.eaches} eaches` : ''}</span>
+              </div>
+              <div style={S.actions}>
+                {g.proposal ? (
+                  <button
+                    style={{ ...S.mapBtn, ...(g.variantRisk ? S.mapBtnRisk : {}) }}
+                    disabled={busyId === g.key}
+                    onClick={() => mapPurchaseTo(g, g.proposal.name, g.proposal.id)}
+                    title={g.variantRisk ? 'Possible variant mismatch — confirm carefully' : 'Tap to confirm — this code auto-resolves on every future invoice'}
+                  >
+                    {g.variantRisk ? 'map to? ' : 'map → '}<b>{String(g.proposal.name).slice(0, 26)}</b>
+                    {g.variantRisk && <span style={S.riskTag}>variant?</span>}
+                    <ChevronRight size={13} />
+                  </button>
+                ) : (
+                  <span style={S.noProp}>no suggestion — search to map</span>
+                )}
+                <button style={S.cafeBtn} disabled={busyId === g.key} onClick={() => markPurchaseCafe(g)} title="Café-use / supply — keep in COGS, exclude from shrinkage">
+                  <Coffee size={13} /> café-use
+                </button>
+              </div>
+            </div>
+          ))}
+          {rankedPurchase.length > 80 && <div style={S.muted}>+ {rankedPurchase.length - 80} more (lower spend)</div>}
+        </>
+      )}
     </div>
   )
 }
@@ -176,6 +277,7 @@ const STYLES = {
   row: { display: 'flex', alignItems: 'center', gap: 10, padding: '7px 8px', borderBottom: '1px solid #f1f5f9' },
   rank: { width: 26, fontSize: 11, color: '#94a3b8', textAlign: 'right' },
   qty: { width: 44, fontSize: 13, fontWeight: 700, color: '#0f172a', textAlign: 'right', fontVariantNumeric: 'tabular-nums' },
+  spend: { width: 54, fontSize: 13, fontWeight: 700, color: '#0f766e', textAlign: 'right', fontVariantNumeric: 'tabular-nums' },
   name: { flex: 1, fontSize: 13, color: '#334155', minWidth: 0 },
   cum: { fontSize: 11, color: '#cbd5e1' },
   actions: { display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 },
