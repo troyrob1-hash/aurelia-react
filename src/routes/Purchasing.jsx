@@ -292,7 +292,6 @@ export default function Purchasing() {
   const [search,        setSearch]        = useState('')
   const [filterStatus,  setFilterStatus]  = useState('')
   const [filterVendor,  setFilterVendor]  = useState('')
-  const [filterPeriod,  setFilterPeriod]  = useState('all')
   const [view,          setView]          = useState('list')  // 'list' | 'kanban'
   const [expandVendor,  setExpandVendor]  = useState({})
   const [dupWarning,    setDupWarning]    = useState(null)
@@ -1201,12 +1200,15 @@ export default function Purchasing() {
   const filtered = useMemo(() => invoices.filter(i => {
     if (filterStatus && i.status !== filterStatus) return false
     if (filterVendor && i.vendorId !== filterVendor && i.vendor !== filterVendor) return false
-    if (filterPeriod !== 'all' && i.periodKey !== filterPeriod) return false
+    // The top period selector is the single control for what period you're viewing — the
+    // list shows that period's invoices. EXCEPTION: an active search spans ALL periods,
+    // so you can find an old invoice by #/vendor/GL/PO without changing the period.
+    if (!search && i.periodKey !== periodKey) return false
     if (search && !i.invoiceNum?.toLowerCase().includes(search.toLowerCase()) &&
         !i.vendor?.toLowerCase().includes(search.toLowerCase()) &&
         !i.glCode?.includes(search) && !i.poNumber?.includes(search)) return false
     return true
-  }), [invoices, filterStatus, filterVendor, filterPeriod, search])
+  }), [invoices, filterStatus, filterVendor, search, periodKey])
 
   const aging = useMemo(() => {
     const b = { current: 0, '1-30': 0, '31-60': 0, '61-90': 0, '90+': 0 }
@@ -1246,11 +1248,6 @@ export default function Purchasing() {
     return cols
   }, [filtered])
 
-  // Unique periods for filter
-  const periods = useMemo(() => {
-    const ps = new Set(invoices.map(i => i.periodKey).filter(Boolean))
-    return Array.from(ps).sort().reverse().slice(0, 8)
-  }, [invoices])
 
   if (!selectedLocation || selectedLocation === 'all') return (
     <AllLocationsGrid
@@ -1564,10 +1561,8 @@ export default function Purchasing() {
           <option value="">All Vendors</option>
           {vendors.map(v => <option key={v.id} value={v.id}>{v.label}</option>)}
         </select>
-        <select value={filterPeriod} onChange={e => setFilterPeriod(e.target.value)} className={styles.filter}>
-          <option value="all">All Periods</option>
-          {periods.map(p => <option key={p} value={p}>{p}</option>)}
-        </select>
+        {/* No period dropdown — the top-of-page period selector is the single control.
+            Search (below) spans all periods to find an old invoice. */}
       </div>
 
       {/* ── Bulk action bar ── */}
