@@ -19,6 +19,7 @@ import { X, Upload, CheckCircle, AlertTriangle } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
 import { useToast } from '@/components/ui/Toast'
 import { parseCafeProductMix, writeSalesItems } from '@/lib/parseCafeProductMix'
+import { autoMapSoldItems } from '@/lib/itemMap'
 
 const ACCEPTED = /\.(xlsx|xls|csv)$/i   // the export formats Tableau produces
 
@@ -111,8 +112,19 @@ export default function CafeProductMixImport({ onImported }) {
         importedBy: user?.email || user?.name || 'unknown',
         sourceFile: preview.fileName,
       })
+      // Auto-map the sold items (Increment 2): high-confidence names map silently; the
+      // rest land in the volume-ranked unmapped list. Best-effort — a mapping hiccup
+      // must not fail the sold import (the feed already landed above).
+      let mapMsg = ''
+      try {
+        const soldNames = preview.parsed.items.map((r) => r.itemName)
+        const { autoMapped, unmapped } = await autoMapSoldItems(orgId, soldNames, user?.email || 'unknown')
+        mapMsg = ` · auto-mapped ${autoMapped}, ${unmapped} to review`
+      } catch (mapErr) {
+        console.warn('auto-map after sold import failed (feed still landed):', mapErr)
+      }
       close()
-      toast.success(`Sold feed imported — ${wrote} item·period doc(s)${collisions ? ` · ${collisions} slug merge(s) logged` : ''}`)
+      toast.success(`Sold feed imported — ${wrote} item·period doc(s)${collisions ? ` · ${collisions} slug merge(s) logged` : ''}${mapMsg}`)
       onImported?.()
     } catch (err) {
       console.error('salesItems write failed', err)

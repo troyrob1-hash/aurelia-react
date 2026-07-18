@@ -224,3 +224,47 @@ export async function loadMappings(orgId) {
   const snap = await getDocs(collection(db, 'tenants', orgId, 'itemMap'))
   return snap.docs.map((d) => ({ id: d.id, ...d.data() }))
 }
+
+// ── Import-time orchestration ─────────────────────────────────────────────────
+// SOLD side (called after the Cafe Product Mix import writes salesItems): fuzzy the
+// distinct sold names against candidates (catalog + existing canonicals) and AUTO-MAP
+// the high-confidence non-variant matches. Proposals + no-matches are left for the
+// volume-ranked unmapped list — never guessed. Returns counts for the import toast.
+export async function autoMapSoldItems(orgId, soldNames, actor = 'unknown') {
+  const mappings = await loadMappings(orgId)
+  const alreadyMapped = new Set()
+  for (const m of mappings) for (const a of m.soldAliases || []) alreadyMapped.add(a)
+
+  const catSnap = await getDocs(collection(db, 'tenants', orgId, 'inventoryCatalog'))
+  const candidates = [
+    ...catSnap.docs.map((d) => { const x = d.data(); const nm = x.name || x.itemName || d.id; return { id: d.id, name: nm, _tokens: itemTokens(nm), _brand: brandOf(nm) } }),
+    ...mappings.map((m) => ({ id: m.canonicalId, name: m.canonicalName, _tokens: itemTokens(m.canonicalName), _brand: brandOf(m.canonicalName), _canonical: true })),
+  ]
+
+  const items = [...new Set(soldNames)].map((name) => ({ name }))
+  const { auto, proposals, unmapped } = planAutoMap(items, candidates, { alreadyMapped })
+
+  const byCanonical = new Map(mappings.map((m) => [m.canonicalName, m]))
+  for (const row of auto) {
+    const existing = byCanonical.get(row.match.name)
+    const mapping = existing
+      ? { ...existing, soldAliases: [...new Set([...(existing.soldAliases || []), row.name])] }
+      : newMappingDoc({ canonicalName: row.match.name, catalogItemId: row.match._canonical ? null : row.match.id, soldAliases: [row.name], source: 'auto', confidence: row.score, createdBy: actor })
+    await writeMapping(orgId, mapping, actor)
+    byCanonical.set(row.match.name, mapping)
+  }
+  return { autoMapped: auto.length, proposals: proposals.length, unmapped: unmapped.length }
+}
+
+// PURCHASED side (called during invoice import, per line): code-first resolve. Returns
+// each line tagged with its canonicalId (or null → falls to the unmapped list). NOTE:
+// requires the line to carry { vendor, itemCode, upc } — i.e. the parseInvoiceLines
+// schema, so this activates once that parser is wired into the invoice importer.
+export async function resolvePurchaseLines(orgId, vendor, lines) {
+  const out = []
+  for (const l of lines) {
+    const canonicalId = await resolvePurchaseKey(orgId, { vendor, itemCode: l.itemCode, upc: l.upc })
+    out.push({ ...l, canonicalId, resolved: !!canonicalId })
+  }
+  return out
+}
