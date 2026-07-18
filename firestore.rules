@@ -148,6 +148,23 @@ service cloud.firestore {
         allow write: if ownsTenant(tenantId) && isManager();
       }
 
+      // ITEM MAP (shrinkage Increment 2) — canonical item identities linking sold ↔
+      // counted ↔ purchased, plus the two denormalized resolve indexes. Manager-facing
+      // (auto-mapped on import, inline-corrected on the shrinkage table), read by anyone
+      // in the tenant. Same posture as salesItems / inventory counts.
+      match /itemMap/{canonicalId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isManager();
+      }
+      match /purchaseKeyIndex/{keyId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isManager();
+      }
+      match /soldAliasIndex/{aliasId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isManager();
+      }
+
       // Per-user cart drafts for OrderHub cross-device sync. Doc ID format
       // is '{userId}__{locationId}'. Users can read/write only their own drafts.
       match /orderDrafts/{draftId} {
