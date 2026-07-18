@@ -12,9 +12,12 @@
 import { useState, useEffect, useMemo } from 'react'
 import { CheckCircle2, Coffee, ChevronRight, Package } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
+import { useLocations } from '@/store/LocationContext'
+import { usePeriod } from '@/store/PeriodContext'
 import { useToast } from '@/components/ui/Toast'
 import { db } from '@/lib/firebase'
-import { collectionGroup, getDocs, collection } from 'firebase/firestore'
+import { getDocs, collection } from 'firebase/firestore'
+import { locId, getTrailingPeriodKeys } from '@/lib/pnl'
 import {
   rankUnmappedByVolume, coverageStats, fuzzyBest, classifyMatch, itemTokens, brandOf,
   loadMappings, writeMapping, newMappingDoc, setCafeUse, canonicalIdFor, purchaseKeyId,
@@ -23,6 +26,8 @@ import {
 export default function ItemMapUnmapped() {
   const { user } = useAuthStore()
   const orgId = user?.tenantId
+  const { visibleLocations } = useLocations()
+  const { periodKey } = usePeriod()
   const toast = useToast()
   const [loading, setLoading] = useState(true)
   const [soldTotals, setSoldTotals] = useState([])   // [{ name, qtySold }]
@@ -33,12 +38,23 @@ export default function ItemMapUnmapped() {
 
   async function load() {
     setLoading(true)
-    // Aggregate qtySold per sold item across the whole salesItems feed.
-    const itemsSnap = await getDocs(collectionGroup(db, 'items'))
+    // Aggregate qtySold per sold item from SCOPED salesItems reads — the user's visible
+    // locations × the trailing periods — instead of a collectionGroup('items') scan.
+    // Why: (1) collectionGroup needs a match /{path=**}/items rule (the permission error);
+    // (2) it over-broadly swept inventory-count 'items' too. Specific salesItems paths are
+    // permitted by the existing salesItems rule, and iterating locations keeps the
+    // tenant-wide ranking (the itemMap is shared — mapping an item covers every café).
+    const periods = getTrailingPeriodKeys(periodKey, 12)
+    const locIds = (visibleLocations || []).map((l) => locId(l.name))
+    const reads = []
+    for (const lid of locIds) for (const pk of periods) {
+      reads.push(getDocs(collection(db, 'tenants', orgId, 'salesItems', lid, 'periods', pk, 'items')))
+    }
     const byName = {}
-    itemsSnap.forEach((d) => {
+    const snaps = await Promise.all(reads)
+    for (const snap of snaps) snap.forEach((d) => {
       const x = d.data()
-      if (x.source !== 'cafe_product_mix' || !x.itemName) return
+      if (!x.itemName) return
       byName[x.itemName] = (byName[x.itemName] || 0) + (Number(x.qtySold) || 0)
     })
     setSoldTotals(Object.entries(byName).map(([name, qtySold]) => ({ name, qtySold })))
@@ -69,7 +85,9 @@ export default function ItemMapUnmapped() {
     setCatalog(catSnap.docs.map((d) => { const x = d.data(); const nm = x.name || x.itemName || d.id; return { id: d.id, name: nm, _tokens: itemTokens(nm), _brand: brandOf(nm) } }))
     setLoading(false)
   }
-  useEffect(() => { if (orgId) load() }, [orgId])   // eslint-disable-line
+  // Re-scope when the tenant, visible locations, or period change (the scoped reads
+  // depend on all three). visibleLocations arrives async from LocationContext.
+  useEffect(() => { if (orgId && periodKey) load() }, [orgId, periodKey, visibleLocations])   // eslint-disable-line
 
   // Names already mapped (any sold alias attached to a canonical).
   const mappedNames = useMemo(() => {
