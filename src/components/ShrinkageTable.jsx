@@ -18,7 +18,11 @@ import { locId, getPriorKey, writePnL } from '@/lib/pnl'
 import { loadMappings } from '@/lib/itemMap'
 import { computeShrinkageRows, shrinkageKpis } from '@/lib/shrinkage'
 
-const fmtN = (v) => v == null ? '—' : (Math.round(v * 10) / 10).toLocaleString('en-US')
+const fmtN = (v) => {
+  if (v == null) return '—'
+  const n = Math.round(v * 10) / 10
+  return (n === 0 ? 0 : n).toLocaleString('en-US')   // n === 0 also normalizes -0 → "0"
+}
 const fmt$ = (v) => v == null ? '—' : '$' + (Number(v) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
 export default function ShrinkageTable() {
@@ -209,8 +213,8 @@ export default function ShrinkageTable() {
                         {!r.complete && <div style={S.incomplete}>incomplete — missing {r.missing.join(', ')}</div>}
                       </td>
                       <td style={S.td}>{fmtN(r.opening)}</td>
-                      <td style={{ ...S.td, color: '#2563eb' }}>{r.purchased > 0 ? '+' + fmtN(r.purchased) : fmtN(r.purchased)}</td>
-                      <td style={{ ...S.td, color: r.sold != null ? '#7c3aed' : '#cbd5e1' }}>{r.sold != null ? '-' + fmtN(r.sold) : '—'}</td>
+                      <td style={{ ...S.td, color: '#2563eb' }}>{fmtN(r.purchased)}</td>
+                      <td style={{ ...S.td, color: r.sold != null ? '#7c3aed' : '#cbd5e1' }}>{r.sold != null ? fmtN(r.sold) : '—'}</td>
                       <td style={S.td}>{fmtN(r.expected)}</td>
                       <td style={{ ...S.td, fontWeight: 600, color: '#0f172a' }}>{fmtN(r.closing)}</td>
                       <td style={{ ...S.td, fontWeight: 600, color: r.shrinkage == null ? '#cbd5e1' : high ? '#dc2626' : neg ? '#2563eb' : '#059669' }}>{fmtN(r.shrinkage)}</td>
