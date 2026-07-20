@@ -598,11 +598,12 @@ export default function Purchasing() {
         })
 
         console.log('[PDF PARSE] Sending PDF to AI, base64 length:', base64.length)
-        // Always same-origin /api/claude — dev: Vite middleware; prod: netlify.toml 200
-        // rewrite → the Netlify claude function (same one AureliaChat uses). Same-origin =
-        // no CORS preflight. The old cross-origin Cloud Run URL failed CORS from
-        // aureliafms.com (its claudeProxy never emitted Access-Control-Allow-Origin).
-        const resp = await fetch('/api/claude', {
+        // Literal /.netlify/functions/claude — byte-identical to AureliaChat's proven path.
+        // Same-origin (no CORS/preflight): prod serves it natively; Vite dev intercepts it
+        // via the widened claude middleware. The /api/claude alias 404'd in prod (the
+        // shipped _redirects has a /* SPA catch-all and no /api/claude rule), and the old
+        // cross-origin Cloud Run URL failed CORS from aureliafms.com.
+        const resp = await fetch('/.netlify/functions/claude', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

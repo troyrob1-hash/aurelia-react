@@ -10,7 +10,11 @@ function claudeProxy() {
       apiKey = config.env?.VITE_ANTHROPIC_KEY || process.env.VITE_ANTHROPIC_KEY || ''
     },
     configureServer(server) {
-      server.middlewares.use('/api/claude', async (req, res) => {
+      // Proxy Claude calls in dev. Register on BOTH the /api/claude alias and the literal
+      // /.netlify/functions/claude path so the two callers work locally: Purchasing (PDF
+      // parse) and AureliaChat both hit /.netlify/functions/claude in prod; this makes that
+      // same path resolve in Vite dev too (prod serves it natively via the Netlify function).
+      const claudeHandler = async (req, res) => {
         if (req.method === 'OPTIONS') {
           res.writeHead(200)
           res.end()
@@ -37,7 +41,9 @@ function claudeProxy() {
             res.end(JSON.stringify({ error: err.message }))
           }
         })
-      })
+      }
+      server.middlewares.use('/api/claude', claudeHandler)
+      server.middlewares.use('/.netlify/functions/claude', claudeHandler)
     },
   }
 }
