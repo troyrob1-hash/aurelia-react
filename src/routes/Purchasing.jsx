@@ -416,9 +416,21 @@ export default function Purchasing() {
         location:   form.location || location || '',
       }
       if (editId) {
+        const prevInv = invoices.find(i => i.id === editId)   // capture pre-edit loc/period
         await updateDoc(doc(db, 'tenants', orgId, 'invoices', editId), entry)
         setInvoices(prev => prev.map(i => i.id === editId ? { ...i, ...entry } : i))
-        toast.success('Invoice updated')
+        // An edit can change amount / GL / status (incl. Void) / period / location — all
+        // of which move money in cogs_purchases + named lines. Recompute the NEW
+        // (location, period), and ALSO the OLD one when the invoice moved (period/location
+        // change) or was voided — the period it LEFT must re-derive without it. Without
+        // this, a void-via-Edit (or an amount edit) left cogs_purchases stale.
+        const newLoc = entry.location || location || selectedLocation
+        const newPer = entry.periodKey || periodKey
+        await recomputePurchasingTotalsForPeriod(newLoc, newPer, [{ id: editId, ...entry }])
+        if (prevInv && (prevInv.location !== newLoc || prevInv.periodKey !== newPer)) {
+          await recomputePurchasingTotalsForPeriod(prevInv.location || newLoc, prevInv.periodKey || newPer, [{ id: editId, ...entry }])
+        }
+        toast.success('Invoice updated — P&L updated')
       } else {
         // Number-based dedup at entry: if this invoice NUMBER already exists in the
         // same (location, period), REPLACE that doc instead of creating a duplicate.
@@ -568,6 +580,25 @@ export default function Purchasing() {
 
     setInvoices(prev => prev.map(i => i.id === id ? { ...i, status: 'Paid', amountPaid: i.amount, periodKey: i.periodKey || targetPeriod } : i))
     toast.success('Marked as paid — P&L updated')
+  }
+
+  // Void = the soft-delete. status:'Void' is excluded everywhere (recompute filters it
+  // out, periodSpend/aging skip it), so the invoice drops from cogs_purchases + named GL
+  // lines while the doc (and its audit trail) is kept. Reversible via Edit → Status.
+  // Director/admin only, behind a confirm. Recompute AFTER, so the void takes effect on
+  // the P&L immediately (the void patch is passed in since state hasn't propagated).
+  async function voidInvoice(id) {
+    const inv = invoices.find(i => i.id === id)
+    if (!inv || inv.status === 'Void') return
+    if (!window.confirm(`Void invoice #${invoiceKey(inv) || '(no number)'} — ${fmt$(inv.amount)}?\n\nIt's excluded from all totals (cogs_purchases updates). Soft-delete — reversible via Edit → Status.`)) return
+    const targetPeriod = inv.periodKey || dateToKey(inv.invoiceDate) || periodKey
+    const targetLocation = inv.location || location || 'all'
+    await updateDoc(doc(db, 'tenants', orgId, 'invoices', id), {
+      status: 'Void', voidedBy: user?.name || user?.email, voidedAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    })
+    setInvoices(prev => prev.map(i => i.id === id ? { ...i, status: 'Void' } : i))
+    await recomputePurchasingTotalsForPeriod(targetLocation, targetPeriod, [{ id, status: 'Void', periodKey: targetPeriod }])
+    toast.success('Invoice voided — P&L updated')
   }
 
   async function updateStatus(id, status) {
@@ -894,6 +925,37 @@ export default function Purchasing() {
       await markPaid(id)
     }
     setSelectedIds(new Set())
+  }
+
+  async function bulkVoid() {
+    const ids = [...selectedIds].filter(id => {
+      const inv = invoices.find(i => i.id === id)
+      return inv && inv.status !== 'Void'
+    })
+    if (ids.length === 0) { toast.error('No non-void invoices selected'); return }
+    if (!window.confirm(`Void ${ids.length} invoice${ids.length !== 1 ? 's' : ''}?\n\nThey're excluded from all totals (cogs_purchases updates). Soft-delete — reversible via Edit → Status.`)) return
+    // Void each, collecting the distinct (location, period) pairs + all void patches.
+    const affected = new Map()      // `${loc}__${period}` -> { loc, period }
+    const voidPatches = []
+    for (const id of ids) {
+      const inv = invoices.find(i => i.id === id)
+      const targetPeriod = inv.periodKey || dateToKey(inv.invoiceDate) || periodKey
+      const targetLocation = inv.location || location || 'all'
+      await updateDoc(doc(db, 'tenants', orgId, 'invoices', id), {
+        status: 'Void', voidedBy: user?.name || user?.email, voidedAt: serverTimestamp(), updatedAt: serverTimestamp(),
+      })
+      voidPatches.push({ id, status: 'Void', periodKey: targetPeriod })
+      affected.set(`${targetLocation}__${targetPeriod}`, { loc: targetLocation, period: targetPeriod })
+    }
+    setInvoices(prev => prev.map(i => ids.includes(i.id) ? { ...i, status: 'Void' } : i))
+    // Recompute EACH distinct affected (location, period) once — a bulk void can span
+    // several. Pass all void patches so each recompute's closure sees the voids (state
+    // hasn't propagated); patches for other periods are filtered out by periodKey.
+    for (const { loc, period } of affected.values()) {
+      await recomputePurchasingTotalsForPeriod(loc, period, voidPatches)
+    }
+    setSelectedIds(new Set())
+    toast.success(`${ids.length} invoice${ids.length !== 1 ? 's' : ''} voided — P&L updated`)
   }
 
   function bulkExport() {
@@ -1597,6 +1659,16 @@ export default function Purchasing() {
               <CheckCircle size={12} /> Mark paid
             </button>
           )}
+          {isDirector && (
+            <button onClick={bulkVoid} style={{
+              display: 'flex', alignItems: 'center', gap: 4, padding: '6px 14px',
+              fontSize: 12, fontWeight: 500, borderRadius: 6,
+              background: '#fff', border: '1px solid #fecaca', color: '#dc2626',
+              cursor: 'pointer', fontFamily: 'inherit',
+            }}>
+              <Trash2 size={12} /> Void selected
+            </button>
+          )}
           <button onClick={bulkExport} style={{
             display: 'flex', alignItems: 'center', gap: 4, padding: '6px 14px',
             fontSize: 12, fontWeight: 500, borderRadius: 6,
@@ -1920,6 +1992,9 @@ export default function Purchasing() {
                                 )}
                                 <button className={styles.btnEdit} onClick={() => setDetailInvoice(inv.id)} title="View full details">View</button>
                                 <button className={styles.btnEdit} onClick={() => handleEdit(inv)}>Edit</button>
+                                {isDirector && inv.status !== 'Void' && (
+                                  <button className={styles.btnEdit} onClick={() => voidInvoice(inv.id)} title="Void — exclude from all totals (soft-delete, reversible)" style={{ color: '#dc2626' }}>Void</button>
+                                )}
                                 <button
                                   className={styles.btnEdit}
                                   onClick={() => setExpandedInvoice(p => p === inv.id ? null : inv.id)}
@@ -2463,6 +2538,11 @@ export default function Purchasing() {
                 <button onClick={() => { handleEdit(inv); setDetailInvoice(null) }} style={{ padding: '10px 16px', fontSize: 13, fontWeight: 500, background: '#fff', color: '#0f172a', border: '1px solid #e2e8f0', borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit' }}>
                   Edit
                 </button>
+                {isDirector && inv.status !== 'Void' && (
+                  <button onClick={() => { voidInvoice(inv.id); setDetailInvoice(null) }} style={{ padding: '10px 16px', fontSize: 13, fontWeight: 500, background: '#fff', color: '#dc2626', border: '1px solid #fecaca', borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit' }} title="Void — exclude from all totals (soft-delete, reversible)">
+                    Void
+                  </button>
+                )}
                 {isDirector && (!inv.recurrence || !inv.recurrence.active) && !inv.parentRecurringId && (
                   <button onClick={() => { setDetailInvoice(null); openRecurrenceModal(inv.id) }} style={{ padding: '10px 16px', fontSize: 13, fontWeight: 500, background: '#fff', color: '#0f172a', border: '1px solid #e2e8f0', borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit' }} title="Set up recurring invoice">
                     🔁 Recurring
