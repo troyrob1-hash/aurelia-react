@@ -1224,8 +1224,23 @@ function computePeriodKey(dateStr) {
 const { onRequest } = require("firebase-functions/v2/https");
 
 exports.claudeProxy = onRequest(
-  { cors: true, invoker: "public" },
+  // Explicit CORS (the framework `cors: true` wasn't emitting ACAO from aureliafms.com).
+  // timeoutSeconds:120 gives headroom for multi-page PDF invoice parses (8000 max_tokens),
+  // which overran Netlify's 10s cap — the reason the PDF path routes here, not to Netlify.
+  { invoker: "public", timeoutSeconds: 120 },
   async (req, res) => {
+    // CORS on EVERY response: reflect the caller's Origin (fallback aureliafms.com). Set
+    // before any branching so it lands on the 204 preflight, 405, 500, and the POST reply.
+    const origin = req.headers.origin || "https://aureliafms.com";
+    res.set("Access-Control-Allow-Origin", origin);
+    res.set("Vary", "Origin");
+    res.set("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.set("Access-Control-Allow-Headers", "Content-Type");
+    // Preflight — answer BEFORE the non-POST 405 check, or the browser preflight fails.
+    if (req.method === "OPTIONS") {
+      res.status(204).send("");
+      return;
+    }
     if (req.method !== "POST") {
       res.status(405).json({ error: "Method not allowed" });
       return;
