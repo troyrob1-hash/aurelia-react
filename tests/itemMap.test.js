@@ -6,7 +6,7 @@ import { describe, it, expect } from 'vitest'
 import {
   normalizeItemName, canonicalIdFor, itemTokens, isVariantRisk, fuzzyBest,
   classifyMatch, rankUnmappedByVolume, coverageStats, purchaseKeyId, planAutoMap,
-  buildPurchaseLookup, resolvePurchaseLineLive,
+  buildPurchaseLookup, resolvePurchaseLineLive, dedupePurchaseKeys,
 } from '@/lib/itemMap'
 
 describe('normalization + slug', () => {
@@ -81,6 +81,34 @@ describe('planAutoMap — auto / proposal / unmapped split', () => {
   it('skips already-mapped names', () => {
     const p = planAutoMap(items, candidates, { alreadyMapped: new Set(['Kit Kat']) })
     expect(p.auto).toHaveLength(0)
+  })
+})
+
+describe('dedupePurchaseKeys — mapping the same code twice yields one entry', () => {
+  it('collapses the exact-same tuple (the Celsius double-append)', () => {
+    const keys = [
+      { itemCode: '7228765', vendor: 'sysco', upc: null },
+      { upc: null, vendor: 'sysco', itemCode: '7228765' },   // same tuple, different key order
+    ]
+    const out = dedupePurchaseKeys(keys)
+    expect(out).toHaveLength(1)
+    expect(out[0]).toEqual({ vendor: 'sysco', itemCode: '7228765', upc: null })
+  })
+  it('keeps genuinely distinct codes / vendors / upcs', () => {
+    const out = dedupePurchaseKeys([
+      { vendor: 'sysco', itemCode: '7228765', upc: null },
+      { vendor: 'sysco', itemCode: '111', upc: null },           // different code
+      { vendor: 'reyes_coca_cola', itemCode: '7228765', upc: null }, // same code, diff vendor
+      { vendor: 'sysco', itemCode: null, upc: '049000047790' },  // upc-only
+    ])
+    expect(out).toHaveLength(4)
+  })
+  it('drops entries with neither itemCode nor upc, and normalizes blank → null', () => {
+    const out = dedupePurchaseKeys([
+      { vendor: 'sysco', itemCode: '', upc: '' },   // no stable key → dropped
+      { vendor: 'sysco', itemCode: '  7228765  ', upc: '' },
+    ])
+    expect(out).toEqual([{ vendor: 'sysco', itemCode: '7228765', upc: null }])
   })
 })
 

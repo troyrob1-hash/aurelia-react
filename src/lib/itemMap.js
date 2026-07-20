@@ -194,6 +194,25 @@ export function resolvePurchaseLineLive(lookup, vendorKey, line) {
   return null
 }
 
+// Collapse purchaseKeys to unique (vendor, itemCode, upc) tuples — remapping the same
+// code must not append a duplicate. Order-independent (a {itemCode,vendor,upc} and a
+// {upc,vendor,itemCode} for the same tuple collapse), and re-normalizes existing docs on
+// their next write (writeMapping/remapPurchaseKey both run it; merge overwrites the array).
+export function dedupePurchaseKeys(keys) {
+  const seen = new Set(), out = []
+  for (const pk of keys || []) {
+    const vendor = String(pk?.vendor ?? '').trim() || null
+    const itemCode = String(pk?.itemCode ?? '').trim() || null
+    const upc = String(pk?.upc ?? '').trim() || null
+    if (!itemCode && !upc) continue                       // no stable key → drop
+    const sig = `${vendor || ''}__${itemCode || ''}__${upc || ''}`
+    if (seen.has(sig)) continue
+    seen.add(sig)
+    out.push({ vendor, itemCode, upc })
+  }
+  return out
+}
+
 // Build the default itemMap doc.
 export function newMappingDoc({ canonicalName, catalogItemId = null, soldAliases = [], purchaseKeys = [], status = 'active', source = 'auto', confidence = null, createdBy = 'unknown' }) {
   return {
@@ -213,10 +232,13 @@ export function newMappingDoc({ canonicalName, catalogItemId = null, soldAliases
 // Write/merge a mapping doc + refresh its indexes. Idempotent by canonicalId.
 export async function writeMapping(orgId, mapping, actor = 'unknown') {
   const id = mapping.canonicalId || canonicalIdFor(mapping.canonicalName)
+  // Dedupe purchaseKeys before write. merge overwrites the array wholesale, so this also
+  // normalizes any existing doc that carried dupes (e.g. from an earlier double-append).
+  const purchaseKeys = dedupePurchaseKeys(mapping.purchaseKeys)
   await setDoc(doc(db, 'tenants', orgId, 'itemMap', id),
-    { ...mapping, canonicalId: id, updatedBy: actor, updatedAt: serverTimestamp() }, { merge: true })
+    { ...mapping, canonicalId: id, purchaseKeys, updatedBy: actor, updatedAt: serverTimestamp() }, { merge: true })
   // index every purchaseKey (vendor,itemCode) + upc → canonicalId
-  for (const pk of mapping.purchaseKeys || []) {
+  for (const pk of purchaseKeys) {
     if (pk.itemCode) await setDoc(doc(db, 'tenants', orgId, 'purchaseKeyIndex', purchaseKeyId(pk.vendor, pk.itemCode)), { canonicalId: id, ...pk }, { merge: true })
     if (pk.upc) await setDoc(doc(db, 'tenants', orgId, 'purchaseKeyIndex', upcKeyId(pk.upc)), { canonicalId: id, ...pk }, { merge: true })
   }
@@ -235,7 +257,7 @@ export async function remapPurchaseKey(orgId, { vendor, itemCode, upc }, targetC
   const snap = await getDoc(targetRef)
   const cur = snap.exists() ? snap.data() : null
   if (!cur) throw new Error(`remap target ${targetCanonicalId} not found`)
-  const keys = [...(cur.purchaseKeys || []), { vendor, itemCode, upc: upc || null }]
+  const keys = dedupePurchaseKeys([...(cur.purchaseKeys || []), { vendor, itemCode, upc: upc || null }])
   await setDoc(targetRef, { purchaseKeys: keys, source: 'manual', confidence: null, updatedBy: actor, updatedAt: serverTimestamp() }, { merge: true })
   if (itemCode) await setDoc(doc(db, 'tenants', orgId, 'purchaseKeyIndex', purchaseKeyId(vendor, itemCode)), { canonicalId: targetCanonicalId, vendor, itemCode }, { merge: true })
   if (upc) await setDoc(doc(db, 'tenants', orgId, 'purchaseKeyIndex', upcKeyId(upc)), { canonicalId: targetCanonicalId, upc }, { merge: true })
