@@ -131,6 +131,36 @@ describe('HONESTY — missing feed → null cell + incomplete, never a fake zero
     expect(r.complete).toBe(true)
     expect(r.shrinkage).toBe(-20)         // 40 + 0 − 50 − 10
   })
+  it('pack-UNRESOLVED purchase line → row incomplete, not a confident variance (known sum shown)', () => {
+    // One resolved line contributed eaches 24 (purchasedByCanonical), but another line for
+    // the same canonical has eachesTotal:null (pack unresolved) → purchased is a lower bound.
+    const r = computeShrinkageRow(KITKAT, {
+      ...fullFeeds,
+      purchasedByCanonical: { 'kit-kat': 24 },
+      purchasedUnresolvedByCanonical: { 'kit-kat': true },
+    })
+    expect(r.purchased).toBe(24)               // the KNOWN sum is still shown
+    expect(r.purchasedUnresolved).toBe(true)
+    expect(r.missing).toContain('purchased')
+    expect(r.complete).toBe(false)             // excluded from KPI totals
+    expect(r.shrinkage).toBeNull()             // no confident variance (would've been 40+24−50−10=4)
+    expect(r.expected).toBeNull()
+  })
+})
+
+describe('pack-unresolved excluded from KPI totals', () => {
+  const canon = { canonicalId: 'kit-kat', canonicalName: 'Kit Kat 1.5oz', catalogItemId: 'kk', soldAliases: ['x'] }
+  it('an incomplete (pack-unresolved) row does not inflate/deflate the honest total', () => {
+    const rows = computeShrinkageRows([canon], {
+      ...fullFeeds,
+      purchasedByCanonical: { 'kit-kat': 24 },
+      purchasedUnresolvedByCanonical: { 'kit-kat': true },
+    })
+    const k = shrinkageKpis(rows)
+    expect(k.completeCount).toBe(0)
+    expect(k.incompleteCount).toBe(1)
+    expect(k.totalLoss).toBe(0)                // the honest total ignores the uncertain row
+  })
 })
 
 describe('computeShrinkageRows — only shrinkage-tracked canonicals', () => {

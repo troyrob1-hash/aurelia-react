@@ -45,7 +45,13 @@ export function computeShrinkageRow(c, feeds) {
   const counted = (map) => hasCat && map != null && Object.prototype.hasOwnProperty.call(map, catId)
   const opening = counted(feeds.openingByCat) ? Number(feeds.openingByCat[catId]) : null
   const closing = counted(feeds.closingByCat) ? Number(feeds.closingByCat[catId]) : null
-  const purchased = Number(feeds.purchasedByCanonical[c.canonicalId] || 0)   // 0 = none bought (real)
+  const purchased = Number(feeds.purchasedByCanonical[c.canonicalId] || 0)   // KNOWN sum (resolved eaches)
+  // A resolved purchase line whose pack the parser couldn't determine has eachesTotal:null
+  // — its real eaches are UNKNOWN, and it contributed nothing to the sum above, so
+  // `purchased` is only a lower bound. Flag it like a missing feed: incomplete + excluded
+  // from KPI totals, not a confident-but-understated variance (which would over-report
+  // shrinkage). Honest-incomplete over confident-wrong — the same rule as the empty count.
+  const purchasedUnresolved = !!(feeds.purchasedUnresolvedByCanonical && feeds.purchasedUnresolvedByCanonical[c.canonicalId])
   const sold = feeds.hasSoldFeed ? Number(feeds.soldByCanonical[c.canonicalId] || 0) : null
   const unitCost = hasCat && feeds.unitCostByCat[catId] != null ? Number(feeds.unitCostByCat[catId]) : null
 
@@ -53,10 +59,12 @@ export function computeShrinkageRow(c, feeds) {
   if (opening == null) missing.push('opening')
   if (closing == null) missing.push('closing')
   if (sold == null) missing.push('sold')
+  if (purchasedUnresolved) missing.push('purchased')       // a real purchase has unknown eaches
   const complete = missing.length === 0
 
-  // Expected = what should be on the shelf = opening + purchased − sold. Needs opening + sold.
-  const expected = (opening != null && sold != null) ? opening + purchased - sold : null
+  // Expected = what should be on the shelf = opening + purchased − sold. Needs opening +
+  // sold AND a trustworthy purchased (null if any purchase line's eaches are unknown).
+  const expected = (opening != null && sold != null && !purchasedUnresolved) ? opening + purchased - sold : null
   const shrinkage = complete ? opening + purchased - sold - closing : null
   const shrinkageValue = (shrinkage != null && unitCost != null) ? shrinkage * unitCost : null
 
@@ -64,7 +72,7 @@ export function computeShrinkageRow(c, feeds) {
     canonicalId: c.canonicalId,
     name: c.canonicalName,
     catalogItemId: catId || null,
-    opening, purchased, sold, closing,
+    opening, purchased, purchasedUnresolved, sold, closing,
     expected, shrinkage, shrinkageValue, unitCost,
     complete, missing,
   }

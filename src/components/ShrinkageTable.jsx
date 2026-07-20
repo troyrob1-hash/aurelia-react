@@ -73,6 +73,7 @@ export default function ShrinkageTable() {
         // next load — no backfill of invoice docs needed.
         const purchaseLookup = buildPurchaseLookup(mappings)
         const purchasedByCanonical = {}
+        const purchasedUnresolvedByCanonical = {}   // canonical has ≥1 resolved line with unknown eaches
         invSnap.forEach((d) => {
           const inv = d.data()
           if (inv.location !== location || inv.periodKey !== periodKey) return
@@ -80,7 +81,11 @@ export default function ShrinkageTable() {
           for (const l of inv.lineItems || []) {
             const cid = resolvePurchaseLineLive(purchaseLookup, vendorKey, l)
             if (!cid) continue
-            purchasedByCanonical[cid] = (purchasedByCanonical[cid] || 0) + (Number(l.eachesTotal) || 0)
+            if (l.eachesTotal == null) {                        // pack unresolved → eaches unknown
+              purchasedUnresolvedByCanonical[cid] = true         // flag; don't add 0 to the sum
+              continue
+            }
+            purchasedByCanonical[cid] = (purchasedByCanonical[cid] || 0) + Number(l.eachesTotal)
           }
         })
 
@@ -101,7 +106,7 @@ export default function ShrinkageTable() {
         const hasOpeningDoc = Object.keys(openingByCat).length > 0
         const hasClosingDoc = Object.keys(closingByCat).length > 0
 
-        const feeds = { hasSoldFeed, openingByCat, closingByCat, purchasedByCanonical, soldByCanonical, unitCostByCat }
+        const feeds = { hasSoldFeed, openingByCat, closingByCat, purchasedByCanonical, purchasedUnresolvedByCanonical, soldByCanonical, unitCostByCat }
         setFeedState({ hasSoldFeed, hasOpeningDoc, hasClosingDoc })
         setRows(computeShrinkageRows(mappings, feeds))
       } catch (err) {
@@ -223,7 +228,10 @@ export default function ShrinkageTable() {
                         {!r.complete && <div style={S.incomplete}>incomplete — missing {r.missing.join(', ')}</div>}
                       </td>
                       <td style={S.td}>{fmtN(r.opening)}</td>
-                      <td style={{ ...S.td, color: '#2563eb' }}>{fmtN(r.purchased)}</td>
+                      <td style={{ ...S.td, color: '#2563eb' }}>
+                        {fmtN(r.purchased)}
+                        {r.purchasedUnresolved && <span style={S.packTag} title="A purchase line's pack count is unresolved — Purchased is a lower bound, so this row can't compute a trustworthy shrinkage">+ pack?</span>}
+                      </td>
                       <td style={{ ...S.td, color: r.sold != null ? '#7c3aed' : '#cbd5e1' }}>{r.sold != null ? fmtN(r.sold) : '—'}</td>
                       <td style={S.td}>{fmtN(r.expected)}</td>
                       <td style={{ ...S.td, fontWeight: 600, color: '#0f172a' }}>{fmtN(r.closing)}</td>
@@ -271,6 +279,7 @@ const STYLES = {
   tr: { borderTop: '1px solid #f1f5f9' },
   tdItem: { padding: '10px 14px' }, itemName: { fontWeight: 500, color: '#0f172a' },
   incomplete: { fontSize: 11, color: '#d97706' },
+  packTag: { fontSize: 10, fontWeight: 600, color: '#92400e', background: '#fef3c7', borderRadius: 4, padding: '1px 4px', marginLeft: 5, whiteSpace: 'nowrap' },
   td: cell, tdR: { ...cell, padding: '10px 14px' },
   tfoot: { borderTop: '2px solid #e2e8f0', background: '#f8fafc', fontWeight: 700 },
 }
