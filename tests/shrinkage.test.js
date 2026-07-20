@@ -2,7 +2,7 @@
 //   shrinkage = opening + purchased − sold − closing ;  $lost = shrinkage × unitCost
 // and the HONESTY rule (missing feed → null cell + incomplete flag, never a fake zero).
 import { describe, it, expect } from 'vitest'
-import { computeShrinkageRow, computeShrinkageRows, shrinkageKpis } from '@/lib/shrinkage'
+import { computeShrinkageRow, computeShrinkageRows, shrinkageKpis, countEaches, isCounted } from '@/lib/shrinkage'
 
 // A fully-fed canonical: Kit Kat, catalogItemId 'kk'. Opening 40, bought 24, sold 50,
 // closing 10 → shrinkage = 40 + 24 − 50 − 10 = 4 units × $1.33 = $5.32.
@@ -13,6 +13,58 @@ const fullFeeds = {
   purchasedByCanonical: { 'kit-kat': 24 }, soldByCanonical: { 'kit-kat': 50 },
   unitCostByCat: { kk: 1.33 },
 }
+
+describe('countEaches — inventory count → total eaches (qty×qtyPerPack + eaches)', () => {
+  it('eaches-only (retail): 0 packs × 50 + 24 eaches = 24', () => {
+    expect(countEaches({ qty: 0, eaches: 24, qtyPerPack: 50 })).toBe(24)
+  })
+  it('pack-only: 6 packs × 12 + 0 = 72', () => {
+    expect(countEaches({ qty: 6, eaches: 0, qtyPerPack: 12 })).toBe(72)
+  })
+  it('mixed packs + loose eaches: 6 × 12 + 10 = 82', () => {
+    expect(countEaches({ qty: 6, eaches: 10, qtyPerPack: 12 })).toBe(82)
+  })
+  it('missing qtyPerPack defaults to 1 (single-unit item)', () => {
+    expect(countEaches({ qty: 3, eaches: 2 })).toBe(5)          // 3×1 + 2
+    expect(countEaches({ qty: 11, eaches: 0, qtyPerPack: 1 })).toBe(11)
+  })
+  it('null qty with eaches (the exact bug) counts the eaches, not 0', () => {
+    expect(countEaches({ qty: null, eaches: 66, qtyPerPack: 36 })).toBe(66)
+  })
+})
+
+describe('isCounted — blank-count guard (present ≠ counted)', () => {
+  it('qty or eaches an entered number (incl. 0) → counted', () => {
+    expect(isCounted({ qty: 0, eaches: null })).toBe(true)      // counted 0 packs
+    expect(isCounted({ qty: null, eaches: 0 })).toBe(true)      // counted 0 eaches
+    expect(isCounted({ qty: 6, eaches: 10 })).toBe(true)
+  })
+  it('BOTH blank (null/undefined/empty) → NOT counted (present but blank)', () => {
+    expect(isCounted({ qty: null, eaches: null })).toBe(false)
+    expect(isCounted({ qty: undefined, eaches: undefined })).toBe(false)
+    expect(isCounted({ qty: '', eaches: '' })).toBe(false)
+    expect(isCounted({ qtyPerPack: 20 })).toBe(false)           // qtyPerPack present but no count
+  })
+})
+
+describe('countEaches + isCounted → feeds (the ShrinkageTable read, honesty preserved)', () => {
+  // Simulate building openingByCat/closingByCat the way ShrinkageTable does.
+  const buildMap = (items) => {
+    const m = {}
+    items.forEach((i) => { if (i.id != null && isCounted(i)) m[i.id] = countEaches(i) })
+    return m
+  }
+  it('blank line is omitted (→ null/incomplete); real lines land in eaches', () => {
+    const m = buildMap([
+      { id: 'a', qty: 0, eaches: 24, qtyPerPack: 50 },   // 24
+      { id: 'b', qty: null, eaches: null },              // blank → omitted
+      { id: 'c', qty: 0, eaches: 0, qtyPerPack: 24 },    // counted 0 → real 0 key
+    ])
+    expect(m).toEqual({ a: 24, c: 0 })
+    expect('b' in m).toBe(false)                         // not counted → absent → row incomplete
+    expect('c' in m).toBe(true)                          // counted-0 present → real 0
+  })
+})
 
 describe('computeShrinkageRow — the real formula', () => {
   it('computes a full row: opening + purchased − sold − closing', () => {

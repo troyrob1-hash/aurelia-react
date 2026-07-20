@@ -14,6 +14,24 @@
 // otherwise sold is unknown. Purchased = 0 is always real (AP is the record — nothing
 // bought that week). Opening/Closing are known only when their count DOC exists.
 
+// Total EACHES an inventory count line represents: packs × qtyPerPack + loose eaches.
+// Unifies inventory (opening/closing) to the eaches grain that Sold (salesItems.qtySold)
+// and Purchased (lineItems.eachesTotal) already use — so opening+purchased−sold−closing is
+// dimensionally consistent, and $Lost = eaches × per-each unitCost (not packs × per-each).
+// qtyPerPack defaults to 1 (a single-unit item counts pack==each).
+export function countEaches(item) {
+  return (Number(item?.qty) || 0) * (Number(item?.qtyPerPack) || 1) + (Number(item?.eaches) || 0)
+}
+
+// A count line is actually COUNTED only when qty OR eaches is a real entered number
+// (0 counts as entered). A line present in the doc but with BOTH blank (null/'') is
+// "present but not counted" → the caller omits it from the count map → the row reads
+// incomplete ("—"), never a phantom 0. Same honest-incomplete rule as the empty-count fix.
+export function isCounted(item) {
+  const num = (v) => v != null && v !== '' && !Number.isNaN(Number(v))
+  return num(item?.qty) || num(item?.eaches)
+}
+
 // Compute one row. Inputs are pre-resolved per canonical (see buildFeeds in the component).
 export function computeShrinkageRow(c, feeds) {
   const catId = c.catalogItemId

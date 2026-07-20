@@ -16,7 +16,7 @@ import { db } from '@/lib/firebase'
 import { doc, getDoc, getDocs, collection } from 'firebase/firestore'
 import { locId, getPriorKey, writePnL } from '@/lib/pnl'
 import { loadMappings } from '@/lib/itemMap'
-import { computeShrinkageRows, shrinkageKpis } from '@/lib/shrinkage'
+import { computeShrinkageRows, shrinkageKpis, countEaches, isCounted } from '@/lib/shrinkage'
 
 const fmtN = (v) => {
   if (v == null) return '—'
@@ -79,17 +79,21 @@ export default function ShrinkageTable() {
         })
 
         // OPENING / CLOSING ← inventory counts by catalog item id; unitCost ← catalog.
-        // Only items PRESENT in the count become keys — so the compute treats an absent /
-        // empty count as "not counted" (null), not a fake zero. A counted 0 stays a key.
+        // Opening/Closing in EACHES: total = qty×qtyPerPack + eaches (countEaches). Only
+        // items ACTUALLY COUNTED become keys (isCounted) — a line present but blank in both
+        // qty and eaches is "not counted" → omitted → compute reads null → incomplete, not a
+        // phantom 0. A genuine counted-0 stays a key (real 0). Same honesty rule as the
+        // empty-count-doc fix, now at the line grain.
         const openingByCat = {}, closingByCat = {}, unitCostByCat = {}
         const priorItems = (priorSnap && priorSnap.exists() && priorSnap.data().items) || []
         const curItems = (curSnap && curSnap.exists() && curSnap.data().items) || []
-        priorItems.forEach((i) => { if (i.id != null) openingByCat[i.id] = i.qty || 0 })
-        curItems.forEach((i) => { if (i.id != null) closingByCat[i.id] = i.qty || 0 })
+        priorItems.forEach((i) => { if (i.id != null && isCounted(i)) openingByCat[i.id] = countEaches(i) })
+        curItems.forEach((i) => { if (i.id != null && isCounted(i)) closingByCat[i.id] = countEaches(i) })
         catSnap.forEach((d) => { const x = d.data(); if (x.unitCost != null) unitCostByCat[d.id] = x.unitCost })
-        // Banner/KPI flags: a doc with zero items is "no real count" for the heads-up.
-        const hasOpeningDoc = priorItems.length > 0
-        const hasClosingDoc = curItems.length > 0
+        // Banner/KPI flags: base on ACTUALLY-counted lines, so an all-blank doc reads "no
+        // real count" for the heads-up (not just "doc exists").
+        const hasOpeningDoc = Object.keys(openingByCat).length > 0
+        const hasClosingDoc = Object.keys(closingByCat).length > 0
 
         const feeds = { hasSoldFeed, openingByCat, closingByCat, purchasedByCanonical, soldByCanonical, unitCostByCat }
         setFeedState({ hasSoldFeed, hasOpeningDoc, hasClosingDoc })
