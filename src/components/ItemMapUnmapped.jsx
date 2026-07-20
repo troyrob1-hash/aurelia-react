@@ -21,6 +21,7 @@ import { locId, getTrailingPeriodKeys } from '@/lib/pnl'
 import {
   rankUnmappedByVolume, coverageStats, fuzzyBest, classifyMatch, itemTokens, brandOf,
   loadMappings, writeMapping, newMappingDoc, setCafeUse, canonicalIdFor, purchaseKeyId,
+  buildPurchaseLookup, resolvePurchaseLineLive,
 } from '@/lib/itemMap'
 
 export default function ItemMapUnmapped({ onCount } = {}) {
@@ -59,16 +60,23 @@ export default function ItemMapUnmapped({ onCount } = {}) {
     })
     setSoldTotals(Object.entries(byName).map(([name, qtySold]) => ({ name, qtySold })))
 
-    // Purchase-side unmapped = invoice lines with canonicalId:null (read-time derived,
-    // so a code mapped later drops out here on next load without any backfill). Group by
-    // stable code so repeats across invoices sum into one row; rank by spend.
+    // Load mappings FIRST — the purchase-unmapped list resolves LIVE against them.
+    const loadedMappings = await loadMappings(orgId)
+    setMappings(loadedMappings)
+    const purchaseLookup = buildPurchaseLookup(loadedMappings)
+
+    // Purchase-side unmapped: a line is "unmapped" when the LIVE lookup finds no canonical
+    // (not when the stored l.canonicalId is null). So a code mapped AFTER the invoice was
+    // parsed drops off this list on next load — and shows up in the variance table —
+    // without backfilling invoice docs. Group by stable code; rank by spend.
     const invSnap = await getDocs(collection(db, 'tenants', orgId, 'invoices'))
     const byKey = {}
     invSnap.forEach((d) => {
       const inv = d.data()
+      if (inv.status === 'Void') return                   // voided invoices aren't a to-map task
       const vendorKey = inv.vendorKey || (inv.vendor || '').toLowerCase().replace(/[^a-z0-9]+/g, '_')
       for (const l of inv.lineItems || []) {
-        if (l.canonicalId) continue                       // already resolved
+        if (resolvePurchaseLineLive(purchaseLookup, vendorKey, l)) continue   // mapped now → not unmapped
         const code = String(l.itemCode || '').trim(), upc = String(l.upc || '').trim()
         if (!code && !upc) continue                       // code-unresolved lines have no stable key → skip here
         const key = upc ? `upc__${upc}` : purchaseKeyId(vendorKey, code)
@@ -80,7 +88,6 @@ export default function ItemMapUnmapped({ onCount } = {}) {
     })
     setPurchaseUnmapped(Object.values(byKey))
 
-    setMappings(await loadMappings(orgId))
     const catSnap = await getDocs(collection(db, 'tenants', orgId, 'inventoryCatalog'))
     setCatalog(catSnap.docs.map((d) => { const x = d.data(); const nm = x.name || x.itemName || d.id; return { id: d.id, name: nm, _tokens: itemTokens(nm), _brand: brandOf(nm) } }))
     setLoading(false)

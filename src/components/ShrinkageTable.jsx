@@ -15,7 +15,7 @@ import { usePeriod } from '@/store/PeriodContext'
 import { db } from '@/lib/firebase'
 import { doc, getDoc, getDocs, collection } from 'firebase/firestore'
 import { locId, getPriorKey, writePnL } from '@/lib/pnl'
-import { loadMappings } from '@/lib/itemMap'
+import { loadMappings, buildPurchaseLookup, resolvePurchaseLineLive } from '@/lib/itemMap'
 import { computeShrinkageRows, shrinkageKpis, countEaches, isCounted } from '@/lib/shrinkage'
 
 const fmtN = (v) => {
@@ -67,14 +67,20 @@ export default function ShrinkageTable() {
           if (cid) soldByCanonical[cid] = (soldByCanonical[cid] || 0) + (Number(x.qtySold) || 0)
         })
 
-        // PURCHASED ← resolved invoice lineItems.eachesTotal, for this loc+period, by canonicalId.
+        // PURCHASED ← invoice lineItems.eachesTotal for this loc+period, resolved to a
+        // canonical LIVE against the current mappings (not the stored l.canonicalId, which
+        // froze at parse time). A code mapped AFTER an invoice was parsed self-heals here on
+        // next load — no backfill of invoice docs needed.
+        const purchaseLookup = buildPurchaseLookup(mappings)
         const purchasedByCanonical = {}
         invSnap.forEach((d) => {
           const inv = d.data()
           if (inv.location !== location || inv.periodKey !== periodKey) return
+          const vendorKey = inv.vendorKey || (inv.vendor || '').toLowerCase().replace(/[^a-z0-9]+/g, '_')
           for (const l of inv.lineItems || []) {
-            if (!l.canonicalId) continue
-            purchasedByCanonical[l.canonicalId] = (purchasedByCanonical[l.canonicalId] || 0) + (Number(l.eachesTotal) || 0)
+            const cid = resolvePurchaseLineLive(purchaseLookup, vendorKey, l)
+            if (!cid) continue
+            purchasedByCanonical[cid] = (purchasedByCanonical[cid] || 0) + (Number(l.eachesTotal) || 0)
           }
         })
 

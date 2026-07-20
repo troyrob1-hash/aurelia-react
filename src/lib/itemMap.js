@@ -166,6 +166,34 @@ export async function resolvePurchaseKey(orgId, { vendor, itemCode, upc }) {
   return null
 }
 
+// ── READ-TIME purchase resolution (self-heals; no backfill) ───────────────────
+// Purchase-line resolution stored at parse time freezes: a line parsed before its code
+// was mapped keeps canonicalId:null forever. Instead, resolve LIVE from the current
+// mappings — a line's canonical is whatever the mapping says NOW, not what was stamped.
+// buildPurchaseLookup builds a (vendor,itemCode)/upc → canonicalId index from the itemMap
+// docs; resolvePurchaseLineLive resolves one line against it (UPC preferred, matching
+// resolvePurchaseKey's precedence). Callers ignore the stored l.canonicalId.
+export function buildPurchaseLookup(mappings) {
+  const byCode = new Map(), byUpc = new Map()
+  for (const m of mappings || []) {
+    for (const pk of m.purchaseKeys || []) {
+      if (pk.itemCode) byCode.set(purchaseKeyId(pk.vendor, pk.itemCode), m.canonicalId)
+      if (pk.upc) byUpc.set(upcKeyId(pk.upc), m.canonicalId)
+    }
+  }
+  return { byCode, byUpc }
+}
+
+// Resolve a purchase line to a canonicalId at read time, or null. vendorKey is the
+// invoice-level normalized vendor (line.itemCode is vendor-scoped; upc is universal).
+export function resolvePurchaseLineLive(lookup, vendorKey, line) {
+  const upc = String(line?.upc || '').trim()
+  if (upc) { const c = lookup.byUpc.get(upcKeyId(upc)); if (c) return c }   // UPC first (cross-vendor)
+  const code = String(line?.itemCode || '').trim()
+  if (code) { const c = lookup.byCode.get(purchaseKeyId(vendorKey, code)); if (c) return c }
+  return null
+}
+
 // Build the default itemMap doc.
 export function newMappingDoc({ canonicalName, catalogItemId = null, soldAliases = [], purchaseKeys = [], status = 'active', source = 'auto', confidence = null, createdBy = 'unknown' }) {
   return {

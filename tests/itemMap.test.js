@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest'
 import {
   normalizeItemName, canonicalIdFor, itemTokens, isVariantRisk, fuzzyBest,
   classifyMatch, rankUnmappedByVolume, coverageStats, purchaseKeyId, planAutoMap,
+  buildPurchaseLookup, resolvePurchaseLineLive,
 } from '@/lib/itemMap'
 
 describe('normalization + slug', () => {
@@ -80,6 +81,44 @@ describe('planAutoMap — auto / proposal / unmapped split', () => {
   it('skips already-mapped names', () => {
     const p = planAutoMap(items, candidates, { alreadyMapped: new Set(['Kit Kat']) })
     expect(p.auto).toHaveLength(0)
+  })
+})
+
+describe('read-time purchase resolution (self-heals, ignores stored canonicalId)', () => {
+  // The Celsius case: mapping exists (sysco 7228765 → canonical), but the invoice line
+  // was parsed BEFORE the mapping and stored canonicalId:null.
+  const mappings = [
+    { canonicalId: 'celsius-kiwi-guava-12-oz', canonicalName: 'celsius kiwi guava 12 oz',
+      purchaseKeys: [{ vendor: 'sysco', itemCode: '7228765', upc: null }] },
+    { canonicalId: 'coke-mex', canonicalName: 'Coke Mexican',
+      purchaseKeys: [{ vendor: 'reyes_coca_cola', itemCode: '126689', upc: '049000047790' }] },
+  ]
+  const lookup = buildPurchaseLookup(mappings)
+
+  it('a line with stored canonicalId:null resolves LIVE via the index → contributes', () => {
+    const line = { itemCode: '7228765', upc: '', eachesTotal: 12, canonicalId: null }  // stored null
+    expect(resolvePurchaseLineLive(lookup, 'sysco', line)).toBe('celsius-kiwi-guava-12-oz')
+  })
+  it('a line whose code has no mapping stays unmapped (null)', () => {
+    const line = { itemCode: '9999999', upc: '', eachesTotal: 5 }
+    expect(resolvePurchaseLineLive(lookup, 'sysco', line)).toBeNull()
+  })
+  it('UPC is preferred over (vendor,itemCode) when both could resolve', () => {
+    // upc maps to coke-mex; itemCode belongs to a different (hypothetical) vendor scope.
+    const line = { itemCode: '126689', upc: '049000047790' }
+    expect(resolvePurchaseLineLive(lookup, 'reyes_coca_cola', line)).toBe('coke-mex')
+  })
+  it('vendor scoping: same itemCode under a different vendorKey does not match', () => {
+    const line = { itemCode: '7228765', upc: '' }
+    expect(resolvePurchaseLineLive(lookup, 'some_other_vendor', line)).toBeNull()
+  })
+  it('remapping a code changes attribution with NO change to invoice docs', () => {
+    // Same line object; only the mappings changed → the lookup resolves it differently.
+    const line = { itemCode: '7228765', upc: '', canonicalId: null }
+    const remapped = buildPurchaseLookup([
+      { canonicalId: 'celsius-other', canonicalName: 'Celsius Other', purchaseKeys: [{ vendor: 'sysco', itemCode: '7228765' }] },
+    ])
+    expect(resolvePurchaseLineLive(remapped, 'sysco', line)).toBe('celsius-other')
   })
 })
 
