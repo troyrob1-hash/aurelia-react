@@ -7,7 +7,7 @@
 // search/sort). Honest cells: a missing feed shows "—" and the row is flagged incomplete.
 
 import { useState, useEffect, useMemo, useRef } from 'react'
-import { Search, AlertTriangle } from 'lucide-react'
+import { Search, AlertTriangle, Download } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import SubCafeBar from '@/components/ui/SubCafePrompt'
@@ -147,6 +147,43 @@ export default function ShrinkageTable() {
     return r
   }, [rows, search, sortBy])
 
+  // Row status string for the CSV: the punch list of what a row is waiting on. "complete"
+  // when nothing's missing; else the missing feeds + a "pack unresolved" note, joined "; ".
+  function rowStatus(r) {
+    if (r.complete) return 'complete'
+    const parts = (r.missing || [])
+      .filter((m) => m !== 'purchased')            // 'purchased' surfaces as "pack unresolved" below
+      .map((m) => `missing ${m}`)
+    if (r.purchasedUnresolved) parts.push('pack unresolved')
+    return parts.join('; ') || 'incomplete'
+  }
+
+  // Weekly export. ALL rows (incl. incomplete — those ARE the punch list), respecting the
+  // current search + sort (uses `filtered`). null → empty cell (not 0), so a missing count
+  // never reads as a real zero in Excel. Values are quoted/escaped; the description can hold
+  // commas. Filename: shrinkage_{locId}_{periodKey}.csv.
+  function exportCsv() {
+    const q = (v) => `"${String(v).replace(/"/g, '""')}"`      // CSV-escape
+    const cell = (v) => (v == null ? '' : v)                    // null → empty, NOT 0
+    const headers = ['Item', 'Opening', 'Purchased', 'Sold', 'Expected', 'Closing', 'Shrinkage', 'Unit Cost', '$ Lost', 'Status']
+    const lines = [headers.map(q).join(',')]
+    for (const r of filtered) {
+      lines.push([
+        q(r.name || ''),
+        cell(r.opening), cell(r.purchased), cell(r.sold), cell(r.expected),
+        cell(r.closing), cell(r.shrinkage), cell(r.unitCost), cell(r.shrinkageValue),
+        q(rowStatus(r)),
+      ].join(','))
+    }
+    const blob = new Blob([lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `shrinkage_${locId(location)}_${periodKey}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   const S = STYLES
   if (!scoped) return <div style={S.prompt}>Select a location to view its shrinkage variance.</div>
 
@@ -205,6 +242,9 @@ export default function ShrinkageTable() {
           <option value="shrinkage">Sort by shrinkage $</option>
           <option value="name">Sort by name</option>
         </select>
+        <button style={S.csvBtn} onClick={exportCsv} disabled={filtered.length === 0} title="Download the current location + period's variance rows (all rows, incl. incomplete)">
+          <Download size={14} /> Download CSV
+        </button>
       </div>
 
       {/* variance table */}
@@ -271,6 +311,7 @@ const STYLES = {
   searchWrap: { position: 'relative', flex: 1 }, searchIcon: { position: 'absolute', left: 12, top: 9, color: '#94a3b8' },
   searchInput: { width: '100%', padding: '8px 12px 8px 34px', fontSize: 13, border: '1px solid #e2e8f0', borderRadius: 8, outline: 'none' },
   select: { padding: '8px 12px', fontSize: 12, border: '1px solid #e2e8f0', borderRadius: 8 },
+  csvBtn: { display: 'inline-flex', alignItems: 'center', gap: 5, padding: '8px 12px', fontSize: 12, fontWeight: 600, color: '#0f172a', background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, cursor: 'pointer', whiteSpace: 'nowrap' },
   tableWrap: { border: '1px solid #e2e8f0', borderRadius: 12, overflow: 'hidden' },
   table: { width: '100%', borderCollapse: 'collapse', fontSize: 13 },
   thead: { background: '#f8fafc' },
