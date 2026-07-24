@@ -15,6 +15,7 @@ import { ArrowRight, ArrowLeft } from 'lucide-react'
 import ShrinkageTable from '@/components/ShrinkageTable'
 import CafeProductMixImport from '@/components/CafeProductMixImport'
 import ItemMapUnmapped from '@/components/ItemMapUnmapped'
+import CountAliasPicker from '@/components/CountAliasPicker'
 
 export default function Shrinkage() {
   const [view, setView] = useState('shrinkage')   // 'shrinkage' | 'mapping'
@@ -54,6 +55,10 @@ export default function Shrinkage() {
           "N need review" badge stays live. onCount feeds the badge above. */}
       <div style={{ display: mapping ? 'block' : 'none' }}>
         <ItemMapUnmapped onCount={setNeedCount} />
+        {/* COUNT-side bridge: link count-doc lines to canonicals when their names differ
+            from the sold/canonical name (the count docs carry no catalog id). Only useful
+            on the mapping page, so it lives here alongside the unmapped-sold queue. */}
+        {mapping && <CountAliasPicker />}
       </div>
     </div>
   )

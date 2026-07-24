@@ -99,6 +99,66 @@ describe('name-join — the Wesley fix (count docs use name-slug ids, not catalo
   })
 })
 
+describe('countAliases — the durable bridge (attach a count line whose NAME differs from the canonical)', () => {
+  // The Gatorade case: canonical "gatorade 20 oz lemon lime", count line "Gatorade Lemon
+  // Lime". Names differ → the baseline name-key match misses it. An explicit countAlias
+  // recording the count name attaches it anyway. Same id spaces never meet — only the alias does.
+  const GAT = {
+    canonicalId: 'gatorade-20-oz-lemon-lime', canonicalName: 'gatorade 20 oz lemon lime',
+    catalogItemId: '77', soldAliases: ['x'], countAliases: ['Gatorade Lemon Lime'],
+  }
+  const feeds = (over) => ({ hasSoldFeed: true, purchasedByCanonical: {}, soldByCanonical: { 'gatorade-20-oz-lemon-lime': 5 }, unitCostByCat: { '77': 1.5 }, ...over })
+  const COUNT_KEY = itemNameKey('Gatorade Lemon Lime')   // 'gatorade-lemon-lime' — differs from canonical key
+  const CANON_KEY = itemNameKey('gatorade 20 oz lemon lime')
+
+  it('count name in countAliases attaches Opening/Closing even though it ≠ the canonical name', () => {
+    expect(COUNT_KEY).not.toBe(CANON_KEY)                 // the whole point: the names differ
+    const r = computeShrinkageRow(GAT, feeds({ openingByName: { [COUNT_KEY]: 10 }, closingByName: { [COUNT_KEY]: 4 } }))
+    expect(r.opening).toBe(10)
+    expect(r.closing).toBe(4)
+    expect(r.shrinkage).toBe(1)                            // 10 + 0 − 5 − 4
+    expect(r.complete).toBe(true)
+  })
+
+  it('baseline still works: a count line matching the CANONICAL name attaches with no alias', () => {
+    const noAlias = { ...GAT, countAliases: [] }
+    const r = computeShrinkageRow(noAlias, feeds({ openingByName: { [CANON_KEY]: 7 }, closingByName: { [CANON_KEY]: 2 } }))
+    expect(r.opening).toBe(7)                              // canonicalName key is the first key tried
+    expect(r.closing).toBe(2)
+    expect(r.complete).toBe(true)
+  })
+
+  it('countAliases EXTEND the name match — canonical-name line still attaches when aliases exist', () => {
+    // A count named like the canonical joins even while the alias covers a different spelling.
+    const r = computeShrinkageRow(GAT, feeds({ openingByName: { [CANON_KEY]: 9 }, closingByName: { [CANON_KEY]: 1 } }))
+    expect(r.opening).toBe(9)
+    expect(r.closing).toBe(1)
+  })
+
+  it('no alias + no name match → "—"/incomplete (nothing fabricated)', () => {
+    const noAlias = { ...GAT, countAliases: [] }
+    const r = computeShrinkageRow(noAlias, feeds({ openingByName: { [COUNT_KEY]: 10 }, closingByName: { [COUNT_KEY]: 4 } }))
+    expect(r.opening).toBeNull()                           // alias removed → the differing count name no longer attaches
+    expect(r.closing).toBeNull()
+    expect(r.complete).toBe(false)
+    expect(r.missing).toEqual(expect.arrayContaining(['opening', 'closing']))
+  })
+
+  it('counted-0 through an alias is a REAL zero (present key at 0), row complete', () => {
+    const r = computeShrinkageRow(GAT, feeds({ openingByName: { [COUNT_KEY]: 6 }, closingByName: { [COUNT_KEY]: 0 } }))
+    expect(r.closing).toBe(0)                              // aliased key present at 0 → real, not "—"
+    expect(r.complete).toBe(true)
+    expect(r.shrinkage).toBe(1)                            // 6 + 0 − 5 − 0
+  })
+
+  it('missing countAliases field behaves like the baseline (undefined → canonical-name only)', () => {
+    const legacy = { canonicalId: 'c', canonicalName: 'Kit Kat 1.5oz', catalogItemId: 'kk', soldAliases: ['x'] }
+    const r = computeShrinkageRow(legacy, { ...fullFeeds, soldByCanonical: { c: 50 }, purchasedByCanonical: { c: 24 } })
+    expect(r.opening).toBe(40)                             // NK == itemNameKey(canonicalName) still matches
+    expect(r.closing).toBe(10)
+  })
+})
+
 describe('computeShrinkageRow — the real formula', () => {
   it('computes a full row: opening + purchased − sold − closing', () => {
     const r = computeShrinkageRow(KITKAT, fullFeeds)

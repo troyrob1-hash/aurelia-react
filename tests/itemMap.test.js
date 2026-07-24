@@ -7,6 +7,7 @@ import {
   normalizeItemName, canonicalIdFor, itemTokens, isVariantRisk, fuzzyBest,
   classifyMatch, rankUnmappedByVolume, coverageStats, purchaseKeyId, planAutoMap,
   buildPurchaseLookup, resolvePurchaseLineLive, dedupePurchaseKeys,
+  dedupeCountAliases, countNameKeysFor, planCountAliasSeed, planCountAliasAutoSeed, newMappingDoc,
 } from '@/lib/itemMap'
 
 describe('normalization + slug', () => {
@@ -174,5 +175,99 @@ describe('volume-ranked coverage (the sizing refinement)', () => {
     // A(400)+B(300)=700=70%, +C(200)=900=90% ≥85% → need 3 items
     expect(m85.itemsNeeded).toBe(3)
     expect(m85.reachable).toBe(true)
+  })
+})
+
+describe('countAliases — the count-side bridge (count docs carry no catalogItemId)', () => {
+  it('newMappingDoc includes an empty countAliases[] by default', () => {
+    const d = newMappingDoc({ canonicalName: 'Kit Kat 1.5oz', createdBy: 'me' })
+    expect(d.countAliases).toEqual([])
+    expect(d.canonicalId).toBe('kit-kat-1-5oz')
+  })
+
+  it('dedupeCountAliases collapses by name-key, keeps first spelling, drops blanks', () => {
+    expect(dedupeCountAliases(['Gatorade Lemon Lime', 'gatorade  lemon  lime', '', null, 'Gatorade Lemon-Lime']))
+      .toEqual(['Gatorade Lemon Lime'])   // all slug to 'gatorade-lemon-lime'
+    expect(dedupeCountAliases(['Coke', 'Sprite'])).toEqual(['Coke', 'Sprite'])
+  })
+
+  it('countNameKeysFor = canonical name-key + every alias key (the join set)', () => {
+    const m = { canonicalName: 'gatorade 20 oz lemon lime', countAliases: ['Gatorade Lemon Lime', 'Gatorade LL'] }
+    const keys = countNameKeysFor(m)
+    expect(keys.has('gatorade-20-oz-lemon-lime')).toBe(true)   // baseline (its own name)
+    expect(keys.has('gatorade-lemon-lime')).toBe(true)         // alias 1
+    expect(keys.has('gatorade-ll')).toBe(true)                 // alias 2
+  })
+
+  it('planCountAliasSeed seeds ONLY exact-name matches, skips already-aliased + non-matches', () => {
+    const mappings = [
+      { canonicalId: 'gatorade-20-oz-lemon-lime', canonicalName: 'gatorade 20 oz lemon lime', countAliases: [] }, // name differs from count → NOT seeded
+      { canonicalId: 'starbucks-frappuccino-mocha', canonicalName: 'Starbucks Frappuccino Mocha', countAliases: [] }, // exact → seed
+      { canonicalId: 'celsius-cosmic-vibe', canonicalName: 'Celsius Cosmic Vibe', countAliases: ['Celsius Cosmic Vibe'] }, // already aliased → skip
+    ]
+    const countNames = ['Starbucks Frappuccino Mocha', 'Gatorade Lemon Lime', 'Celsius Cosmic Vibe', 'Unmapped Snack']
+    const seed = planCountAliasSeed(mappings, countNames)
+    expect(seed).toEqual([{ canonicalId: 'starbucks-frappuccino-mocha', canonicalName: 'Starbucks Frappuccino Mocha', countName: 'Starbucks Frappuccino Mocha' }])
+  })
+
+  it('planCountAliasSeed is idempotent — re-running after the alias exists returns []', () => {
+    const mappings = [{ canonicalId: 'sb', canonicalName: 'Starbucks Frappuccino Mocha', countAliases: ['Starbucks Frappuccino Mocha'] }]
+    expect(planCountAliasSeed(mappings, ['Starbucks Frappuccino Mocha'])).toEqual([])
+  })
+})
+
+describe('planCountAliasAutoSeed — fuzzy tier (auto the safe, manual the ambiguous)', () => {
+  it('high-confidence non-variant, single canonical → AUTO (count name ≠ canonical name)', () => {
+    // Size token (20 oz) is normalized away → "Gatorade Lemon Lime" scores ~1.0 against the
+    // ONE gatorade-lemon-lime canonical → safe silent attach. NOT an exact name-key match.
+    const mappings = [{ canonicalId: 'g20', canonicalName: 'gatorade 20 oz lemon lime', soldAliases: [], countAliases: [] }]
+    const { auto, proposals, unmapped } = planCountAliasAutoSeed(mappings, ['Gatorade Lemon Lime'])
+    expect(auto).toHaveLength(1)
+    expect(auto[0].canonicalId).toBe('g20')
+    expect(auto[0].countName).toBe('Gatorade Lemon Lime')
+    expect(proposals).toHaveLength(0)
+    expect(unmapped).toHaveLength(0)
+  })
+
+  it('AMBIGUOUS (two sizes tie after size-strip) → proposal, NEVER auto', () => {
+    const mappings = [
+      { canonicalId: 'g20', canonicalName: 'gatorade 20 oz lemon lime', soldAliases: [], countAliases: [] },
+      { canonicalId: 'g28', canonicalName: 'gatorade 28 oz lemon lime', soldAliases: [], countAliases: [] },
+    ]
+    const { auto, proposals } = planCountAliasAutoSeed(mappings, ['Gatorade Lemon Lime'])
+    expect(auto).toHaveLength(0)                       // can't safely pick 20 vs 28 → manual
+    expect(proposals).toHaveLength(1)
+    expect(proposals[0].ambiguous).toBe(true)
+  })
+
+  it('VARIANT-RISK (same brand, distinct flavor) → proposal, NEVER auto', () => {
+    // count "Chobani Strawberry" vs the only Chobani canonical "Chobani Peach" — distinct
+    // flavor token each side → isVariantRisk → manual, not a silent wrong attach.
+    const mappings = [{ canonicalId: 'cp', canonicalName: 'Chobani Peach', soldAliases: [], countAliases: [] }]
+    const { auto, proposals } = planCountAliasAutoSeed(mappings, ['Chobani Strawberry'])
+    expect(auto).toHaveLength(0)
+    expect(proposals.some((p) => p.variantRisk)).toBe(true)
+  })
+
+  it('matches against soldAliases too, not just the canonical name', () => {
+    const mappings = [{ canonicalId: 'mn', canonicalName: 'Monster Original', soldAliases: ['Monster Energy Drink Original 16oz'], countAliases: [] }]
+    const { auto } = planCountAliasAutoSeed(mappings, ['Monster Energy Original'])
+    expect(auto).toHaveLength(1)
+    expect(auto[0].canonicalId).toBe('mn')
+  })
+
+  it('genuinely different name → unmapped (no suggestion, stays in the plain list)', () => {
+    const mappings = [{ canonicalId: 'g20', canonicalName: 'gatorade 20 oz lemon lime', soldAliases: [], countAliases: [] }]
+    const { auto, proposals, unmapped } = planCountAliasAutoSeed(mappings, ['Random Mystery Snack'])
+    expect(auto).toHaveLength(0)
+    expect(proposals).toHaveLength(0)
+    expect(unmapped).toContain('Random Mystery Snack')
+  })
+
+  it('skips a count name already attached (exact tier ran first) — no double-attach', () => {
+    const mappings = [{ canonicalId: 'g20', canonicalName: 'gatorade 20 oz lemon lime', soldAliases: [], countAliases: ['Gatorade Lemon Lime'] }]
+    const { auto, proposals } = planCountAliasAutoSeed(mappings, ['Gatorade Lemon Lime'])
+    expect(auto).toHaveLength(0)
+    expect(proposals).toHaveLength(0)
   })
 })

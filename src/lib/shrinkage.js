@@ -44,21 +44,40 @@ export function itemNameKey(name) {
   return String(name || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
 }
 
+// The count name-keys a canonical attaches to, in priority order: its OWN name first
+// (the baseline — a count line named the same as the canonical joins with no alias),
+// then each explicit countAlias (a count-doc name recorded as "this IS the item", so a
+// mapped item attaches its count even when the count name differs from the canonical /
+// sold name — the Gatorade "20 oz lemon lime" vs "Gatorade Lemon Lime" case). The
+// opening/closing maps are keyed by itemNameKey(count.name); the row joins on the FIRST
+// of these keys that's present. Aliases EXTEND the name match — they never suppress it.
+export function countNameKeys(c) {
+  const keys = [itemNameKey(c.canonicalName)]
+  for (const a of c.countAliases || []) { const k = itemNameKey(a); if (k && !keys.includes(k)) keys.push(k) }
+  return keys
+}
+
 // Compute one row. Inputs are pre-resolved per canonical (see buildFeeds in the component).
 export function computeShrinkageRow(c, feeds) {
   const catId = c.catalogItemId
   const hasCat = catId != null
-  const nameKey = itemNameKey(c.canonicalName)
+  const nameKeys = countNameKeys(c)   // [canonicalName-key, ...countAlias-keys], priority order
 
   // Opening/Closing are known ONLY when the count ACTUALLY CONTAINS this item's count.
   // An empty count doc, or an item absent from the count, is "not counted" → null →
   // incomplete (rendered "—") — never a fake zero (a false-zero closing would report the
   // whole shelf as lost). A count that DOES contain the item at 0 is a REAL zero (present
   // key). hasOwnProperty distinguishes present-0 from absent. Honest "—" over confident-wrong.
-  // Join on the item NAME key (see itemNameKey) — the count docs don't carry catalogItemId.
-  const counted = (map) => map != null && Object.prototype.hasOwnProperty.call(map, nameKey)
-  const opening = counted(feeds.openingByName) ? Number(feeds.openingByName[nameKey]) : null
-  const closing = counted(feeds.closingByName) ? Number(feeds.closingByName[nameKey]) : null
+  // Join on the item NAME key — count docs don't carry catalogItemId (0/252 real Wesley
+  // lines did) — trying the canonical's own name first, then each countAlias, so a mapped
+  // item attaches its count even when the count name differs from the canonical name.
+  const lookupCount = (map) => {
+    if (map == null) return { has: false, val: null }
+    for (const k of nameKeys) if (Object.prototype.hasOwnProperty.call(map, k)) return { has: true, val: Number(map[k]) }
+    return { has: false, val: null }
+  }
+  const o = lookupCount(feeds.openingByName); const opening = o.has ? o.val : null
+  const cl = lookupCount(feeds.closingByName); const closing = cl.has ? cl.val : null
   const purchased = Number(feeds.purchasedByCanonical[c.canonicalId] || 0)   // KNOWN sum (resolved eaches)
   // A resolved purchase line whose pack the parser couldn't determine has eachesTotal:null
   // — its real eaches are UNKNOWN, and it contributed nothing to the sum above, so

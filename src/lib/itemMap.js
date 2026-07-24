@@ -213,13 +213,142 @@ export function dedupePurchaseKeys(keys) {
   return out
 }
 
+// ── COUNT-side alias bridge ───────────────────────────────────────────────────
+// Inventory count docs DON'T carry the numeric catalogItemId — count lines are keyed
+// by a per-location name-slug / custom id (verified on real Wesley data: 0/252 count
+// lines carry the numeric id; even a name-matched item's count.id="custom_…" ≠
+// catalogItemId="18"). So there is NO stable id shared between a count line and the
+// itemMap. The only durable bridge is an explicit NAME alias — same pattern as
+// soldAliases, but for the COUNT side: countAliases[] records the count-doc name(s)
+// that ARE this canonical, so a mapped item attaches its Opening/Closing even when the
+// count name differs from the sold/canonical name (e.g. count "Gatorade Lemon Lime" ↔
+// canonical "gatorade 20 oz lemon lime"). Consumed only by the shrinkage read (which
+// loads all mappings) — no separate index needed, unlike soldAliasIndex.
+//
+// The join key is itemNameKey (shrinkage.js) — identical slug rule to canonicalIdFor
+// here (lowercase, non-alnum → '-'), so a count name that already equals the canonical
+// name joins with NO alias (the baseline), and countAliases only EXTEND that to cover
+// the names that differ. Kept as canonicalIdFor to avoid importing shrinkage.js.
+
+// Dedup a countAliases list by its name-key, preserving the first original spelling.
+export function dedupeCountAliases(aliases) {
+  const seen = new Set(), out = []
+  for (const a of aliases || []) {
+    const name = String(a ?? '').trim()
+    if (!name) continue
+    const k = canonicalIdFor(name)
+    if (!k || seen.has(k)) continue
+    seen.add(k)
+    out.push(name)
+  }
+  return out
+}
+
+// All count name-keys a canonical currently attaches: its own name + every countAlias.
+// (Mirrors the join in computeShrinkageRow — the canonicalName is the baseline key.)
+export function countNameKeysFor(mapping) {
+  const keys = new Set([canonicalIdFor(mapping.canonicalName)])
+  for (const a of mapping.countAliases || []) { const k = canonicalIdFor(a); if (k) keys.add(k) }
+  return keys
+}
+
+// AUTO-SEED (where safe): a count name whose key ALREADY equals a canonical's name-key
+// is unambiguously that item — record it as an explicit countAlias so the attachment is
+// durable (survives a canonical rename) and visible, with no manual tap. Returns the
+// writes needed: [{ canonicalId, canonicalName, countName }] for exact-name matches not
+// already covered. Pure + idempotent — re-running after applying returns []. Only exact
+// name-key equality seeds; anything that merely fuzzy-matches stays a manual decision.
+export function planCountAliasSeed(mappings, countNames) {
+  const byKey = new Map()
+  for (const m of mappings || []) byKey.set(canonicalIdFor(m.canonicalName), m)
+  const out = []
+  const emitted = new Set()
+  for (const raw of countNames || []) {
+    const name = String(raw ?? '').trim()
+    if (!name) continue
+    const k = canonicalIdFor(name)
+    const m = byKey.get(k)
+    if (!m) continue                                   // no canonical with this exact name
+    if ((m.countAliases || []).some((a) => canonicalIdFor(a) === k)) continue   // already an alias
+    const sig = `${m.canonicalId}__${k}`
+    if (emitted.has(sig)) continue
+    emitted.add(sig)
+    out.push({ canonicalId: m.canonicalId, canonicalName: m.canonicalName, countName: name })
+  }
+  return out
+}
+
+// FUZZY AUTO-SEED — the count-side mirror of planAutoMap (auto the safe, manual the
+// ambiguous, no bulk approval queue). For each unattached count name, fuzzy-score it
+// against every canonical's NAME + its soldAliases (the same normalized brand-anchored
+// matcher the sold side uses), then classify:
+//   • auto      : high-confidence (≥AUTO_MAP_THRESHOLD), non-variant, UNAMBIGUOUS →
+//                 add to countAliases silently.
+//   • proposal  : mid-confidence, OR variant-risk, OR ambiguous → surfaced in the manual
+//                 picker as a tap-to-confirm suggestion (NOT auto-attached).
+//   • unmapped  : below the floor → stays in the plain unattached list, no suggestion.
+//
+// TWO guards keep a wrong silent attach from landing:
+//   1. VARIANT (isVariantRisk) — same brand, distinct flavor token each side (Chobani
+//      peach vs strawberry). Same guard as the sold side.
+//   2. AMBIGUITY — normalizeItemName STRIPS size tokens (20 oz / 28 oz both → "gatorade
+//      lemon lime"), so the flavor guard can't tell two sizes apart. If ≥2 DISTINCT
+//      canonicals tie for the top score, the count name can't be safely assigned → manual.
+// Exact-name matches are handled at higher confidence by planCountAliasSeed; this runs on
+// the residue. Pure — the caller applies `auto` as writes and feeds `proposals` to the UI.
+export function planCountAliasAutoSeed(mappings, countNames) {
+  const candidates = []
+  for (const m of mappings || []) {
+    for (const nm of [m.canonicalName, ...(m.soldAliases || [])]) {
+      if (!nm) continue
+      candidates.push({ id: m.canonicalId, name: nm, _tokens: itemTokens(nm), _brand: brandOf(nm) })
+    }
+  }
+  const nameById = new Map((mappings || []).map((m) => [m.canonicalId, m.canonicalName]))
+  const attached = new Set()
+  for (const m of mappings || []) for (const k of countNameKeysFor(m)) attached.add(k)
+
+  const auto = [], proposals = [], unmapped = []
+  const seen = new Set()
+  for (const raw of countNames || []) {
+    const name = String(raw ?? '').trim()
+    if (!name) continue
+    const key = canonicalIdFor(name)
+    if (!key || attached.has(key) || seen.has(key)) continue   // already attached / dup
+    seen.add(key)
+
+    const fz = fuzzyBest(name, candidates)
+    if (!fz.match || fz.score <= 0) { unmapped.push(name); continue }
+
+    // AMBIGUITY: count distinct canonicals that TIE the top score (brand-anchored, same
+    // scan fuzzyBest uses). >1 → the size/variant that would disambiguate was normalized
+    // away, so we can't pick safely → manual.
+    const nb = brandOf(name), nt = itemTokens(name)
+    const topCanonicals = new Set()
+    for (const c of candidates) {
+      const cb = c._brand || brandOf(c.name)
+      if (nb && cb && nb !== cb) continue
+      if (jaccard(nt, c._tokens || itemTokens(c.name)) >= fz.score - 1e-9) topCanonicals.add(c.id)
+    }
+    const ambiguous = topCanonicals.size > 1
+
+    const kind = ambiguous ? 'proposal' : classifyMatch(fz)
+    const rec = { canonicalId: fz.match.id, canonicalName: nameById.get(fz.match.id) || fz.match.name, countName: name, score: fz.score, variantRisk: fz.variantRisk, ambiguous }
+    if (kind === 'auto') auto.push(rec)
+    else if (kind === 'proposal') proposals.push(rec)
+    else unmapped.push(name)
+  }
+  return { auto, proposals, unmapped }
+}
+
 // Build the default itemMap doc.
-export function newMappingDoc({ canonicalName, catalogItemId = null, soldAliases = [], purchaseKeys = [], status = 'active', source = 'auto', confidence = null, createdBy = 'unknown' }) {
+export function newMappingDoc({ canonicalName, catalogItemId = null, soldAliases = [], countAliases = [], purchaseKeys = [], status = 'active', source = 'auto', confidence = null, createdBy = 'unknown' }) {
   return {
     canonicalId: canonicalIdFor(canonicalName),
     canonicalName,
     catalogItemId,
     soldAliases,
+    countAliases,                             // count-doc name(s) that ARE this item
     purchaseKeys,
     status,                                   // 'active' | 'cafe_use'
     // unit fields — STUB for Increment 3 (unit normalization)
@@ -261,6 +390,17 @@ export async function remapPurchaseKey(orgId, { vendor, itemCode, upc }, targetC
   await setDoc(targetRef, { purchaseKeys: keys, source: 'manual', confidence: null, updatedBy: actor, updatedAt: serverTimestamp() }, { merge: true })
   if (itemCode) await setDoc(doc(db, 'tenants', orgId, 'purchaseKeyIndex', purchaseKeyId(vendor, itemCode)), { canonicalId: targetCanonicalId, vendor, itemCode }, { merge: true })
   if (upc) await setDoc(doc(db, 'tenants', orgId, 'purchaseKeyIndex', upcKeyId(upc)), { canonicalId: targetCanonicalId, upc }, { merge: true })
+}
+
+// Attach/replace a canonical's COUNT aliases. Pass the FULL desired list (existing +
+// new) — merge overwrites the array wholesale, same contract as soldAliases. Deduped by
+// name-key. No index write: countAliases are read only by the shrinkage load (all
+// mappings in memory), so there's nothing to denormalize. Reversible — pass a shorter
+// list to detach. A minimal single-doc merge (not writeMapping) so attaching a count
+// name doesn't re-walk purchaseKeys/soldAliases indexes.
+export async function writeCountAliases(orgId, canonicalId, aliases, actor = 'unknown') {
+  await setDoc(doc(db, 'tenants', orgId, 'itemMap', canonicalId),
+    { countAliases: dedupeCountAliases(aliases), source: 'manual', updatedBy: actor, updatedAt: serverTimestamp() }, { merge: true })
 }
 
 // INLINE CORRECT — mark café-use (drops from shrinkage, stays in COGS). Reversible.
