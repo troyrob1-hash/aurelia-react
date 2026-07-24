@@ -403,6 +403,74 @@ export async function writeCountAliases(orgId, canonicalId, aliases, actor = 'un
     { countAliases: dedupeCountAliases(aliases), source: 'manual', updatedBy: actor, updatedAt: serverTimestamp() }, { merge: true })
 }
 
+// ── Auto-link counts (Bug 2) ──────────────────────────────────────────────────
+// The shared engine that attaches count-doc lines to canonicals via countAliases, so a
+// mapped item whose COUNT-line name differs from the canonical name (count "Tropicana
+// Apple Juice" vs canonical "tropicana apple juice 10 oz") gets its Opening/Closing
+// without a manual tap. TWO confidence tiers, both guarded — the SAME matcher +
+// variant/ambiguity guard the CountAliasPicker uses (planCountAliasSeed +
+// planCountAliasAutoSeed), one code path so they can't drift:
+//   • exact name-key match           → attach (planCountAliasSeed)
+//   • high-confidence, non-variant, UNAMBIGUOUS fuzzy → attach (planCountAliasAutoSeed.auto)
+//   • ambiguous / variant-risk (the size-suffix "20 oz" vs "28 oz" case) → NOT attached;
+//     returned as `proposals` for the manual picker.
+// Applies writes and mutates `mappings` in place (so a later location in the same batch
+// sees the freshly-attached aliases and dedups). Internal — the exported wrappers below
+// load the data and call this.
+async function applyCountAliasSeeds(orgId, mappings, countNames, actor) {
+  const apply = async (recs) => {
+    const byCanonical = new Map()
+    for (const r of recs) { const a = byCanonical.get(r.canonicalId) || []; a.push(r.countName); byCanonical.set(r.canonicalId, a) }
+    for (const [cid, ns] of byCanonical) {
+      const m = mappings.find((x) => x.canonicalId === cid)
+      const full = [...(m?.countAliases || []), ...ns]
+      if (m) m.countAliases = full                      // in-memory so subsequent tiers/locs skip it
+      await writeCountAliases(orgId, cid, full, actor)
+    }
+    return recs.length
+  }
+  const nExact = await apply(planCountAliasSeed(mappings, countNames))   // tier 1 (merged first)
+  const fuzzy = planCountAliasAutoSeed(mappings, countNames)             // tier 2 (skips tier-1 attaches)
+  const nFuzzy = await apply(fuzzy.auto)
+  return { linked: nExact + nFuzzy, proposals: fuzzy.proposals }
+}
+
+// Auto-link counts for ONE (location, period). Returns { linked, proposals, mappings,
+// items } — the picker uses mappings/items to render (single load path, no double-read).
+// Count lines key on `name` (verified 252/252 on real data); a nameless line is skipped.
+export async function autoLinkCountAliases(orgId, lk, periodKey, actor = 'unknown') {
+  const [mapSnap, countDoc] = await Promise.all([
+    getDocs(collection(db, 'tenants', orgId, 'itemMap')),
+    getDoc(doc(db, 'tenants', orgId, 'locations', lk, 'inventory', periodKey)),
+  ])
+  const mappings = mapSnap.docs.map((d) => ({ id: d.id, ...d.data() }))
+  const items = (countDoc.exists() && countDoc.data().items) || []
+  const names = items.filter((i) => i && i.name).map((i) => i.name)
+  const { linked, proposals } = names.length
+    ? await applyCountAliasSeeds(orgId, mappings, names, actor)
+    : { linked: 0, proposals: [] }
+  return { linked, proposals, mappings, items }
+}
+
+// Auto-link counts across MANY locations at one period, loading the itemMap ONCE (the
+// on-map / on-load path in the mapping view, where the sold queue is tenant-wide). A
+// countAlias is tenant-global, so a name linked from any location applies everywhere;
+// the shared `mappings` accumulates across locations so a name isn't re-attached twice.
+export async function autoLinkCountAliasesForLocations(orgId, lks, periodKey, actor = 'unknown') {
+  const mapSnap = await getDocs(collection(db, 'tenants', orgId, 'itemMap'))
+  const mappings = mapSnap.docs.map((d) => ({ id: d.id, ...d.data() }))
+  let linked = 0
+  for (const lk of lks || []) {
+    const countDoc = await getDoc(doc(db, 'tenants', orgId, 'locations', lk, 'inventory', periodKey))
+    const items = (countDoc.exists() && countDoc.data().items) || []
+    const names = items.filter((i) => i && i.name).map((i) => i.name)
+    if (!names.length) continue
+    const r = await applyCountAliasSeeds(orgId, mappings, names, actor)
+    linked += r.linked
+  }
+  return { linked }
+}
+
 // INLINE CORRECT — mark café-use (drops from shrinkage, stays in COGS). Reversible.
 export async function setCafeUse(orgId, canonicalId, cafeUse, actor = 'unknown') {
   await setDoc(doc(db, 'tenants', orgId, 'itemMap', canonicalId),

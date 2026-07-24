@@ -21,7 +21,7 @@ import { locId, getTrailingPeriodKeys } from '@/lib/pnl'
 import {
   rankUnmappedByVolume, coverageStats, fuzzyBest, classifyMatch, itemTokens, brandOf,
   loadMappings, writeMapping, newMappingDoc, setCafeUse, canonicalIdFor, purchaseKeyId,
-  buildPurchaseLookup, resolvePurchaseLineLive,
+  buildPurchaseLookup, resolvePurchaseLineLive, autoLinkCountAliasesForLocations,
 } from '@/lib/itemMap'
 
 export default function ItemMapUnmapped({ onCount } = {}) {
@@ -91,6 +91,18 @@ export default function ItemMapUnmapped({ onCount } = {}) {
     const catSnap = await getDocs(collection(db, 'tenants', orgId, 'inventoryCatalog'))
     setCatalog(catSnap.docs.map((d) => { const x = d.data(); const nm = x.name || x.itemName || d.id; return { id: d.id, name: nm, _tokens: itemTokens(nm), _brand: brandOf(nm) } }))
     setLoading(false)
+
+    // Bug 2 — auto-link count lines to their canonical (exact + high-confidence fuzzy
+    // countAliases) for the visible locations at this period. Runs on load (already-mapped
+    // items get their countAlias) AND after every map (mapTo/mapPurchaseTo call load(), so a
+    // just-mapped item attaches its counts without opening the picker). Ambiguous / variant-
+    // risk names (the "20 oz" vs "28 oz" case) are NOT auto-attached — left for the picker.
+    // Best-effort + after the sold UI renders (setLoading(false) above), so it never blocks.
+    try {
+      const lks = (visibleLocations || []).map((l) => locId(l.name))
+      const { linked } = await autoLinkCountAliasesForLocations(orgId, lks, periodKey, user?.email || 'unknown')
+      if (linked) toast.success(`Linked ${linked} count line${linked > 1 ? 's' : ''} to mapped items`)
+    } catch (e) { /* best-effort — never breaks the mapping queue */ }
   }
   // Re-scope when the tenant, visible locations, or period change (the scoped reads
   // depend on all three). visibleLocations arrives async from LocationContext.

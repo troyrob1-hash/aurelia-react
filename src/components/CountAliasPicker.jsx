@@ -18,12 +18,8 @@ import { useAuthStore } from '@/store/authStore'
 import { useLocations } from '@/store/LocationContext'
 import { usePeriod } from '@/store/PeriodContext'
 import { useToast } from '@/components/ui/Toast'
-import { db } from '@/lib/firebase'
-import { doc, getDoc } from 'firebase/firestore'
 import { locId } from '@/lib/pnl'
-import {
-  loadMappings, writeCountAliases, planCountAliasSeed, planCountAliasAutoSeed, countNameKeysFor,
-} from '@/lib/itemMap'
+import { writeCountAliases, countNameKeysFor, autoLinkCountAliases } from '@/lib/itemMap'
 import { itemNameKey, isCounted, countEaches } from '@/lib/shrinkage'
 
 export default function CountAliasPicker() {
@@ -49,46 +45,17 @@ export default function CountAliasPicker() {
     if (!orgId || !periodKey || !locName) { setLoading(false); return }
     setLoading(true)
     try {
-      const lk = locId(locName)
-      const [maps, snap] = await Promise.all([
-        loadMappings(orgId),
-        getDoc(doc(db, 'tenants', orgId, 'locations', lk, 'inventory', periodKey)),
-      ])
-      const rawItems = (snap.exists() && snap.data().items) || []
-      const counted = rawItems
-        .filter((i) => i.name && isCounted(i))
+      // ONE shared engine (also used on-map by ItemMapUnmapped): applies exact + high-
+      // confidence fuzzy countAliases, returns the fresh mappings + raw count items +
+      // the ambiguous/variant proposals for the manual picker below.
+      const { linked, proposals, mappings: maps, items } = await autoLinkCountAliases(orgId, locId(locName), periodKey, actor)
+      const counted = items
+        .filter((i) => i && i.name && isCounted(i))
         .map((i) => ({ name: i.name, eaches: countEaches(i) }))
-      const names = counted.map((c) => c.name)
+      if (linked) toast.info(`Auto-linked ${linked} count line${linked > 1 ? 's' : ''} (exact + high-confidence)`)
 
-      // Apply a batch of { canonicalId → [countName…] } auto-attaches, merging in-memory so
-      // the render reflects them without a re-read.
-      const applyAuto = async (recs) => {
-        const byCanonical = new Map()
-        for (const r of recs) { const a = byCanonical.get(r.canonicalId) || []; a.push(r.countName); byCanonical.set(r.canonicalId, a) }
-        await Promise.all([...byCanonical.entries()].map(([cid, ns]) => {
-          const m = maps.find((x) => x.canonicalId === cid)
-          const full = [...(m?.countAliases || []), ...ns]
-          if (m) m.countAliases = full
-          return writeCountAliases(orgId, cid, full, actor)
-        }))
-        return recs.length
-      }
-
-      // TIER 1 — exact name-key matches (highest confidence). Apply + merge FIRST so the
-      // fuzzy tier's "already attached" set includes them and skips them.
-      const exact = planCountAliasSeed(maps, names)
-      const nExact = exact.length ? await applyAuto(exact) : 0
-
-      // TIER 2 — fuzzy: high-confidence + non-variant + UNAMBIGUOUS auto-attach silently;
-      // variant-risk / ambiguous / mid-confidence become tap-to-confirm suggestions; the
-      // rest stay in the plain unattached list. Same discipline as sold-side auto-map.
-      const fuzzy = planCountAliasAutoSeed(maps, names)
-      const nFuzzy = fuzzy.auto.length ? await applyAuto(fuzzy.auto) : 0
       const propMap = {}
-      for (const p of fuzzy.proposals) propMap[itemNameKey(p.countName)] = p
-
-      const nAuto = nExact + nFuzzy
-      if (nAuto) toast.info(`Auto-linked ${nAuto} count line${nAuto > 1 ? 's' : ''} (exact + high-confidence)`)
+      for (const p of proposals) propMap[itemNameKey(p.countName)] = p
 
       setMappings([...maps])
       setCountItems(counted)

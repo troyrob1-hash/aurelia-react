@@ -270,4 +270,31 @@ describe('planCountAliasAutoSeed — fuzzy tier (auto the safe, manual the ambig
     expect(auto).toHaveLength(0)
     expect(proposals).toHaveLength(0)
   })
+
+  it('the REAL Wesley case: count "Tropicana Apple Juice" auto-attaches to "tropicana apple juice 10 oz"', () => {
+    // The exact Bug-2 scenario: canonical carries a "10 oz" suffix the count line lacks →
+    // no exact/name-key match, but the size token is normalized away → unambiguous 1.0 fuzzy.
+    // A sibling orange-juice canonical is present to prove it does NOT collide (different flavor).
+    const mappings = [
+      { canonicalId: 'trop-apple', canonicalName: 'tropicana apple juice 10 oz', soldAliases: [], countAliases: [] },
+      { canonicalId: 'trop-orange', canonicalName: 'tropicana orange juice 10 oz', soldAliases: [], countAliases: [] },
+    ]
+    const { auto, proposals } = planCountAliasAutoSeed(mappings, ['Tropicana Apple Juice'])
+    expect(auto).toHaveLength(1)
+    expect(auto[0].canonicalId).toBe('trop-apple')       // apple → apple, NOT the orange sibling
+    expect(auto[0].countName).toBe('Tropicana Apple Juice')
+    expect(proposals).toHaveLength(0)                    // unambiguous → no manual step
+  })
+
+  it('already-working items stay working — an aliased canonical is untouched while a new one auto-attaches', () => {
+    // Mirrors Wesley: some items already have a countAlias (working), a new mapped item needs one.
+    const mappings = [
+      { canonicalId: 'sb-van', canonicalName: 'Starbucks frappuccino vanilla', soldAliases: [], countAliases: ['Starbucks Frappuccino Vanilla'] }, // already linked
+      { canonicalId: 'trop-apple', canonicalName: 'tropicana apple juice 10 oz', soldAliases: [], countAliases: [] },                                // newly mapped
+    ]
+    const { auto } = planCountAliasAutoSeed(mappings, ['Starbucks Frappuccino Vanilla', 'Tropicana Apple Juice'])
+    // the already-linked Vanilla is NOT re-emitted (skipped); only the new Tropicana attaches
+    expect(auto.map((a) => a.canonicalId)).toEqual(['trop-apple'])
+    expect(auto.find((a) => a.canonicalId === 'sb-van')).toBeUndefined()
+  })
 })
