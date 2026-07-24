@@ -16,7 +16,7 @@ import { db } from '@/lib/firebase'
 import { doc, getDoc, getDocs, collection } from 'firebase/firestore'
 import { locId, getPriorKey, writePnL } from '@/lib/pnl'
 import { loadMappings, buildPurchaseLookup, resolvePurchaseLineLive } from '@/lib/itemMap'
-import { computeShrinkageRows, shrinkageKpis, countEaches, isCounted } from '@/lib/shrinkage'
+import { computeShrinkageRows, shrinkageKpis, countEaches, isCounted, itemNameKey } from '@/lib/shrinkage'
 
 const fmtN = (v) => {
   if (v == null) return '—'
@@ -95,18 +95,23 @@ export default function ShrinkageTable() {
         // qty and eaches is "not counted" → omitted → compute reads null → incomplete, not a
         // phantom 0. A genuine counted-0 stays a key (real 0). Same honesty rule as the
         // empty-count-doc fix, now at the line grain.
-        const openingByCat = {}, closingByCat = {}, unitCostByCat = {}
+        // Key opening/closing by the count line's NAME (itemNameKey) — the count docs use
+        // per-location name-slug ids, not the global numeric catalogItemId, so the join must
+        // be name-based (see itemNameKey in shrinkage.js). Only ACTUALLY-counted lines become
+        // keys (isCounted) — a line blank in both qty and eaches is omitted → incomplete, not
+        // a phantom 0; a genuine counted-0 stays a key (real 0).
+        const openingByName = {}, closingByName = {}, unitCostByCat = {}
         const priorItems = (priorSnap && priorSnap.exists() && priorSnap.data().items) || []
         const curItems = (curSnap && curSnap.exists() && curSnap.data().items) || []
-        priorItems.forEach((i) => { if (i.id != null && isCounted(i)) openingByCat[i.id] = countEaches(i) })
-        curItems.forEach((i) => { if (i.id != null && isCounted(i)) closingByCat[i.id] = countEaches(i) })
+        priorItems.forEach((i) => { if (i.name && isCounted(i)) openingByName[itemNameKey(i.name)] = countEaches(i) })
+        curItems.forEach((i) => { if (i.name && isCounted(i)) closingByName[itemNameKey(i.name)] = countEaches(i) })
         catSnap.forEach((d) => { const x = d.data(); if (x.unitCost != null) unitCostByCat[d.id] = x.unitCost })
         // Banner/KPI flags: base on ACTUALLY-counted lines, so an all-blank doc reads "no
         // real count" for the heads-up (not just "doc exists").
-        const hasOpeningDoc = Object.keys(openingByCat).length > 0
-        const hasClosingDoc = Object.keys(closingByCat).length > 0
+        const hasOpeningDoc = Object.keys(openingByName).length > 0
+        const hasClosingDoc = Object.keys(closingByName).length > 0
 
-        const feeds = { hasSoldFeed, openingByCat, closingByCat, purchasedByCanonical, purchasedUnresolvedByCanonical, soldByCanonical, unitCostByCat }
+        const feeds = { hasSoldFeed, openingByName, closingByName, purchasedByCanonical, purchasedUnresolvedByCanonical, soldByCanonical, unitCostByCat }
         setFeedState({ hasSoldFeed, hasOpeningDoc, hasClosingDoc })
         setRows(computeShrinkageRows(mappings, feeds))
       } catch (err) {

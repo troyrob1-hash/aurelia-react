@@ -2,14 +2,16 @@
 //   shrinkage = opening + purchased − sold − closing ;  $lost = shrinkage × unitCost
 // and the HONESTY rule (missing feed → null cell + incomplete flag, never a fake zero).
 import { describe, it, expect } from 'vitest'
-import { computeShrinkageRow, computeShrinkageRows, shrinkageKpis, countEaches, isCounted } from '@/lib/shrinkage'
+import { computeShrinkageRow, computeShrinkageRows, shrinkageKpis, countEaches, isCounted, itemNameKey } from '@/lib/shrinkage'
 
-// A fully-fed canonical: Kit Kat, catalogItemId 'kk'. Opening 40, bought 24, sold 50,
-// closing 10 → shrinkage = 40 + 24 − 50 − 10 = 4 units × $1.33 = $5.32.
+// A fully-fed canonical: Kit Kat. Opening/Closing join on the NAME key (count docs don't
+// carry catalogItemId) — itemNameKey('Kit Kat 1.5oz') = 'kit-kat-1-5oz'. Opening 40, bought
+// 24, sold 50, closing 10 → shrinkage = 40 + 24 − 50 − 10 = 4 units × $1.33 = $5.32.
 const KITKAT = { canonicalId: 'kit-kat', canonicalName: 'Kit Kat 1.5oz', catalogItemId: 'kk', soldAliases: ['Mars, Candy, Kit Kat, 1.5 oz'] }
+const NK = itemNameKey('Kit Kat 1.5oz')   // 'kit-kat-1-5oz' — the count-name join key
 const fullFeeds = {
   hasSoldFeed: true,
-  openingByCat: { kk: 40 }, closingByCat: { kk: 10 },   // kk PRESENT in both counts → real numbers
+  openingByName: { [NK]: 40 }, closingByName: { [NK]: 10 },   // count line whose NAME slugs to NK
   purchasedByCanonical: { 'kit-kat': 24 }, soldByCanonical: { 'kit-kat': 50 },
   unitCostByCat: { kk: 1.33 },
 }
@@ -47,22 +49,53 @@ describe('isCounted — blank-count guard (present ≠ counted)', () => {
   })
 })
 
-describe('countEaches + isCounted → feeds (the ShrinkageTable read, honesty preserved)', () => {
-  // Simulate building openingByCat/closingByCat the way ShrinkageTable does.
+describe('countEaches + isCounted → feeds (the ShrinkageTable read, name-keyed, honesty preserved)', () => {
+  // Simulate building openingByName/closingByName the way ShrinkageTable does now: keyed by
+  // itemNameKey(count.name), only ACTUALLY-counted lines.
   const buildMap = (items) => {
     const m = {}
-    items.forEach((i) => { if (i.id != null && isCounted(i)) m[i.id] = countEaches(i) })
+    items.forEach((i) => { if (i.name && isCounted(i)) m[itemNameKey(i.name)] = countEaches(i) })
     return m
   }
-  it('blank line is omitted (→ null/incomplete); real lines land in eaches', () => {
+  it('blank line is omitted (→ null/incomplete); real lines land in eaches, keyed by name', () => {
     const m = buildMap([
-      { id: 'a', qty: 0, eaches: 24, qtyPerPack: 50 },   // 24
-      { id: 'b', qty: null, eaches: null },              // blank → omitted
-      { id: 'c', qty: 0, eaches: 0, qtyPerPack: 24 },    // counted 0 → real 0 key
+      { name: 'Celsius Cosmic Vibe', qty: 0, eaches: 24, qtyPerPack: 50 },   // 24
+      { name: 'Blank Item', qty: null, eaches: null },                        // blank → omitted
+      { name: '2% Milk', qty: 0, eaches: 0, qtyPerPack: 24 },                 // counted 0 → real 0 key
     ])
-    expect(m).toEqual({ a: 24, c: 0 })
-    expect('b' in m).toBe(false)                         // not counted → absent → row incomplete
-    expect('c' in m).toBe(true)                          // counted-0 present → real 0
+    expect(m).toEqual({ 'celsius-cosmic-vibe': 24, '2-milk': 0 })
+    expect('blank-item' in m).toBe(false)                // not counted → absent → row incomplete
+    expect('2-milk' in m).toBe(true)                     // counted-0 present → real 0
+  })
+})
+
+describe('name-join — the Wesley fix (count docs use name-slug ids, not catalogItemId)', () => {
+  // Real case: canonical "Starbucks frappuccino mocha" maps to a count line "Starbucks
+  // Frappuccino Mocha" — different id spaces, same name → joins via itemNameKey.
+  const SB = { canonicalId: 'starbucks-frappuccino-mocha', canonicalName: 'Starbucks frappuccino mocha', catalogItemId: '19', soldAliases: ['x'] }
+  const feeds = (over) => ({ hasSoldFeed: true, purchasedByCanonical: {}, soldByCanonical: { 'starbucks-frappuccino-mocha': 8 }, unitCostByCat: { '19': 2.5 }, ...over })
+
+  it('mapped item WITH a matching count line (by name) → Opening/Closing populate', () => {
+    const key = itemNameKey('Starbucks Frappuccino Mocha')   // == itemNameKey(canonicalName)
+    const r = computeShrinkageRow(SB, feeds({ openingByName: { [key]: 12 }, closingByName: { [key]: 3 } }))
+    expect(r.opening).toBe(12)
+    expect(r.closing).toBe(3)
+    expect(r.shrinkage).toBe(1)               // 12 + 0 − 8 − 3
+    expect(r.complete).toBe(true)
+  })
+  it('mapped item with NO matching count line → Opening/Closing stay "—" (honesty preserved)', () => {
+    // Count has other items but not this one (e.g. Tropical Vibe mapped, only Cosmic counted).
+    const r = computeShrinkageRow(SB, feeds({ openingByName: { 'celsius-cosmic-vibe': 5 }, closingByName: { 'celsius-cosmic-vibe': 2 } }))
+    expect(r.opening).toBeNull()
+    expect(r.closing).toBeNull()
+    expect(r.complete).toBe(false)
+    expect(r.missing).toEqual(expect.arrayContaining(['opening', 'closing']))
+  })
+  it('the OLD numeric-catalogItemId key no longer drives the join (would have found nothing anyway)', () => {
+    // Even if a caller passed a legacy openingByCat, it is ignored — the join is name-based.
+    const r = computeShrinkageRow(SB, feeds({ openingByCat: { '19': 99 }, closingByCat: { '19': 99 } }))
+    expect(r.opening).toBeNull()              // openingByCat is not read
+    expect(r.closing).toBeNull()
   })
 })
 
@@ -81,7 +114,7 @@ describe('computeShrinkageRow — the real formula', () => {
   })
 
   it('negative shrinkage (overage / miscount) computes too, not clamped', () => {
-    const r = computeShrinkageRow(KITKAT, { ...fullFeeds, closingByCat: { kk: 20 } })
+    const r = computeShrinkageRow(KITKAT, { ...fullFeeds, closingByName: { [NK]: 20 } })
     expect(r.shrinkage).toBe(-6)         // 40 + 24 − 50 − 20
   })
 })
@@ -89,7 +122,7 @@ describe('computeShrinkageRow — the real formula', () => {
 describe('HONESTY — missing feed → null cell + incomplete, never a fake zero', () => {
   it('EMPTY closing count (item absent from the count map) → closing null, incomplete — NOT a fake 0', () => {
     // The correctness fix: an empty/absent count must read "not counted", not "closing 0".
-    const r = computeShrinkageRow(KITKAT, { ...fullFeeds, closingByCat: {} })
+    const r = computeShrinkageRow(KITKAT, { ...fullFeeds, closingByName: {} })
     expect(r.closing).toBeNull()
     expect(r.shrinkage).toBeNull()          // would fake +54 "lost" if it read closing 0
     expect(r.shrinkageValue).toBeNull()
@@ -97,18 +130,18 @@ describe('HONESTY — missing feed → null cell + incomplete, never a fake zero
     expect(r.missing).toContain('closing')
   })
   it('item absent from a NON-empty count → still null (other items counted, this one wasn\'t)', () => {
-    const r = computeShrinkageRow(KITKAT, { ...fullFeeds, closingByCat: { somethingElse: 5 } })
+    const r = computeShrinkageRow(KITKAT, { ...fullFeeds, closingByName: { 'something-else': 5 } })
     expect(r.closing).toBeNull()
     expect(r.missing).toContain('closing')
   })
   it('a counted 0 is a REAL zero (key present at 0) → complete, computes', () => {
-    const r = computeShrinkageRow(KITKAT, { ...fullFeeds, closingByCat: { kk: 0 } })
+    const r = computeShrinkageRow(KITKAT, { ...fullFeeds, closingByName: { [NK]: 0 } })
     expect(r.closing).toBe(0)
     expect(r.complete).toBe(true)
     expect(r.shrinkage).toBe(14)            // 40 + 24 − 50 − 0
   })
   it('empty/absent OPENING count → opening null, incomplete (same rule)', () => {
-    const r = computeShrinkageRow(KITKAT, { ...fullFeeds, openingByCat: {} })
+    const r = computeShrinkageRow(KITKAT, { ...fullFeeds, openingByName: {} })
     expect(r.opening).toBeNull()
     expect(r.missing).toContain('opening')
     expect(r.complete).toBe(false)

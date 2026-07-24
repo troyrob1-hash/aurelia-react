@@ -32,19 +32,33 @@ export function isCounted(item) {
   return num(item?.qty) || num(item?.eaches)
 }
 
+// Normalize an item NAME to the Opening/Closing join key. Inventory count lines and
+// canonical items DON'T share an id — count `id`s are per-location name-slugs (e.g.
+// "celsius_cosmic_vibe"), while itemMap.catalogItemId is a global numeric catalog doc id
+// ("121") — so the old catId lookup never matched (0/12 on real Wesley data). Both sides
+// join on the item NAME instead: itemNameKey(canonicalName) ↔ itemNameKey(count.name).
+// Same slug rule as canonicalIdFor/itemSlug (lowercase, non-alnum → '-'); kept local so
+// shrinkage.js stays pure (no firebase import). A count line's own `id` is NOT used — its
+// separator scheme differs; we slug the count NAME on both sides for a consistent key.
+export function itemNameKey(name) {
+  return String(name || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+}
+
 // Compute one row. Inputs are pre-resolved per canonical (see buildFeeds in the component).
 export function computeShrinkageRow(c, feeds) {
   const catId = c.catalogItemId
   const hasCat = catId != null
+  const nameKey = itemNameKey(c.canonicalName)
 
   // Opening/Closing are known ONLY when the count ACTUALLY CONTAINS this item's count.
   // An empty count doc, or an item absent from the count, is "not counted" → null →
   // incomplete (rendered "—") — never a fake zero (a false-zero closing would report the
   // whole shelf as lost). A count that DOES contain the item at 0 is a REAL zero (present
   // key). hasOwnProperty distinguishes present-0 from absent. Honest "—" over confident-wrong.
-  const counted = (map) => hasCat && map != null && Object.prototype.hasOwnProperty.call(map, catId)
-  const opening = counted(feeds.openingByCat) ? Number(feeds.openingByCat[catId]) : null
-  const closing = counted(feeds.closingByCat) ? Number(feeds.closingByCat[catId]) : null
+  // Join on the item NAME key (see itemNameKey) — the count docs don't carry catalogItemId.
+  const counted = (map) => map != null && Object.prototype.hasOwnProperty.call(map, nameKey)
+  const opening = counted(feeds.openingByName) ? Number(feeds.openingByName[nameKey]) : null
+  const closing = counted(feeds.closingByName) ? Number(feeds.closingByName[nameKey]) : null
   const purchased = Number(feeds.purchasedByCanonical[c.canonicalId] || 0)   // KNOWN sum (resolved eaches)
   // A resolved purchase line whose pack the parser couldn't determine has eachesTotal:null
   // — its real eaches are UNKNOWN, and it contributed nothing to the sum above, so
