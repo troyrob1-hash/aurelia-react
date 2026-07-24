@@ -15,6 +15,7 @@
 //   row is used only as a CHECKSUM. dateToKey is imported (not re-implemented) so
 //   this never becomes a 4th drifting copy of the fiscal calendar.
 import { dateToKey as canonicalDateToKey } from '@/store/PeriodContext'
+import { locId as toLocId } from '@/lib/pnl'
 import { db } from '@/lib/firebase'
 import { doc, writeBatch, serverTimestamp } from 'firebase/firestore'
 
@@ -41,6 +42,19 @@ export const ACCOUNT_TO_CAFE = {
 // silently — an unmapped account means the map needs a new entry, fail loud).
 export function resolveCafe(accountName) {
   return ACCOUNT_TO_CAFE[String(accountName || '').trim()] || null
+}
+
+// The MULTI-CAFÉ CAMPUSES — a single Site value that fans out into several cafés via the
+// account column. This is the campus half of the same business rule as ACCOUNT_TO_CAFE:
+// the Qualcomm San Diego accounts split into Cafe_AZ/S/Q/WT under the one Site
+// "CR_QualcommSanDiego". A campus can ONLY be keyed with the account column — the Site
+// alone can't say which café a row belongs to — so a campus export that's missing the
+// account column must fail loud rather than lump 4 cafés into one. Single-site locations
+// (Boulder, Santa Clara, Wesley, …) are NOT here; they key directly by their Site.
+// Stored in locId form so the check is format-independent.
+const CAMPUS_SITE_IDS = new Set(['CR_QualcommSanDiego'])
+export function isCampusSite(site) {
+  return CAMPUS_SITE_IDS.has(toLocId(String(site || '').trim()))
 }
 
 // Stable doc-id-safe slug for an item name (the salesItems doc key).
@@ -80,8 +94,14 @@ export function parseCafeProductMix(rows, { dateToKey = canonicalDateToKey } = {
   const restC = findCol(/^restaurant$/i)
   const itemC = findCol(/item name/i)
   const wdC   = findCol(/weekday/i)
-  if (acctC < 0 || itemC < 0 || wdC < 0) {
-    throw new Error(`Cafe Product Mix: missing expected columns (account=${acctC}, item=${itemC}, weekday=${wdC}). Wrong report?`)
+  if (itemC < 0 || wdC < 0) {
+    throw new Error(`Cafe Product Mix: missing required columns (item=${itemC}, weekday=${wdC}). Wrong report?`)
+  }
+  // Keying column: "Account Internal Name" (multi-café, splits campuses) OR "Site"
+  // (single-site). Only one is required — but a campus needs the account column (guarded
+  // per-row below). Both missing = can't key anything.
+  if (acctC < 0 && siteC < 0) {
+    throw new Error('Cafe Product Mix: need the "Account Internal Name" column (multi-café) or the "Site" column (single-site) to key the data — both are missing.')
   }
   const weekCols = []
   for (let c = wdC + 1; c < header.length; c++) if (header[c] != null && String(header[c]).trim() !== '') {
@@ -107,10 +127,23 @@ export function parseCafeProductMix(rows, { dateToKey = canonicalDateToKey } = {
       continue
     }
 
-    const locId = resolveCafe(acct)
-    if (!locId) {                         // unmapped account → surface, don't drop
+    // Resolve this row's locId. Account column present → map the account (this is how a
+    // multi-café campus splits into its cafés). Account column absent → single-site
+    // fallback: key by the Site column (locId(Site) == the same id inventory/pnl use). A
+    // CAMPUS in site-mode is a hard error — Site alone can't say which café a row belongs to.
+    let rowLocId
+    if (acctC >= 0) {
+      rowLocId = resolveCafe(acct)
+    } else {
+      if (isCampusSite(site)) {
+        throw new Error(`Cafe Product Mix: "${site}" is a multi-café campus — include the "Account Internal Name" column so its cafés (e.g. AZ/Q/S/WT) can be split. The Site column alone can't.`)
+      }
+      rowLocId = site ? toLocId(site) : null
+    }
+    if (!rowLocId) {                      // unmapped (bad account, or blank site) → surface, don't drop
       let uq = 0; for (const w of weekCols) { const v = parseFloat(r[w.c]); if (!isNaN(v)) uq += v }
-      if (uq) unmapped.set(acct, (unmapped.get(acct) || 0) + uq)
+      const uk = acctC >= 0 ? acct : (site || '(no site)')
+      if (uq) unmapped.set(uk, (unmapped.get(uk) || 0) + uq)
       continue
     }
 
@@ -122,9 +155,9 @@ export function parseCafeProductMix(rows, { dateToKey = canonicalDateToKey } = {
       const slug = itemSlug(item)
       if (!namesBySlug.has(slug)) namesBySlug.set(slug, new Set())
       namesBySlug.get(slug).add(item)
-      const key = `${locId}__${periodKey}__${slug}`
+      const key = `${rowLocId}__${periodKey}__${slug}`
       let rec = out.get(key)
-      if (!rec) { rec = { locId, periodKey, itemName: item, itemSlug: slug, qtySold: 0, weekdayBreakdown: {}, mergedNames: new Set() }; out.set(key, rec) }
+      if (!rec) { rec = { locId: rowLocId, periodKey, itemName: item, itemSlug: slug, qtySold: 0, weekdayBreakdown: {}, mergedNames: new Set() }; out.set(key, rec) }
       rec.qtySold += v
       rec.mergedNames.add(item)
       const dk = wd.toLowerCase()

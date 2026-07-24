@@ -8,7 +8,7 @@
 //   3. CONSERVATION — Σ(weekday cells) == Σ(Total cells) == Σ(written qtySold); no
 //      unit invented or dropped.
 import { describe, it, expect } from 'vitest'
-import { parseCafeProductMix, resolveCafe, itemSlug, weekdayDate, ACCOUNT_TO_CAFE } from '@/lib/parseCafeProductMix'
+import { parseCafeProductMix, resolveCafe, itemSlug, weekdayDate, ACCOUNT_TO_CAFE, isCampusSite } from '@/lib/parseCafeProductMix'
 import { dateToKey } from '@/store/PeriodContext'
 
 // Real header shape: Site | Account Internal Name | Restaurant | Item Name | Weekday | <weeks>
@@ -110,6 +110,62 @@ describe('parseCafeProductMix — slug collision surfaced (merge accepted, recor
     expect(collisions).toHaveLength(1)
     expect(collisions[0].slug).toBe('love-corn-sea-salt')
     expect(collisions[0].names).toHaveLength(2)
+  })
+})
+
+describe('parseCafeProductMix — single-site export WITHOUT the account column', () => {
+  // Header has Site but no "Account Internal Name" (single-site locations don't split).
+  const HEADER_NO_ACCT = ['Site', 'Restaurant', 'Item Name', 'Weekday of Event Date', 'June 21, 2026', 'June 28, 2026']
+  const banner = ['', '', '', 'Week of Event Date', '', '']
+
+  it('keys single-site rows by the Site column → locId(Site)', () => {
+    const rows = [
+      banner, HEADER_NO_ACCT,
+      ['CR_Wesley Medical KS', '11 Dining LLC - Cafeteria', 'Test Bar', 'Total', 6, null],
+      [null, null, null, 'Monday', 6, null],   // Jun 22 → P06
+    ]
+    const { items, weekdaySum, checksumTotal } = parseCafeProductMix(rows, { dateToKey })
+    expect(items).toHaveLength(1)
+    expect(items[0].locId).toBe('CR_Wesley_Medical_KS')   // locId('CR_Wesley Medical KS'), the id inventory/pnl use
+    expect(items[0].qtySold).toBe(6)
+    expect(weekdaySum).toBe(6)
+    expect(checksumTotal).toBe(6)                          // conservation preserved
+  })
+
+  it('a MULTI-CAFÉ CAMPUS without the account column still errors loud (Site can\'t split it)', () => {
+    const rows = [
+      banner, HEADER_NO_ACCT,
+      ['CR_QualcommSanDiego', '11 Dining LLC - Cafeteria', 'Item', 'Total', 5, null],
+      [null, null, null, 'Monday', 5, null],
+    ]
+    expect(() => parseCafeProductMix(rows, { dateToKey })).toThrow(/multi-café campus|Account Internal Name/i)
+  })
+
+  it('isCampusSite: San Diego is a campus; Wesley/Boulder/Santa Clara are not', () => {
+    expect(isCampusSite('CR_QualcommSanDiego')).toBe(true)
+    expect(isCampusSite('CR_Wesley Medical KS')).toBe(false)
+    expect(isCampusSite('CR_QualcommBoulder')).toBe(false)
+    expect(isCampusSite('CR_QualcommSantaClara')).toBe(false)
+  })
+
+  it('both keying columns missing → error', () => {
+    const rows = [banner, ['Restaurant', 'Item Name', 'Weekday of Event Date', 'June 21, 2026'],
+      ['11 Dining', 'X', 'Total', 5], [null, null, 'Monday', 5]]
+    expect(() => parseCafeProductMix(rows, { dateToKey })).toThrow(/need the "Account Internal Name".*or the "Site"/i)
+  })
+})
+
+describe('parseCafeProductMix — campus WITH the account column still splits (unchanged)', () => {
+  const HEADER = ['Site', 'Account Internal Name', 'Restaurant', 'Item Name', 'Weekday of Event Date', 'June 21, 2026', 'June 28, 2026']
+  it('San Diego Q account still keys Cafe_Q when the account column is present', () => {
+    const rows = [
+      ['', '', '', '', 'Week of Event Date', '', ''], HEADER,
+      ['CR_QualcommSanDiego', 'Qualcomm - San Diego - Q', '11 Dining LLC - Cafeteria', 'Item', 'Total', 4, null],
+      [null, null, null, null, 'Monday', 4, null],
+    ]
+    const { items } = parseCafeProductMix(rows, { dateToKey })
+    expect(items).toHaveLength(1)
+    expect(items[0].locId).toBe('Cafe_Q')   // account column splits the campus, as before
   })
 })
 
