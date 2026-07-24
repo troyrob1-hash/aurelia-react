@@ -2,7 +2,7 @@
 //   shrinkage = opening + purchased − sold − closing ;  $lost = shrinkage × unitCost
 // and the HONESTY rule (missing feed → null cell + incomplete flag, never a fake zero).
 import { describe, it, expect } from 'vitest'
-import { computeShrinkageRow, computeShrinkageRows, shrinkageKpis, countEaches, isCounted, itemNameKey } from '@/lib/shrinkage'
+import { computeShrinkageRow, computeShrinkageRows, shrinkageKpis, countEaches, isCounted, itemNameKey, buildCountMap } from '@/lib/shrinkage'
 
 // A fully-fed canonical: Kit Kat. Opening/Closing join on the NAME key (count docs don't
 // carry catalogItemId) — itemNameKey('Kit Kat 1.5oz') = 'kit-kat-1-5oz'. Opening 40, bought
@@ -49,16 +49,11 @@ describe('isCounted — blank-count guard (present ≠ counted)', () => {
   })
 })
 
-describe('countEaches + isCounted → feeds (the ShrinkageTable read, name-keyed, honesty preserved)', () => {
-  // Simulate building openingByName/closingByName the way ShrinkageTable does now: keyed by
-  // itemNameKey(count.name), only ACTUALLY-counted lines.
-  const buildMap = (items) => {
-    const m = {}
-    items.forEach((i) => { if (i.name && isCounted(i)) m[itemNameKey(i.name)] = countEaches(i) })
-    return m
-  }
+describe('buildCountMap — the ONE shared builder for opening (prior) + closing (current)', () => {
+  // ShrinkageTable calls this for BOTH feeds, so opening and closing are keyed identically:
+  // itemNameKey(count.name), isCounted-gated. Locks that shared construction.
   it('blank line is omitted (→ null/incomplete); real lines land in eaches, keyed by name', () => {
-    const m = buildMap([
+    const m = buildCountMap([
       { name: 'Celsius Cosmic Vibe', qty: 0, eaches: 24, qtyPerPack: 50 },   // 24
       { name: 'Blank Item', qty: null, eaches: null },                        // blank → omitted
       { name: '2% Milk', qty: 0, eaches: 0, qtyPerPack: 24 },                 // counted 0 → real 0 key
@@ -66,6 +61,17 @@ describe('countEaches + isCounted → feeds (the ShrinkageTable read, name-keyed
     expect(m).toEqual({ 'celsius-cosmic-vibe': 24, '2-milk': 0 })
     expect('blank-item' in m).toBe(false)                // not counted → absent → row incomplete
     expect('2-milk' in m).toBe(true)                     // counted-0 present → real 0
+  })
+  it('identical input → identical map whether used as opening or closing (no drift by construction)', () => {
+    const items = [{ name: 'Starbucks Frappuccino Mocha', qty: 0, eaches: 2, qtyPerPack: 12 }]
+    const opening = buildCountMap(items)                 // prior period
+    const closing = buildCountMap(items)                 // current period
+    expect(opening).toEqual(closing)
+    expect(opening).toEqual({ 'starbucks-frappuccino-mocha': 2 })
+  })
+  it('null/empty items → empty map (missing prior doc → opening all "—", not a crash)', () => {
+    expect(buildCountMap(null)).toEqual({})
+    expect(buildCountMap([])).toEqual({})
   })
 })
 
@@ -156,6 +162,57 @@ describe('countAliases — the durable bridge (attach a count line whose NAME di
     const r = computeShrinkageRow(legacy, { ...fullFeeds, soldByCanonical: { c: 50 }, purchasedByCanonical: { c: 24 } })
     expect(r.opening).toBe(40)                             // NK == itemNameKey(canonicalName) still matches
     expect(r.closing).toBe(10)
+  })
+})
+
+describe('opening/closing symmetry — OPENING attaches via the SAME countAliases/name-key path as closing (anti-drift)', () => {
+  // computeShrinkageRow resolves opening and closing through ONE shared lookup (same
+  // nameKeys = canonicalName + countAliases) against feeds.openingByName / .closingByName.
+  // ShrinkageTable builds BOTH maps identically: itemNameKey(count.name), isCounted-gated —
+  // opening from the PRIOR period doc, closing from the CURRENT one. These lock that
+  // guarantee: if opening ever regressed to a catalogItemId/id-keyed path (matching 0 count
+  // lines), the "opening attaches" assertions below would fail.
+  const GAT = { canonicalId: 'g20', canonicalName: 'gatorade 20 oz lemon lime', catalogItemId: '77', soldAliases: ['x'], countAliases: ['Gatorade Lemon Lime'] }
+  const AK = itemNameKey('Gatorade Lemon Lime')             // alias key — differs from the canonical name key
+  const CK = itemNameKey('gatorade 20 oz lemon lime')       // baseline canonical name key
+  const feeds = (over) => ({ hasSoldFeed: true, purchasedByCanonical: {}, soldByCanonical: { g20: 5 }, unitCostByCat: { '77': 1.5 }, ...over })
+
+  it('alias attaches BOTH opening (prior count) and closing (current count) → row computes — the Wesley case', () => {
+    const r = computeShrinkageRow(GAT, feeds({ openingByName: { [AK]: 12 }, closingByName: { [AK]: 4 } }))
+    expect(r.opening).toBe(12)                               // prior-period count line, via alias
+    expect(r.closing).toBe(4)                                // current-period count line, via alias
+    expect(r.complete).toBe(true)
+    expect(r.shrinkage).toBe(3)                              // 12 + 0 − 5 − 4
+  })
+
+  it('baseline name-key (no alias) attaches OPENING too, symmetric with closing', () => {
+    const noAlias = { ...GAT, countAliases: [] }
+    const r = computeShrinkageRow(noAlias, feeds({ openingByName: { [CK]: 9 }, closingByName: { [CK]: 2 } }))
+    expect(r.opening).toBe(9)
+    expect(r.closing).toBe(2)
+  })
+
+  it('closing-only (item first counted THIS week; prior week has no line) → opening null, incomplete', () => {
+    // Exactly Wesley P07-W3 Starbucks: current count has the line, P07-W2 never counted it.
+    const r = computeShrinkageRow(GAT, feeds({ openingByName: {}, closingByName: { [AK]: 4 } }))
+    expect(r.closing).toBe(4)
+    expect(r.opening).toBeNull()                             // honest "—", not a fake 0
+    expect(r.complete).toBe(false)
+    expect(r.missing).toContain('opening')
+  })
+
+  it('opening-only (line dropped from the current count) → closing null, incomplete', () => {
+    const r = computeShrinkageRow(GAT, feeds({ openingByName: { [AK]: 12 }, closingByName: {} }))
+    expect(r.opening).toBe(12)
+    expect(r.closing).toBeNull()
+    expect(r.complete).toBe(false)
+    expect(r.missing).toContain('closing')
+  })
+
+  it('counted-0 through the alias on the OPENING side is a REAL 0 (present key), not "—"', () => {
+    const r = computeShrinkageRow(GAT, feeds({ openingByName: { [AK]: 0 }, closingByName: { [AK]: 4 } }))
+    expect(r.opening).toBe(0)                                // present-at-0 → real, complete
+    expect(r.complete).toBe(true)
   })
 })
 

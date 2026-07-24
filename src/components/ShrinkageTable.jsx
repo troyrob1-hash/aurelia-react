@@ -16,7 +16,7 @@ import { db } from '@/lib/firebase'
 import { doc, getDoc, getDocs, collection } from 'firebase/firestore'
 import { locId, getPriorKey, writePnL } from '@/lib/pnl'
 import { loadMappings, buildPurchaseLookup, resolvePurchaseLineLive } from '@/lib/itemMap'
-import { computeShrinkageRows, shrinkageKpis, countEaches, isCounted, itemNameKey } from '@/lib/shrinkage'
+import { computeShrinkageRows, shrinkageKpis, buildCountMap } from '@/lib/shrinkage'
 
 const fmtN = (v) => {
   if (v == null) return '—'
@@ -100,11 +100,14 @@ export default function ShrinkageTable() {
         // be name-based (see itemNameKey in shrinkage.js). Only ACTUALLY-counted lines become
         // keys (isCounted) — a line blank in both qty and eaches is omitted → incomplete, not
         // a phantom 0; a genuine counted-0 stays a key (real 0).
-        const openingByName = {}, closingByName = {}, unitCostByCat = {}
+        // ONE shared builder for both feeds (buildCountMap) so opening (prior) and closing
+        // (current) are keyed identically — itemNameKey(name), isCounted-gated — and can't
+        // drift. The row resolves both through the same countNameKeys (canonicalName + countAliases).
         const priorItems = (priorSnap && priorSnap.exists() && priorSnap.data().items) || []
         const curItems = (curSnap && curSnap.exists() && curSnap.data().items) || []
-        priorItems.forEach((i) => { if (i.name && isCounted(i)) openingByName[itemNameKey(i.name)] = countEaches(i) })
-        curItems.forEach((i) => { if (i.name && isCounted(i)) closingByName[itemNameKey(i.name)] = countEaches(i) })
+        const openingByName = buildCountMap(priorItems)
+        const closingByName = buildCountMap(curItems)
+        const unitCostByCat = {}
         catSnap.forEach((d) => { const x = d.data(); if (x.unitCost != null) unitCostByCat[d.id] = x.unitCost })
         // Banner/KPI flags: base on ACTUALLY-counted lines, so an all-blank doc reads "no
         // real count" for the heads-up (not just "doc exists").

@@ -57,6 +57,18 @@ export function countNameKeys(c) {
   return keys
 }
 
+// Build a count map { itemNameKey(name) → total eaches } from one count doc's items[].
+// The SINGLE shared construction for BOTH opening (prior period) and closing (current
+// period) — keying by itemNameKey(count.name) and gating on isCounted so a blank line is
+// omitted (→ incomplete "—", never a phantom 0) while a genuine counted-0 stays a key
+// (real 0). One function so the two feeds can't drift in how they're built; the row then
+// resolves both through the same countNameKeys lookup (canonicalName + countAliases).
+export function buildCountMap(items) {
+  const m = {}
+  for (const i of items || []) if (i && i.name && isCounted(i)) m[itemNameKey(i.name)] = countEaches(i)
+  return m
+}
+
 // Compute one row. Inputs are pre-resolved per canonical (see buildFeeds in the component).
 export function computeShrinkageRow(c, feeds) {
   const catId = c.catalogItemId
