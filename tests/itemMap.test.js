@@ -8,7 +8,7 @@ import {
   classifyMatch, rankUnmappedByVolume, coverageStats, purchaseKeyId, planAutoMap,
   buildPurchaseLookup, resolvePurchaseLineLive, dedupePurchaseKeys,
   dedupeCountAliases, countNameKeysFor, planCountAliasSeed, planCountAliasAutoSeed, newMappingDoc,
-  normalizeSoldName, brandOf,
+  normalizeSoldName, brandOf, expandAbbrev,
 } from '@/lib/itemMap'
 
 describe('normalization + slug', () => {
@@ -153,6 +153,53 @@ describe('normalizeSoldName + planAutoMap — Pepsi variants map to their OWN it
     const ids = Object.values(byName)
     expect(new Set(ids).size).toBe(ids.length)
     expect(ids.length).toBe(4)
+  })
+})
+
+describe('abbreviation expansion (mt/mtn → mountain) + diet-class variant guard', () => {
+  it('expandAbbrev maps the proven abbreviations only', () => {
+    expect(expandAbbrev('mt. dew')).toBe('mountain. dew')
+    expect(expandAbbrev('mtn dew zero')).toBe('mountain dew zero')
+    expect(expandAbbrev('empty')).toBe('empty')            // "mt" inside a word is NOT touched (\b)
+  })
+  it('applied BEFORE the ≤2-char filter: "Mt. Dew" and "Mountain Dew" share the "mountain" token', () => {
+    expect(itemTokens('Mt. Dew').has('mountain')).toBe(true)   // "mt" would be dropped without expansion
+    expect(itemTokens('Mountain Dew').has('mountain')).toBe(true)
+  })
+
+  const cands = [
+    { id: 'mt_dew', name: 'Mt. Dew' },
+    { id: 'diet_mt_dew', name: 'Diet Mt. Dew' },
+    { id: 'pepsi', name: 'Pepsi' }, { id: 'diet_pepsi', name: 'Diet Pepsi' },
+    { id: 'pepsi_zero_sugar', name: 'Pepsi Zero Sugar' }, { id: 'pepsi_wild_cherry', name: 'Pepsi Wild Cherry' },
+  ].map((c) => ({ ...c, _tokens: itemTokens(c.name), _brand: brandOf(c.name) }))
+  const plan = (name) => planAutoMap([{ name, matchName: normalizeSoldName(name) }], cands)
+
+  it('Mountain Dew → mt_dew (abbreviation closes the gap)', () => {
+    const p = plan('Pepsi, Soda, Mountain Dew, 20 fl oz')
+    expect(p.auto[0]?.match.id).toBe('mt_dew')
+  })
+  it('Diet Mountain Dew → diet_mt_dew (its OWN diet variant)', () => {
+    const p = plan('Pepsi, Soda, Diet Mountain Dew, 20oz')
+    expect(p.auto[0]?.match.id).toBe('diet_mt_dew')
+  })
+  it('Mtn Dew Zero → NOT auto to plain mt_dew (diet-class guard → manual), no zero variant exists', () => {
+    const p = plan('Pepsi, Soda, Mtn Dew Zero, 20 fl oz')
+    expect(p.auto).toHaveLength(0)                          // does NOT collapse into regular Mt. Dew
+    expect(p.proposals.map((r) => r.match.id)).toContain('mt_dew')  // surfaced for a human, flagged variant
+  })
+  it('no regression: Pepsi variants still map to their own items', () => {
+    expect(plan('Pepsi Soda Original 20 fl oz').auto[0]?.match.id).toBe('pepsi')
+    expect(plan('Pepsi, Soda, Diet Pepsi, 20 fl oz').auto[0]?.match.id).toBe('diet_pepsi')
+    expect(plan('Pepsi, Soda, Pepsi Zero, 20 fl oz').auto[0]?.match.id).toBe('pepsi_zero_sugar')
+    expect(plan('Pepsi, Soda, Pepsi Cherry, 20 fl oz').auto[0]?.match.id).toBe('pepsi_wild_cherry')
+  })
+
+  it('isVariantRisk: one-sided diet/zero → risk; both-diet → NOT risk; flavor guard intact', () => {
+    expect(isVariantRisk(itemTokens('Mountain Dew Zero'), itemTokens('Mt. Dew'))).toBe(true)       // zero vs regular
+    expect(isVariantRisk(itemTokens('Diet Mt. Dew'), itemTokens('Diet Mountain Dew'))).toBe(false) // both diet
+    expect(isVariantRisk(itemTokens('Pepsi Zero'), itemTokens('Pepsi Zero Sugar'))).toBe(false)    // both zero
+    expect(isVariantRisk(itemTokens('Mountain Dew'), itemTokens('Mt. Dew'))).toBe(false)           // neither diet/zero
   })
 })
 

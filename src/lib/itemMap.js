@@ -25,15 +25,24 @@ const STOP = new Set(['the', 'and', 'of', 'with', 'fl', 'oz', 'ct', 'mex', 'llc'
 // Flavor/variant discriminators — the guard against merging Chobani peach vs strawberry.
 const FLAVOR = /berry|peach|straw|mango|choc|vanilla|lime|lemon|orange|grape|zero|cherry|mint|coconut|caramel|punch|guava|banana|apple|pineapple/i
 
+// Abbreviation expansion — applied BEFORE the ≤2-char token filter so a short abbreviation
+// (e.g. "mt", 2 chars) isn't dropped before it can be matched to its spelled-out form.
+// TIGHT list: only abbreviations PROVEN to flip a real unmapped item on live data. Verified:
+// catalog "Mt. Dew" tokenizes to {dew} ("mt" filtered) while sold "Mountain Dew" → {mountain,
+// dew} — 0 overlap on "mt"; mt/mtn → mountain closes it (Mountain Dew → Mt. Dew = 1.00). Runs
+// on BOTH sides (it's in the shared tokenizer), so sold and catalog meet at the same tokens.
+const ABBREV = [[/\bmt\b/g, 'mountain'], [/\bmtn\b/g, 'mountain']]
+export function expandAbbrev(s) { let x = String(s || ''); for (const [re, to] of ABBREV) x = x.replace(re, to); return x }
+
 export function normalizeItemName(s) {
-  return String(s || '').toLowerCase().replace(/&/g, ' and ')
+  return expandAbbrev(String(s || '').toLowerCase()).replace(/&/g, ' and ')
     .replace(SIZE, ' ').replace(NUM, ' ').replace(/[^a-z ]+/g, ' ')
     .split(/\s+/).filter((w) => w.length > 2 && !STOP.has(w)).sort().join(' ').trim()
 }
 export function itemTokens(s) { return new Set(normalizeItemName(s).split(' ').filter(Boolean)) }
 export function brandOf(s) {
   // brand = first non-stop meaningful token in ORIGINAL order (not sorted)
-  const raw = String(s || '').toLowerCase().replace(/&/g, ' and ').replace(SIZE, ' ').replace(NUM, ' ')
+  const raw = expandAbbrev(String(s || '').toLowerCase()).replace(/&/g, ' and ').replace(SIZE, ' ').replace(NUM, ' ')
     .replace(/[^a-z ]+/g, ' ').split(/\s+/).filter((w) => w.length > 2 && !STOP.has(w))
   return raw[0] || ''
 }
@@ -73,13 +82,25 @@ export function canonicalIdFor(name) {
   return String(name || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
 }
 
-// Variant risk: same brand, but each side carries a distinct flavor token the other
-// lacks → NEVER auto-map (Chobani peach vs Chobani strawberry). Human decides.
+// Diet-class discriminators — sugar-free vs regular is a DIFFERENT product, not a flavor.
+// Unlike flavors (symmetric guard), this is ONE-SIDED: if one side is diet/zero and the
+// match isn't, never auto-collapse (e.g. "Mtn Dew Zero" must NOT map to plain "Mt. Dew" when
+// no zero variant exists — it goes to the manual picker). Tight list, only what's in the data.
+const DIET_CLASS = new Set(['diet', 'zero'])
+
+// Variant risk: NEVER auto-map when the two carry distinct discriminators —
+//  • FLAVOR (symmetric): each side has a flavor the other lacks (Chobani peach vs strawberry).
+//  • DIET-CLASS (one-sided): one side is diet/zero, the match isn't (regular vs sugar-free).
+// Either → human decides.
 export function isVariantRisk(aTokens, bTokens) {
   const af = [...aTokens].filter((t) => FLAVOR.test(t))
   const bf = [...bTokens].filter((t) => FLAVOR.test(t))
-  if (!af.length && !bf.length) return false
-  return af.some((t) => !bTokens.has(t)) && bf.some((t) => !aTokens.has(t))
+  const flavorRisk = (af.length || bf.length) &&
+    af.some((t) => !bTokens.has(t)) && bf.some((t) => !aTokens.has(t))
+  const ad = [...aTokens].filter((t) => DIET_CLASS.has(t))
+  const bd = [...bTokens].filter((t) => DIET_CLASS.has(t))
+  const dietRisk = ad.some((t) => !bTokens.has(t)) || bd.some((t) => !aTokens.has(t))
+  return !!(flavorRisk || dietRisk)
 }
 
 // Best fuzzy match of `name` against candidates [{ id, name }]. Brand must agree.
