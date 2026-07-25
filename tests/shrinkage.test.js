@@ -2,7 +2,7 @@
 //   shrinkage = opening + purchased − sold − closing ;  $lost = shrinkage × unitCost
 // and the HONESTY rule (missing feed → null cell + incomplete flag, never a fake zero).
 import { describe, it, expect } from 'vitest'
-import { computeShrinkageRow, computeShrinkageRows, shrinkageKpis, countEaches, isCounted, itemNameKey, buildCountMap } from '@/lib/shrinkage'
+import { computeShrinkageRow, computeShrinkageRows, shrinkageKpis, countEaches, isCounted, itemNameKey, buildCountMap, perEachCost, buildUnitCostMap } from '@/lib/shrinkage'
 
 // A fully-fed canonical: Kit Kat. Opening/Closing join on the NAME key (count docs don't
 // carry catalogItemId) — itemNameKey('Kit Kat 1.5oz') = 'kit-kat-1-5oz'. Opening 40, bought
@@ -335,5 +335,48 @@ describe('shrinkageKpis — totals over COMPLETE rows only', () => {
     expect(k.itemsAffected).toBe(1)
     expect(k.completeCount).toBe(1)
     expect(k.incompleteCount).toBe(0)
+  })
+})
+
+describe('$Lost — per-each unit cost (count-line per-CASE ÷ qtyPerPack, catalog fallback, honest "—")', () => {
+  it('perEachCost = per-case price (packPrice, or unitCost) ÷ qtyPerPack', () => {
+    expect(perEachCost({ packPrice: 36.93, unitCost: 36.93, qtyPerPack: 4 })).toBeCloseTo(9.2325, 3)  // 2% Milk
+    expect(perEachCost({ packPrice: 25.08, unitCost: 0, qtyPerPack: 12 })).toBeCloseTo(2.09, 2)       // Alani Cotton Candy (unitCost 0 → packPrice)
+    expect(perEachCost({ unitCost: 18.32, qtyPerPack: 12 })).toBeCloseTo(1.5267, 3)                   // Pure Leaf: unitCost is per-CASE, ÷12 (NOT $18/each)
+    expect(perEachCost({ packPrice: 18.32, qtyPerPack: 1 })).toBeCloseTo(18.32, 2)                    // single-unit retail (÷1)
+    expect(perEachCost({ packPrice: 0, unitCost: 0 })).toBeNull()                                     // no cost → null (→ "—")
+    expect(perEachCost({})).toBeNull()
+  })
+  it('buildUnitCostMap keys per-each cost by itemNameKey(name); no-cost lines omitted', () => {
+    const m = buildUnitCostMap([{ name: 'Alani Cotton Candy', packPrice: 25.08, unitCost: 0, qtyPerPack: 12 }, { name: 'Blank', packPrice: 0, unitCost: 0 }])
+    expect(m[itemNameKey('Alani Cotton Candy')]).toBeCloseTo(2.09, 2)
+    expect(itemNameKey('Blank') in m).toBe(false)
+  })
+
+  const LW = { canonicalId: 'life-water-20oz', canonicalName: 'Life Water 20oz', catalogItemId: 'life_water_20oz', soldAliases: ['x'] }
+  const K = itemNameKey('Life Water 20oz')
+  // shrinkage = 20 opening + 0 purchased − 10 sold − 5 closing = 5 eaches
+  const base = (over) => ({ hasSoldFeed: true, openingByName: { [K]: 20 }, closingByName: { [K]: 5 }, purchasedByCanonical: {}, soldByCanonical: { 'life-water-20oz': 10 }, unitCostByCat: {}, unitCostByName: {}, ...over })
+
+  it('slug-id match uses the count-line per-each cost → $Lost correct magnitude (NOT ×qtyPerPack)', () => {
+    const r = computeShrinkageRow(LW, base({ unitCostByName: { [K]: 2.00 } }))   // per-each 2.00 (= 24/case ÷ 12)
+    expect(r.shrinkage).toBe(5)
+    expect(r.unitCost).toBe(2.00)
+    expect(r.shrinkageValue).toBeCloseTo(10.00, 2)     // 5 × 2.00 — NOT 5 × 24 = 120 (the 12× bug)
+  })
+  it('falls back to the GLOBAL catalog per-each cost when the count line has none', () => {
+    const r = computeShrinkageRow(LW, base({ unitCostByCat: { life_water_20oz: 1.50 } }))
+    expect(r.unitCost).toBe(1.50)
+    expect(r.shrinkageValue).toBeCloseTo(7.50, 2)      // 5 × 1.50 (existing behavior)
+  })
+  it('count-line cost takes PRECEDENCE over the catalog cost', () => {
+    const r = computeShrinkageRow(LW, base({ unitCostByName: { [K]: 2.00 }, unitCostByCat: { life_water_20oz: 1.50 } }))
+    expect(r.unitCost).toBe(2.00)
+  })
+  it('no unit cost anywhere → $Lost "—" (null); UNITS still compute', () => {
+    const r = computeShrinkageRow(LW, base({}))
+    expect(r.shrinkage).toBe(5)                        // units present
+    expect(r.unitCost).toBeNull()
+    expect(r.shrinkageValue).toBeNull()                // "—", never a fake $0
   })
 })

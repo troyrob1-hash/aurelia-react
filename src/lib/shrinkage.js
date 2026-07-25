@@ -69,6 +69,31 @@ export function buildCountMap(items) {
   return m
 }
 
+// PER-EACH unit cost from a count line. On count docs, BOTH `packPrice` and `unitCost` are
+// stored PER-CASE (verified: where both are set unitCost == packPrice — 2% Milk 36.93/36.93,
+// 4/pack; and 201/252 lines carry only packPrice, e.g. Alani Cotton Candy packPrice 25.08,
+// unitCost 0, 12/pack). Shrinkage is in EACHES, so $Lost = eaches × per-EACH cost = per-case
+// price / qtyPerPack. Take packPrice first, fall back to unitCost (both per-case), then ÷pack.
+// (Do NOT use the CF's qtyPerPack*unitCost fallback — that assumes unitCost is per-EACH, which
+// it is NOT here; Pure Leaf 18.32/case, 12/pack would wrongly read $18/each.) Returns null when
+// neither price exists (→ $Lost "—", never a fake $0). NOTE: the GLOBAL inventoryCatalog
+// unitCost is ALREADY per-each and is used as-is by the caller — do NOT divide that one.
+export function perEachCost(item) {
+  const qpp = Number(item?.qtyPerPack) || 1
+  const perCase = Number(item?.packPrice) || Number(item?.unitCost) || 0
+  if (!(perCase > 0)) return null
+  return perCase / qpp
+}
+
+// Build { itemNameKey(name) → per-EACH cost } from count-doc lines, keyed the same way
+// buildCountMap keys eaches — so any item that has a count also has its unit cost. Only
+// lines with a real cost land (others fall back to the global catalog, then "—").
+export function buildUnitCostMap(items) {
+  const m = {}
+  for (const i of items || []) { if (!i || !i.name) continue; const c = perEachCost(i); if (c != null) m[itemNameKey(i.name)] = c }
+  return m
+}
+
 // Compute one row. Inputs are pre-resolved per canonical (see buildFeeds in the component).
 export function computeShrinkageRow(c, feeds) {
   const catId = c.catalogItemId
@@ -98,7 +123,20 @@ export function computeShrinkageRow(c, feeds) {
   // shrinkage). Honest-incomplete over confident-wrong — the same rule as the empty count.
   const purchasedUnresolved = !!(feeds.purchasedUnresolvedByCanonical && feeds.purchasedUnresolvedByCanonical[c.canonicalId])
   const sold = feeds.hasSoldFeed ? Number(feeds.soldByCanonical[c.canonicalId] || 0) : null
-  const unitCost = hasCat && feeds.unitCostByCat[catId] != null ? Number(feeds.unitCostByCat[catId]) : null
+  // Per-EACH unit cost, in priority order:
+  //   1. the COUNT line's cost (feeds.unitCostByName, already converted per-each) — covers
+  //      location-catalog / slug-id matches whose catalogItemId isn't in the global catalog;
+  //   2. the GLOBAL catalog cost (feeds.unitCostByCat[catalogItemId], already per-each) — the
+  //      existing behavior for global-catalog matches;
+  //   3. null → $Lost stays "—" (never a fake $0); the shrinkage UNITS still show.
+  const lookupCost = (map) => {
+    if (map == null) return null
+    for (const k of nameKeys) if (Object.prototype.hasOwnProperty.call(map, k)) return Number(map[k])
+    return null
+  }
+  const countCost = lookupCost(feeds.unitCostByName)
+  const unitCost = countCost != null ? countCost
+    : (hasCat && feeds.unitCostByCat[catId] != null ? Number(feeds.unitCostByCat[catId]) : null)
 
   const missing = []
   if (opening == null) missing.push('opening')

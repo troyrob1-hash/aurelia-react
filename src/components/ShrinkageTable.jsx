@@ -16,7 +16,7 @@ import { db } from '@/lib/firebase'
 import { doc, getDoc, getDocs, collection } from 'firebase/firestore'
 import { locId, getPriorKey, writePnL } from '@/lib/pnl'
 import { loadMappings, buildPurchaseLookup, resolvePurchaseLineLive } from '@/lib/itemMap'
-import { computeShrinkageRows, shrinkageKpis, buildCountMap } from '@/lib/shrinkage'
+import { computeShrinkageRows, shrinkageKpis, buildCountMap, buildUnitCostMap } from '@/lib/shrinkage'
 
 const fmtN = (v) => {
   if (v == null) return '—'
@@ -122,12 +122,17 @@ export default function ShrinkageTable() {
         const closingByName = buildCountMap(curItems)
         const unitCostByCat = {}
         catSnap.forEach((d) => { const x = d.data(); if (x.unitCost != null) unitCostByCat[d.id] = x.unitCost })
+        // PER-EACH unit cost keyed by count-line name — the count lines carry unitCost (per
+        // CASE; buildUnitCostMap divides by qtyPerPack). Current (closing) count first, prior
+        // as fallback, so a location-catalog (slug-id) match — absent from the global catalog —
+        // still gets its $Lost. computeShrinkageRow falls back to unitCostByCat, then "—".
+        const unitCostByName = { ...buildUnitCostMap(priorItems), ...buildUnitCostMap(curItems) }
         // Banner/KPI flags: base on ACTUALLY-counted lines, so an all-blank doc reads "no
         // real count" for the heads-up (not just "doc exists").
         const hasOpeningDoc = Object.keys(openingByName).length > 0
         const hasClosingDoc = Object.keys(closingByName).length > 0
 
-        const feeds = { hasSoldFeed, openingByName, closingByName, purchasedByCanonical, purchasedUnresolvedByCanonical, soldByCanonical, unitCostByCat }
+        const feeds = { hasSoldFeed, openingByName, closingByName, purchasedByCanonical, purchasedUnresolvedByCanonical, soldByCanonical, unitCostByCat, unitCostByName }
         setFeedState({ hasSoldFeed, hasOpeningDoc, hasClosingDoc })
         setRows(computeShrinkageRows(mappings, feeds))
       } catch (err) {
