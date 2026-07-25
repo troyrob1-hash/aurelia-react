@@ -25,6 +25,18 @@ const fmtN = (v) => {
 }
 const fmt$ = (v) => v == null ? '—' : '$' + (Number(v) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
+// An "empty" row is pure catalog noise — NO real data on any feed: no opening count, no
+// closing count, nothing sold (0/null), nothing purchased. KEEP any row with real data:
+// a fully-computed shrinkage OR a partial (has opening OR closing OR sold, missing a piece)
+// — those are the actionable "needs a count" punch list. A purchase line whose eaches the
+// parser couldn't resolve (purchasedUnresolved) still counts as real data (money moved).
+const hasRowData = (r) =>
+  r.opening != null ||
+  r.closing != null ||
+  (r.sold != null && r.sold > 0) ||
+  (Number(r.purchased) || 0) > 0 ||
+  !!r.purchasedUnresolved
+
 export default function ShrinkageTable() {
   const { user } = useAuthStore()
   const orgId = user?.tenantId
@@ -35,6 +47,7 @@ export default function ShrinkageTable() {
   const [feedState, setFeedState] = useState({ hasSoldFeed: false, hasOpeningDoc: false, hasClosingDoc: false })
   const [search, setSearch] = useState('')
   const [sortBy, setSortBy] = useState('shrinkage')
+  const [hideEmpty, setHideEmpty] = useState(true)   // open clean: computed + partial rows only
 
   const location = selectedLocation
   const scoped = location && location !== 'all'
@@ -147,13 +160,17 @@ export default function ShrinkageTable() {
     writePnL(location, periodKey, { cogs_shrinkage: rounded }).catch(() => {})
   }, [kpis.totalLoss, kpis.completeCount, location, periodKey, scoped, orgId])
 
+  // How many rows are pure catalog noise (no data on any feed) — surfaced on the toggle.
+  const emptyCount = useMemo(() => rows.filter((r) => !hasRowData(r)).length, [rows])
+
   const filtered = useMemo(() => {
     let r = rows
+    if (hideEmpty) r = r.filter(hasRowData)          // drop pure-catalog-noise rows (default)
     if (search) { const s = search.toLowerCase(); r = r.filter((x) => x.name?.toLowerCase().includes(s)) }
     if (sortBy === 'name') r = [...r].sort((a, b) => (a.name || '').localeCompare(b.name || ''))
     // default 'shrinkage' order already applied by computeShrinkageRows ($ lost desc, incompletes last)
     return r
-  }, [rows, search, sortBy])
+  }, [rows, search, sortBy, hideEmpty])
 
   // Row status string for the CSV: the punch list of what a row is waiting on. "complete"
   // when nothing's missing; else the missing feeds + a "pack unresolved" note, joined "; ".
@@ -250,14 +267,24 @@ export default function ShrinkageTable() {
           <option value="shrinkage">Sort by shrinkage $</option>
           <option value="name">Sort by name</option>
         </select>
-        <button style={S.csvBtn} onClick={exportCsv} disabled={filtered.length === 0} title="Download the current location + period's variance rows (all rows, incl. incomplete)">
+        <label style={S.toggle} title="Hide catalog items with no count and no sales — show only computed + partial (needs-a-count) rows">
+          <input type="checkbox" checked={hideEmpty} onChange={(e) => setHideEmpty(e.target.checked)} />
+          Hide empty rows{emptyCount > 0 ? ` (${emptyCount})` : ''}
+        </label>
+        <button style={S.csvBtn} onClick={exportCsv} disabled={filtered.length === 0} title="Download the rows currently shown (respects the Hide-empty toggle + search)">
           <Download size={14} /> Download CSV
         </button>
       </div>
 
       {/* variance table */}
       {loading ? <div style={S.muted}>Loading shrinkage…</div>
-        : filtered.length === 0 ? <div style={S.muted}>No shrinkage-tracked items yet — map sold items on the Mapping tab, then count inventory for this period.</div>
+        : filtered.length === 0 ? (
+          <div style={S.muted}>
+            {rows.length > 0 && hideEmpty && !search
+              ? <>All {rows.length} tracked items are empty (no count or sales yet this period). <button style={S.linkBtn} onClick={() => setHideEmpty(false)}>Show all</button></>
+              : 'No shrinkage-tracked items yet — map sold items on the Mapping tab, then count inventory for this period.'}
+          </div>
+        )
         : (
           <div style={S.tableWrap}>
             <table style={S.table}>
@@ -319,6 +346,8 @@ const STYLES = {
   searchWrap: { position: 'relative', flex: 1 }, searchIcon: { position: 'absolute', left: 12, top: 9, color: '#94a3b8' },
   searchInput: { width: '100%', padding: '8px 12px 8px 34px', fontSize: 13, border: '1px solid #e2e8f0', borderRadius: 8, outline: 'none' },
   select: { padding: '8px 12px', fontSize: 12, border: '1px solid #e2e8f0', borderRadius: 8 },
+  toggle: { display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, color: '#475569', cursor: 'pointer', whiteSpace: 'nowrap', userSelect: 'none' },
+  linkBtn: { background: 'none', border: 'none', color: '#0f766e', fontSize: 13, fontWeight: 600, cursor: 'pointer', padding: 0, textDecoration: 'underline' },
   csvBtn: { display: 'inline-flex', alignItems: 'center', gap: 5, padding: '8px 12px', fontSize: 12, fontWeight: 600, color: '#0f172a', background: '#fff', border: '1px solid #cbd5e1', borderRadius: 8, cursor: 'pointer', whiteSpace: 'nowrap' },
   tableWrap: { border: '1px solid #e2e8f0', borderRadius: 12, overflow: 'hidden' },
   table: { width: '100%', borderCollapse: 'collapse', fontSize: 13 },
