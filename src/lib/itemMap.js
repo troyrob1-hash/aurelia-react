@@ -39,6 +39,35 @@ export function brandOf(s) {
 }
 function jaccard(a, b) { let i = 0; for (const t of a) if (b.has(t)) i++; return i / (a.size + b.size - i || 1) }
 
+// ── Product-Mix sold-name normalizer ──────────────────────────────────────────
+// POS/Product-Mix names are verbose & format-laden ("Pepsi, Soda, Mountain Dew, 20 fl oz",
+// "20 oz Pepsi_Mug Root Beer_Soda", "Pepsi Soda Original 20 fl oz"), so they score below the
+// 0.6 auto bar against terse catalog names ("Pepsi") — the category token "soda" alone drops
+// {pepsi,soda} vs {pepsi} to 0.5. This strips the NOISE (category/type words + the leading
+// reseller/distributor label) to recover the real product identity BEFORE fuzzy scoring.
+// The original name is still stored as the soldAlias — only the SCORING uses the normalized
+// form. Applied sold-side only (catalog names are already terse).
+//
+// SAFETY (never collapse variants): only CATEGORY/TYPE words are dropped. DISTINGUISHING
+// tokens — diet, zero, sugar, cherry, and every flavor — are NEVER here (flavors are guarded
+// by FLAVOR/isVariantRisk and aren't category words), so "Diet Pepsi" / "Pepsi Zero" /
+// "Pepsi Cherry" keep their discriminator and still out-score plain "Pepsi" to their OWN item.
+const PM_CATEGORY_FIELD = /^(sodas?|sports ?drinks?|energy ?drinks?|flavored ?waters?|still|sparkling|drinks?|beverages?|juices?|snacks?|waters?)$/i
+const PM_CATEGORY_WORD = /\b(sodas?|sparkling|flavored|sports|beverages?|wtr|still)\b/gi
+// Soda RESELLERS that lead the comma-format as a distributor label, not the product brand.
+// Drop a LEADING distributor field so the product's own brand anchors the match (Diet Pepsi
+// → brand "diet" hits catalog "Diet Pepsi"; without this, brand "pepsi" would skip it).
+const PM_DISTRIBUTOR = /^(pepsi|coca[- ]?cola|coke|dr\.? ?pepper|keurig)$/i
+const pmStripSize = (s) => s.replace(SIZE, ' ').replace(/\b\d+(\.\d+)?\s?(oz|l)\b/gi, ' ')
+
+export function normalizeSoldName(name) {
+  let fields = String(name || '').split(/[_,;]+/).map((f) => pmStripSize(f).trim()).filter(Boolean)
+  fields = fields.filter((f) => !PM_CATEGORY_FIELD.test(f))                 // drop pure category fields
+  if (fields.length > 1 && PM_DISTRIBUTOR.test(fields[0])) fields = fields.slice(1)   // drop leading reseller
+  const s = fields.join(' ').replace(PM_CATEGORY_WORD, ' ').replace(/\s+/g, ' ').trim()
+  return s || String(name || '').trim()                                    // never return empty
+}
+
 // canonicalId: a stable, doc-id-safe slug for a canonical item.
 export function canonicalIdFor(name) {
   return String(name || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
@@ -138,7 +167,10 @@ export function planAutoMap(items, candidates, { alreadyMapped = new Set() } = {
   const auto = [], proposals = [], unmapped = []
   for (const it of items) {
     if (alreadyMapped.has(it.name)) continue
-    const fz = fuzzyBest(it.name, candidates)
+    // Score on it.matchName (the normalized product identity) when provided; the ORIGINAL
+    // it.name stays the soldAlias identity (skip-check above + row.name below). Callers that
+    // don't pass matchName score on the raw name (unchanged).
+    const fz = fuzzyBest(it.matchName ?? it.name, candidates)
     const kind = classifyMatch(fz)
     const row = { ...it, match: fz.match ? { id: fz.match.id, name: fz.match.name } : null, score: fz.score, variantRisk: fz.variantRisk, kind }
     if (kind === 'auto') auto.push(row)
@@ -519,7 +551,9 @@ export async function autoMapSoldItems(orgId, soldNames, actor = 'unknown', loca
   // in the write loop dedups by name, so an existing canonical isn't duplicated.
   const candidates = [...globalCands, ...locCands, ...canonCands]
 
-  const items = [...new Set(soldNames)].map((name) => ({ name }))
+  // Score on the normalized product identity (strips category/format noise) but keep the
+  // ORIGINAL name as the soldAlias — the sold-feed join matches on the raw itemName.
+  const items = [...new Set(soldNames)].map((name) => ({ name, matchName: normalizeSoldName(name) }))
   const { auto, proposals, unmapped } = planAutoMap(items, candidates, { alreadyMapped })
 
   const byCanonical = new Map(mappings.map((m) => [m.canonicalName, m]))

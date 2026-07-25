@@ -8,6 +8,7 @@ import {
   classifyMatch, rankUnmappedByVolume, coverageStats, purchaseKeyId, planAutoMap,
   buildPurchaseLookup, resolvePurchaseLineLive, dedupePurchaseKeys,
   dedupeCountAliases, countNameKeysFor, planCountAliasSeed, planCountAliasAutoSeed, newMappingDoc,
+  normalizeSoldName, brandOf,
 } from '@/lib/itemMap'
 
 describe('normalization + slug', () => {
@@ -82,6 +83,76 @@ describe('planAutoMap — auto / proposal / unmapped split', () => {
   it('skips already-mapped names', () => {
     const p = planAutoMap(items, candidates, { alreadyMapped: new Set(['Kit Kat']) })
     expect(p.auto).toHaveLength(0)
+  })
+  it('scores on matchName when provided, but keeps the ORIGINAL name as the row identity', () => {
+    const cands = [{ name: 'Pepsi', _tokens: itemTokens('Pepsi'), _brand: 'pepsi' }]
+    const p = planAutoMap([{ name: 'Pepsi Soda Original 20 fl oz', matchName: 'Pepsi Original' }], cands)
+    expect(p.auto).toHaveLength(1)
+    expect(p.auto[0].name).toBe('Pepsi Soda Original 20 fl oz')   // soldAlias identity = original
+    expect(p.auto[0].match.name).toBe('Pepsi')
+  })
+})
+
+describe('normalizeSoldName — Product-Mix noise stripping (category tokens, formats, distributor)', () => {
+  it('strips category words / size (space-format) → recovers product', () => {
+    expect(normalizeSoldName('Pepsi Soda Original 20 fl oz')).toBe('Pepsi Original')   // "soda" + size gone; brand kept
+    expect(normalizeSoldName('20oz Starry')).toBe('Starry')
+  })
+  it('comma-format "Brand, Category, Product, Size": drops category + leading DISTRIBUTOR', () => {
+    expect(normalizeSoldName('Pepsi, Soda, Diet Pepsi, 20 fl oz')).toBe('Diet Pepsi')  // reseller "Pepsi" dropped → brand "diet"
+    expect(normalizeSoldName('Pepsi, Soda, Mountain Dew, 20 fl oz')).toBe('Mountain Dew')
+  })
+  it('underscore-format "Size Brand_Product_Category" → product (distributor Pepsi dropped)', () => {
+    expect(normalizeSoldName('20 oz Pepsi_Mug Root Beer_Soda')).toBe('Mug Root Beer')  // matches catalog "Mug Root Beer"
+  })
+  it('drops a pure-category FIELD but keeps "water" inside a product name', () => {
+    expect(normalizeSoldName('Life Water, Water, Still, 20 fl oz')).toBe('Life Water')  // "Water"/"Still" fields dropped, "Life Water" kept
+  })
+  it('NEVER drops distinguishing tokens (diet / zero / cherry / flavor) — variant safety', () => {
+    expect(normalizeSoldName('Pepsi, Soda, Pepsi Zero, 20 fl oz')).toMatch(/zero/i)
+    expect(normalizeSoldName('Pepsi, Soda, Pepsi Cherry, 20 fl oz')).toMatch(/cherry/i)
+    expect(normalizeSoldName('Pepsi, Soda, Diet Pepsi, 20 fl oz')).toMatch(/diet/i)
+  })
+  it('a non-distributor brand (Alani Nu) is NOT dropped', () => {
+    expect(normalizeSoldName('Alani Nu, Energy Drink, Dream Float, 12 fl oz')).toBe('Alani Nu Dream Float')
+  })
+  it('never returns empty (all-category name → original)', () => {
+    expect(normalizeSoldName('Soda')).toBe('Soda')
+  })
+})
+
+describe('normalizeSoldName + planAutoMap — Pepsi variants map to their OWN item (NO collision)', () => {
+  // The critical guarantee: stripping "soda" must NOT collapse Diet/Zero/Cherry into plain Pepsi.
+  const cands = [
+    { id: 'pepsi', name: 'Pepsi' },
+    { id: 'diet_pepsi', name: 'Diet Pepsi' },
+    { id: 'pepsi_zero_sugar', name: 'Pepsi Zero Sugar' },
+    { id: 'pepsi_wild_cherry', name: 'Pepsi Wild Cherry' },
+  ].map((c) => ({ ...c, _tokens: itemTokens(c.name), _brand: brandOf(c.name) }))
+  const raw = [
+    'Pepsi Soda Original 20 fl oz',
+    'Pepsi, Soda, Diet Pepsi, 20 fl oz',
+    'Pepsi, Soda, Pepsi Zero, 20 fl oz',
+    'Pepsi, Soda, Pepsi Cherry, 20 fl oz',
+  ]
+  const plan = planAutoMap(raw.map((name) => ({ name, matchName: normalizeSoldName(name) })), cands)
+  const byName = Object.fromEntries(plan.auto.map((r) => [r.name, r.match.id]))
+
+  it('plain Pepsi → Pepsi', () => expect(byName['Pepsi Soda Original 20 fl oz']).toBe('pepsi'))
+  it('Diet Pepsi → Diet Pepsi (NOT plain Pepsi)', () => {
+    expect(byName['Pepsi, Soda, Diet Pepsi, 20 fl oz']).toBe('diet_pepsi')
+    expect(byName['Pepsi, Soda, Diet Pepsi, 20 fl oz']).not.toBe('pepsi')
+  })
+  it('Pepsi Zero → Pepsi Zero Sugar (NOT plain Pepsi)', () => {
+    expect(byName['Pepsi, Soda, Pepsi Zero, 20 fl oz']).toBe('pepsi_zero_sugar')
+  })
+  it('Pepsi Cherry → Pepsi Wild Cherry (NOT plain Pepsi)', () => {
+    expect(byName['Pepsi, Soda, Pepsi Cherry, 20 fl oz']).toBe('pepsi_wild_cherry')
+  })
+  it('all four land on DISTINCT items (no two collide)', () => {
+    const ids = Object.values(byName)
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(ids.length).toBe(4)
   })
 })
 
