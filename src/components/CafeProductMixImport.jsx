@@ -118,7 +118,10 @@ export default function CafeProductMixImport({ onImported }) {
       let mapMsg = ''
       try {
         const soldNames = preview.parsed.items.map((r) => r.itemName)
-        const { autoMapped, unmapped } = await autoMapSoldItems(orgId, soldNames, user?.email || 'unknown')
+        // The locIds this import wrote salesItems under — add each location's own catalog
+        // to the auto-map candidate pool (union), where the real products actually live.
+        const locIds = [...new Set(preview.parsed.items.map((r) => r.locId).filter(Boolean))]
+        const { autoMapped, unmapped } = await autoMapSoldItems(orgId, soldNames, user?.email || 'unknown', locIds)
         mapMsg = ` · auto-mapped ${autoMapped}, ${unmapped} to review`
       } catch (mapErr) {
         console.warn('auto-map after sold import failed (feed still landed):', mapErr)

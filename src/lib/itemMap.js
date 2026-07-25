@@ -488,16 +488,36 @@ export async function loadMappings(orgId) {
 // distinct sold names against candidates (catalog + existing canonicals) and AUTO-MAP
 // the high-confidence non-variant matches. Proposals + no-matches are left for the
 // volume-ranked unmapped list — never guessed. Returns counts for the import toast.
-export async function autoMapSoldItems(orgId, soldNames, actor = 'unknown') {
+//
+// locationCatalogIds: the locIds whose PER-LOCATION catalog (inventory/{lk}/items) to add
+// to the candidate pool — UNION with the global inventoryCatalog + existing canonicals,
+// never a replace (global matches other locations rely on stay available). A location's
+// real products (Starry, Alani flavors, the deli line) live in its own catalog, NOT the
+// global one — so matching there is what lifts coverage, AND the matched name IS the count
+// line's name (name-key join works with no alias) and its id IS the count's id. Verified on
+// real Wesley data: top-30 sellers 0 → 16 auto-map from this alone. Variant guard +
+// threshold unchanged (planAutoMap): still never auto-maps across a size/flavor difference.
+export async function autoMapSoldItems(orgId, soldNames, actor = 'unknown', locationCatalogIds = []) {
   const mappings = await loadMappings(orgId)
   const alreadyMapped = new Set()
   for (const m of mappings) for (const a of m.soldAliases || []) alreadyMapped.add(a)
 
+  const mkCand = (id, nm) => ({ id, name: nm, _tokens: itemTokens(nm), _brand: brandOf(nm) })
   const catSnap = await getDocs(collection(db, 'tenants', orgId, 'inventoryCatalog'))
-  const candidates = [
-    ...catSnap.docs.map((d) => { const x = d.data(); const nm = x.name || x.itemName || d.id; return { id: d.id, name: nm, _tokens: itemTokens(nm), _brand: brandOf(nm) } }),
-    ...mappings.map((m) => ({ id: m.canonicalId, name: m.canonicalName, _tokens: itemTokens(m.canonicalName), _brand: brandOf(m.canonicalName), _canonical: true })),
-  ]
+  const globalCands = catSnap.docs.map((d) => { const x = d.data(); return mkCand(d.id, x.name || x.itemName || d.id) })
+
+  // Per-location catalog(s) — the catalog the COUNTS come from. Skip removed items.
+  const locCands = []
+  for (const lk of [...new Set(locationCatalogIds)].filter(Boolean)) {
+    const locSnap = await getDocs(collection(db, 'tenants', orgId, 'inventory', lk, 'items'))
+    locSnap.forEach((d) => { const x = d.data(); if (x.removed) return; const nm = x.name || x.itemName || d.id; if (nm) locCands.push(mkCand(d.id, nm)) })
+  }
+
+  const canonCands = mappings.map((m) => ({ ...mkCand(m.canonicalId, m.canonicalName), _canonical: true }))
+  // Order: global → location → canonicals. For the coverage-lift items global scores 0
+  // (they're not in it), so location wins → canonicalName == count name. canonicalId-merge
+  // in the write loop dedups by name, so an existing canonical isn't duplicated.
+  const candidates = [...globalCands, ...locCands, ...canonCands]
 
   const items = [...new Set(soldNames)].map((name) => ({ name }))
   const { auto, proposals, unmapped } = planAutoMap(items, candidates, { alreadyMapped })
