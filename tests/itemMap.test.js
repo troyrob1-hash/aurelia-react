@@ -8,7 +8,7 @@ import {
   classifyMatch, rankUnmappedByVolume, coverageStats, purchaseKeyId, planAutoMap,
   buildPurchaseLookup, resolvePurchaseLineLive, dedupePurchaseKeys,
   dedupeCountAliases, countNameKeysFor, planCountAliasSeed, planCountAliasAutoSeed, newMappingDoc,
-  normalizeSoldName, brandOf, expandAbbrev,
+  normalizeSoldName, brandOf, expandAbbrev, fuzzyTokenMatch, bTierSafe,
 } from '@/lib/itemMap'
 
 describe('normalization + slug', () => {
@@ -414,5 +414,71 @@ describe('planCountAliasAutoSeed — fuzzy tier (auto the safe, manual the ambig
     // the already-linked Vanilla is NOT re-emitted (skipped); only the new Tropicana attaches
     expect(auto.map((a) => a.canonicalId)).toEqual(['trop-apple'])
     expect(auto.find((a) => a.canonicalId === 'sb-van')).toBeUndefined()
+  })
+})
+
+describe('C tier — spelling (edit-distance ≤1) + de-space, guarded by one-sided flavor', () => {
+  it('fuzzyTokenMatch: ≥5-char one-edit pairs match; short/too-far do not', () => {
+    expect(fuzzyTokenMatch('frappucino', 'frappuccino')).toBe(true)
+    expect(fuzzyTokenMatch('sherbet', 'sherbert')).toBe(true)
+    expect(fuzzyTokenMatch('mightly', 'mighty')).toBe(true)
+    expect(fuzzyTokenMatch('diet', 'debt')).toBe(false)        // <5 chars → no fuzzy
+    expect(fuzzyTokenMatch('mocha', 'vanilla')).toBe(false)    // too far
+  })
+  it('one-sided flavor guard: a flavor on one side the other lacks → variant', () => {
+    expect(isVariantRisk(itemTokens('Frappuccino Caramel'), itemTokens('Frappuccino Coffee'))).toBe(true)  // caramel unmatched
+    expect(isVariantRisk(itemTokens('Frappuccino Mocha'), itemTokens('Frappuccino Mocha'))).toBe(false)
+    expect(isVariantRisk(itemTokens('Pepsi Cherry'), itemTokens('Pepsi Wild Cherry'))).toBe(false)         // cherry both sides
+  })
+  const cands = [
+    { id: '19', name: 'Starbucks frappuccino mocha' },
+    { id: '20', name: 'Starbucks frappuccino Coffee' },
+    { id: 'alani_nu_watermelon_wave', name: 'Alani Nu Watermelon Wave' },
+  ].map((c) => ({ ...c, _tokens: itemTokens(c.name), _brand: brandOf(c.name) }))
+  const plan = (n) => planAutoMap([{ name: n, matchName: normalizeSoldName(n) }], cands)
+
+  it('spelling win auto-maps: Frappucino Mocha → mocha', () => {
+    expect(plan('Starbucks, Coffee, Frappucino Mocha, 13.7 fl oz').auto[0]?.match.id).toBe('19')
+  })
+  it('de-space win auto-maps: AlaniNu Watermelon Wave → Alani Nu Watermelon Wave', () => {
+    expect(plan('AlaniNu Watermelon Wave').auto[0]?.match.id).toBe('alani_nu_watermelon_wave')
+  })
+  it('Frappucino CARAMEL does NOT auto (flavor guard) → proposal, not auto', () => {
+    const p = plan('Starbucks, Coffee, Frappucino Caramel, 9.5 fl oz')
+    expect(p.auto).toHaveLength(0)
+    expect(p.proposals.length).toBeGreaterThan(0)
+  })
+})
+
+describe('B tier — brand-anchor relaxation, positional bTierSafe gate', () => {
+  it('bTierSafe: leading vendor prefix → safe; mid discriminator / sold-extra → NOT safe', () => {
+    expect(bTierSafe('Chicken Salad Sandwich Heartland Harvest', { name: 'Heartland Harvest - Chicken Salad Sandwich' })).toBe(true)   // exact tokens, order/vendor-position
+    expect(bTierSafe('OS Cran Grape', { name: 'Oceanspray Cran Grape' })).toBe(true)                                                   // leading vendor "oceanspray"
+    expect(bTierSafe('Chicken Salad and Crackers Heartland Harvest', { name: 'Heartland Harvest - Spicy - Chicken Salad with Crackers' })).toBe(false) // mid "spicy"
+    expect(bTierSafe('Schweppes Ginger Ale', { name: 'Ginger Ale' })).toBe(false)                                                       // sold-side extra "schweppes"
+  })
+  const cands = [
+    { id: 'hh_css', name: 'Heartland Harvest - Chicken Salad Sandwich' },
+    { id: 'hh_spicy', name: 'Heartland Harvest - Spicy - Chicken Salad with Crackers' },
+    { id: 'ginger_ale', name: 'Ginger Ale' },
+    { id: 'life_water', name: 'Life Water 20oz' },
+  ].map((c) => ({ ...c, _tokens: itemTokens(c.name), _brand: brandOf(c.name) }))
+  const plan = (n) => planAutoMap([{ name: n, matchName: normalizeSoldName(n) }], cands)
+
+  it('deli line auto-maps across brand position: Chicken Salad Sandwich → HH Chicken Salad Sandwich', () => {
+    expect(plan('Chicken Salad Sandwich-Heartland Harvest').auto[0]?.match.id).toBe('hh_css')
+  })
+  it('word-order auto-maps: Water Life → Life Water', () => {
+    expect(plan('1 L Water Life WTR_Still_Water').auto[0]?.match.id).toBe('life_water')
+  })
+  it('Spicy variant → PROPOSAL, not auto (mid-name discriminator)', () => {
+    const p = plan('Chicken Salad and Crackers- Heartland Harvest')
+    expect(p.auto).toHaveLength(0)
+    expect(p.proposals.map((r) => r.match.id)).toContain('hh_spicy')
+  })
+  it('Schweppes Ginger Ale → PROPOSAL, not auto (sold-side brand extra)', () => {
+    const p = plan('Pepsi, Soda, Schweppes Ginger Ale, 20 fl oz')
+    expect(p.auto).toHaveLength(0)
+    expect(p.proposals.map((r) => r.match.id)).toContain('ginger_ale')
   })
 })

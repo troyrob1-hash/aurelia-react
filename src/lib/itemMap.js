@@ -40,13 +40,41 @@ export function normalizeItemName(s) {
     .split(/\s+/).filter((w) => w.length > 2 && !STOP.has(w)).sort().join(' ').trim()
 }
 export function itemTokens(s) { return new Set(normalizeItemName(s).split(' ').filter(Boolean)) }
-export function brandOf(s) {
-  // brand = first non-stop meaningful token in ORIGINAL order (not sorted)
-  const raw = expandAbbrev(String(s || '').toLowerCase()).replace(/&/g, ' and ').replace(SIZE, ' ').replace(NUM, ' ')
+// Meaningful tokens in ORIGINAL (unsorted) order — for the brand (first) and the B-tier
+// positional rule (a vendor prefix is a run of leading tokens; a mid-name token is not).
+export function tokenArr(s) {
+  return expandAbbrev(String(s || '').toLowerCase()).replace(/&/g, ' and ').replace(SIZE, ' ').replace(NUM, ' ')
     .replace(/[^a-z ]+/g, ' ').split(/\s+/).filter((w) => w.length > 2 && !STOP.has(w))
-  return raw[0] || ''
 }
+export function brandOf(s) { return tokenArr(s)[0] || '' }
 function jaccard(a, b) { let i = 0; for (const t of a) if (b.has(t)) i++; return i / (a.size + b.size - i || 1) }
+
+// ── Fuzzy token matching (spelling/spacing — the C tier) ──────────────────────
+// Levenshtein, bounded (returns 2 as soon as it can't be ≤1 — we only ever ask "≤1?").
+function lev(a, b) {
+  const m = a.length, n = b.length
+  if (Math.abs(m - n) > 1) return 2
+  const d = Array.from({ length: m + 1 }, (_, i) => [i, ...Array(n).fill(0)])
+  for (let j = 0; j <= n; j++) d[0][j] = j
+  for (let i = 1; i <= m; i++) for (let j = 1; j <= n; j++)
+    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+  return d[m][n]
+}
+// Two tokens match if equal OR (both ≥5 chars and one edit apart) — "Frappucino"~"Frappuccino",
+// "Sherbet"~"Sherbert", "Mightly"~"Mighty". The ≥5 floor stops short-token noise (a 1-edit gap
+// on a 4-char token — "diet"/"debt", "mango"/"tango" are 5 but see the flavor guard) from
+// over-merging; flavor differences are still caught by isVariantRisk.
+export function fuzzyTokenMatch(x, y) { return x === y || (x.length >= 5 && y.length >= 5 && lev(x, y) <= 1) }
+// Fuzzy jaccard — token overlap counting an edit-≤1 pair as a match (greedy, each catalog
+// token used once). Used by fuzzyBest so a spelling variant scores like an exact match.
+function fuzzyJaccard(A, B) {
+  const a = [...A], b = [...B], used = new Array(b.length).fill(false)
+  let i = 0
+  for (const x of a) for (let k = 0; k < b.length; k++) { if (!used[k] && fuzzyTokenMatch(x, b[k])) { i++; used[k] = true; break } }
+  return i / (a.length + b.length - i || 1)
+}
+// De-spaced form (spacing/concatenation — "AlaniNu"→"alaninu" vs "Alani Nu"→"alaninu").
+export function despace(s) { return expandAbbrev(String(s || '').toLowerCase()).replace(/[^a-z0-9]/g, '') }
 
 // ── Product-Mix sold-name normalizer ──────────────────────────────────────────
 // POS/Product-Mix names are verbose & format-laden ("Pepsi, Soda, Mountain Dew, 20 fl oz",
@@ -89,29 +117,41 @@ export function canonicalIdFor(name) {
 const DIET_CLASS = new Set(['diet', 'zero'])
 
 // Variant risk: NEVER auto-map when the two carry distinct discriminators —
-//  • FLAVOR (symmetric): each side has a flavor the other lacks (Chobani peach vs strawberry).
+//  • FLAVOR (ONE-SIDED): a flavor token on ONE side that the matched other side lacks →
+//    different product. Generalized from the old symmetric rule so it also catches the case
+//    where only one side names the flavor: "Frappuccino Caramel" vs "Frappuccino Coffee"
+//    (caramel unmatched → manual), not just Chobani-peach-vs-strawberry. A flavor counts as
+//    matched if an exact OR edit-distance-≤1 counterpart exists (aligns with the C spelling
+//    matcher, so "vanilla"/"vanila" don't false-trigger).
 //  • DIET-CLASS (one-sided): one side is diet/zero, the match isn't (regular vs sugar-free).
 // Either → human decides.
 export function isVariantRisk(aTokens, bTokens) {
+  const has = (t, set) => set.has(t) || [...set].some((y) => fuzzyTokenMatch(t, y))
   const af = [...aTokens].filter((t) => FLAVOR.test(t))
   const bf = [...bTokens].filter((t) => FLAVOR.test(t))
-  const flavorRisk = (af.length || bf.length) &&
-    af.some((t) => !bTokens.has(t)) && bf.some((t) => !aTokens.has(t))
+  const flavorRisk = af.some((t) => !has(t, bTokens)) || bf.some((t) => !has(t, aTokens))
   const ad = [...aTokens].filter((t) => DIET_CLASS.has(t))
   const bd = [...bTokens].filter((t) => DIET_CLASS.has(t))
   const dietRisk = ad.some((t) => !bTokens.has(t)) || bd.some((t) => !aTokens.has(t))
   return !!(flavorRisk || dietRisk)
 }
 
-// Best fuzzy match of `name` against candidates [{ id, name }]. Brand must agree.
+// Best fuzzy match of `name` against candidates [{ id, name }]. Brand-anchored, with the C
+// tier: token overlap counts edit-≤1 pairs (fuzzyJaccard — spelling), and an exact de-spaced
+// match ("AlaniNu"=="Alani Nu") scores 1 AND bypasses the brand anchor (the concatenation
+// "AlaniNu" breaks the brand token, so anchoring would wrongly skip it). variantRisk still
+// gates flavor/diet, so a spelling win can't collapse a flavor (Caramel vs Coffee).
 export function fuzzyBest(name, candidates) {
-  const nt = itemTokens(name), nb = brandOf(name)
+  const nt = itemTokens(name), nb = brandOf(name), nd = despace(name)
   let best = 0, match = null, risk = false
   for (const c of candidates) {
+    const cd = c._despaced || despace(c.name)
+    const despaceHit = nd.length > 4 && nd === cd
     const cb = c._brand || brandOf(c.name)
-    if (nb && cb && nb !== cb) continue          // brand-anchored
+    if (nb && cb && nb !== cb && !despaceHit) continue      // brand-anchored (de-space exact bypasses)
     const ct = c._tokens || itemTokens(c.name)
-    const j = jaccard(nt, ct)
+    let j = fuzzyJaccard(nt, ct)
+    if (despaceHit) j = Math.max(j, 1)
     if (j > best) { best = j; match = c; risk = isVariantRisk(nt, ct) }
   }
   return { score: best, match, variantRisk: risk }
@@ -175,25 +215,67 @@ export function coverageStats(rankedAll, mappedNames) {
   }
 }
 
+// ── B tier — brand-anchor relaxation ──────────────────────────────────────────
+// Best match ignoring the brand anchor (order-independent — jaccard is set-based; fuzzy for
+// spelling). For sold names whose PRODUCT leads and the VENDOR trails ("Chicken Salad
+// Sandwich-Heartland Harvest" vs catalog "Heartland Harvest - Chicken Salad Sandwich") the
+// brand anchor blocks the correct match; this finds it.
+function brandRelaxedBest(name, candidates) {
+  const nt = itemTokens(name)
+  let best = 0, match = null, risk = false
+  for (const c of candidates) {
+    const ct = c._tokens || itemTokens(c.name)
+    const j = fuzzyJaccard(nt, ct)
+    if (j > best) { best = j; match = c; risk = isVariantRisk(nt, ct) }
+  }
+  return { score: best, match, variantRisk: risk }
+}
+// A brand-cross match is SAFE to auto (vs surface as a proposal) only when:
+//  (1) every SOLD token is present in the catalog — no sold-side extra like the brand
+//      "Schweppes" that the generic catalog "Ginger Ale" lacks (→ uncertain, manual); AND
+//  (2) every catalog token the sold lacks is part of the LEADING vendor prefix (the run of
+//      tokens before the first shared one — "Heartland Harvest", "Oceanspray", "Starbucks"),
+//      NOT a mid-name discriminator ("...Spicy...") (→ regular-vs-spicy, manual).
+// Frequency can't separate these (spicy=4 ≈ oceanspray=2); token POSITION can.
+export function bTierSafe(soldName, cand) {
+  const st = itemTokens(soldName)
+  const ctArr = cand._arr || tokenArr(cand.name)
+  const inSet = (t, set) => set.has(t) || [...set].some((y) => fuzzyTokenMatch(t, y))
+  const ctSet = new Set(ctArr)
+  if (![...st].every((t) => inSet(t, ctSet))) return false      // (1) sold-side extra → not safe
+  let seenMatch = false
+  for (const t of ctArr) {                                       // (2) catalog extras must be leading
+    if (inSet(t, st)) seenMatch = true
+    else if (seenMatch) return false
+  }
+  return true
+}
+
 // ── Auto-map planner (pure decision, applied by the import path) ───────────────
-// The auto-map logic, decoupled from Firestore so it's testable and reviewable:
-//   • SOLD side: fuzzy-match each unmapped sold name to candidates (catalog + existing
-//     canonicals). classifyMatch → 'auto' (create silently) / 'proposal' (unmapped list,
-//     pre-filled suggestion) / 'none' (unmapped list, no suggestion).
-//   • PURCHASED side is CODE-FIRST and handled at import by resolvePurchaseKey (exact,
-//     O(1)); only a NEW code falls through to this same fuzzy planner on its description.
-// Returns the plan — the caller applies writeMapping for 'auto' and stashes the rest in
-// the unmapped list. Never guesses a low-confidence or variant-risk mapping.
+// Two-stage per sold name:
+//   • BRAND-ANCHORED fuzzyBest (+ C spelling/de-space) → classifyMatch → auto/proposal/none.
+//   • If not auto, the B TIER: brand-relaxed best. If it clears the threshold, it AUTO-maps
+//     only when bTierSafe + not variant-risk (the deli line, Water Life); otherwise it's a
+//     high-ranked PROPOSAL (Spicy Chicken Salad, Schweppes Ginger Ale) — surfaced, not guessed.
+// Returns the plan — the caller applies writeMapping for 'auto' and stashes the rest.
 export function planAutoMap(items, candidates, { alreadyMapped = new Set() } = {}) {
   const auto = [], proposals = [], unmapped = []
   for (const it of items) {
     if (alreadyMapped.has(it.name)) continue
     // Score on it.matchName (the normalized product identity) when provided; the ORIGINAL
-    // it.name stays the soldAlias identity (skip-check above + row.name below). Callers that
-    // don't pass matchName score on the raw name (unchanged).
-    const fz = fuzzyBest(it.matchName ?? it.name, candidates)
-    const kind = classifyMatch(fz)
-    const row = { ...it, match: fz.match ? { id: fz.match.id, name: fz.match.name } : null, score: fz.score, variantRisk: fz.variantRisk, kind }
+    // it.name stays the soldAlias identity. Callers without matchName score on the raw name.
+    const matchName = it.matchName ?? it.name
+    const fz = fuzzyBest(matchName, candidates)
+    let kind = classifyMatch(fz)
+    let m = fz.match, score = fz.score, variantRisk = fz.variantRisk
+    if (kind !== 'auto') {
+      const bz = brandRelaxedBest(matchName, candidates)         // B tier
+      if (bz.match && bz.score >= AUTO_MAP_THRESHOLD && bz.score > score) {
+        m = bz.match; score = bz.score; variantRisk = bz.variantRisk
+        kind = (!bz.variantRisk && bTierSafe(matchName, bz.match)) ? 'auto' : 'proposal'
+      }
+    }
+    const row = { ...it, match: m ? { id: m.id, name: m.name } : null, score, variantRisk, kind }
     if (kind === 'auto') auto.push(row)
     else if (kind === 'proposal') proposals.push(row)
     else unmapped.push(row)
