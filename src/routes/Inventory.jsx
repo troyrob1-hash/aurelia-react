@@ -18,6 +18,7 @@ import ErrorBoundary from '@/components/ErrorBoundary'
 import ArrangeList from '@/components/inventory/ArrangeList'
 import CategoryManagerModal from '@/components/inventory/CategoryManagerModal'
 import { canEditInventoryCategories } from '@/lib/permissions'
+import { resolveCountColumns, buildCatalogIndex, matchCountRow } from '@/lib/countUpload'
 import styles from './Inventory.module.css'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
@@ -844,11 +845,8 @@ export default function Inventory() {
   })
 
 
-  // ── Count upload: parse + slug-match → preview (step 1; NO writes) ──────────
-  // Same name-slug transform the catalog uses to key item docs, so a count file
-  // matches items exactly the way they were imported.
-  const nameSlug = (n) => String(n || '').trim()
-    .replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_').toLowerCase().slice(0, 80)
+  // ── Count upload: parse + UPC/slug-match → preview (step 1; NO writes) ──────
+  // Column aliases + catalog matching live in src/lib/countUpload.js (unit-tested).
 
   const parseCountFile = async (file) => {
     if (!file) return
@@ -875,9 +873,11 @@ export default function Inventory() {
       if (!rows.length) { toast.error('No rows found in the file.'); return }
       const headers = Object.keys(rows[0])
 
-      const nameCol = headers.find(h => /^(item|name|description|item name|product)$/i.test(h.trim()))
-      const casesCol = headers.find(h => /^(cases|qty|quantity|count)$/i.test(h.trim()))
-      const eachesCol = headers.find(h => /^(eaches|units|loose|each)$/i.test(h.trim()))
+      // Column aliases live in src/lib/countUpload.js (unit-tested against the real
+      // Wings_Inv_Item shape). casesCol accepts Cases/Qty/Count/Packs/"Packs on Hand";
+      // eachesCol accepts Eaches/Units/Loose/"Units on Hand". Letters-only matching
+      // keeps "Pack Cost"/"Unit Cost" from ever being mistaken for a count column.
+      const { nameCol, upcCol, casesCol, eachesCol } = resolveCountColumns(headers)
       // Fail-loud on a wrong sheet: name the sheet we read and list the file's tabs.
       if (!nameCol) {
         toast.error(
@@ -886,17 +886,14 @@ export default function Inventory() {
         )
         return
       }
+      // Fail loud only when NEITHER a packs/cases nor a units/eaches column exists.
       if (!casesCol && !eachesCol) {
-        toast.error(`No count column on sheet "${sheetName}". Add "Cases" (or "Qty") and/or "Eaches".`)
+        toast.error(`No count column on sheet "${sheetName}". Add a packs/cases column ("Packs on Hand", "Cases", or "Qty") and/or a units column ("Units on Hand" or "Eaches").`)
         return
       }
 
-      // Lookups from the CURRENT location's loaded items.
-      const bySlug = {}, byName = {}
-      for (const it of items) {
-        bySlug[nameSlug(it.name)] = it
-        byName[String(it.name || '').toLowerCase().trim()] = it
-      }
+      // UPC / slug / name lookups from the CURRENT location's loaded items.
+      const catalogIndex = buildCatalogIndex(items)
       const num = (v) => { const n = parseFloat(String(v).replace(/[$,\s]/g, '')); return Number.isFinite(n) ? n : null }
       const valueOf = (it, qty, eaches) => {
         const pp = it.packPrice || ((it.qtyPerPack || 1) * (it.unitCost || 0))
@@ -908,9 +905,9 @@ export default function Inventory() {
       const countsById = {}
       const seen = new Set()
       for (const row of rows) {
-        const rawName = String(row[nameCol] ?? '').trim()
+        // UPC-preferred match (stable identity), then name slug, then plain name.
+        const { item, matchedBy, rawName } = matchCountRow(row, { nameCol, upcCol }, catalogIndex)
         if (!rawName) continue // blank row
-        const item = bySlug[nameSlug(rawName)] || byName[rawName.toLowerCase()]
         if (!item) { unmatched.push({ name: rawName }); continue }
         const cases = casesCol ? num(row[casesCol]) : null
         const eaches = eachesCol ? num(row[eachesCol]) : null
@@ -926,7 +923,7 @@ export default function Inventory() {
           id, itemName: item.name, qty, eaches: ea,
           value: valueOf(item, qty, ea),
           prevQty: item.qty, prevEaches: item.eaches,
-          isOverwrite: hasCount(item),
+          isOverwrite: hasCount(item), matchedBy,
         }
         // Keep the LAST entry for a duplicate id (mirrors countsById).
         const existingIdx = toCount.findIndex(e => e.id === id)
