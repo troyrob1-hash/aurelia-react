@@ -85,6 +85,20 @@ export function perEachCost(item) {
   return perCase / qpp
 }
 
+// Sum SOLD across the whole window — every gap period, not just the current one. When the
+// opening walked back past a skipped/stub week, the window spans that week too, so its sales
+// must be included or shrinkage over-reports loss (opening carries stock that was sold during
+// the skipped week, but those sales wouldn't be subtracted). perPeriodItems: one array of
+// salesItems ({ itemName, qtySold }) per gap period. Joins via soldAliases (exact itemName).
+export function aggregateSold(perPeriodItems, aliasToCanonical) {
+  const soldByCanonical = {}
+  for (const items of perPeriodItems || []) for (const x of items || []) {
+    const cid = aliasToCanonical[x?.itemName]
+    if (cid) soldByCanonical[cid] = (soldByCanonical[cid] || 0) + (Number(x?.qtySold) || 0)
+  }
+  return soldByCanonical
+}
+
 // Build { itemNameKey(name) → per-EACH cost } from count-doc lines, keyed the same way
 // buildCountMap keys eaches — so any item that has a count also has its unit cost. Only
 // lines with a real cost land (others fall back to the global catalog, then "—").
@@ -158,6 +172,12 @@ export function computeShrinkageRow(c, feeds) {
     opening, purchased, purchasedUnresolved, sold, closing,
     expected, shrinkage, shrinkageValue, unitCost,
     complete, missing,
+    // Window honesty: which period the opening came from + how many weeks the row spans.
+    // When the immediately-prior period was skipped, opening walks back and spanWeeks > 1 —
+    // the UI labels it so a longer-window number is honest about its window (feeds pass these
+    // through uniformly; every row shares the same window since walk-back is per-period).
+    openingFromPeriod: feeds.openingFromPeriod || null,
+    spanWeeks: feeds.spanWeeks || 1,
   }
 }
 

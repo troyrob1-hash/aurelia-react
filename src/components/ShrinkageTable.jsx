@@ -14,9 +14,9 @@ import SubCafeBar from '@/components/ui/SubCafePrompt'
 import { usePeriod } from '@/store/PeriodContext'
 import { db } from '@/lib/firebase'
 import { doc, getDoc, getDocs, collection } from 'firebase/firestore'
-import { locId, getPriorKey, writePnL } from '@/lib/pnl'
+import { locId, getPriorKey, resolveOpeningWindow, writePnL } from '@/lib/pnl'
 import { loadMappings, buildPurchaseLookup, resolvePurchaseLineLive } from '@/lib/itemMap'
-import { computeShrinkageRows, shrinkageKpis, buildCountMap, buildUnitCostMap } from '@/lib/shrinkage'
+import { computeShrinkageRows, shrinkageKpis, buildCountMap, buildUnitCostMap, aggregateSold } from '@/lib/shrinkage'
 
 const fmtN = (v) => {
   if (v == null) return '—'
@@ -58,38 +58,52 @@ export default function ShrinkageTable() {
     ;(async () => {
       try {
         const lk = locId(location)
-        const priorPK = getPriorKey(periodKey)
+        const WALK_CAP = 5
 
-        // ── the three feeds + catalog, all for THIS loc + period ──
-        const [mappings, salesSnap, invSnap, catSnap, priorSnap, curSnap] = await Promise.all([
+        // Candidate prior periods (up to the cap) for the OPENING walk-back — the immediately-
+        // prior period may have been skipped (stub week / month-close-instead-of-count / not yet
+        // counted), so we read a few back and let resolveOpeningWindow pick the most recent one
+        // that actually has a count.
+        const priorKeys = []
+        { let cur = periodKey; for (let i = 0; i < WALK_CAP; i++) { const p = getPriorKey(cur); if (!p) break; priorKeys.push(p); cur = p } }
+
+        const [mappings, invSnap, catSnap, curSnap, ...priorDocs] = await Promise.all([
           loadMappings(orgId),
-          getDocs(collection(db, 'tenants', orgId, 'salesItems', lk, 'periods', periodKey, 'items')),
           getDocs(collection(db, 'tenants', orgId, 'invoices')),
           getDocs(collection(db, 'tenants', orgId, 'inventoryCatalog')),
-          priorPK ? getDoc(doc(db, 'tenants', orgId, 'locations', lk, 'inventory', priorPK)) : Promise.resolve(null),
           getDoc(doc(db, 'tenants', orgId, 'locations', lk, 'inventory', periodKey)),
+          ...priorKeys.map((pk) => getDoc(doc(db, 'tenants', orgId, 'locations', lk, 'inventory', pk))),
         ])
 
-        // SOLD ← salesItems.qtySold, joined to canonical via soldAliases (exact itemName).
+        // Resolve the opening window: walk back to the first prior period WITH a count. gapPeriods
+        // = every period the window now covers (current + each skipped one) — the pivot that sold
+        // and purchased must both be summed over.
+        const priorItemsOf = (pk) => { const idx = priorKeys.indexOf(pk); const s = idx >= 0 ? priorDocs[idx] : null; return (s && s.exists() && s.data().items) || [] }
+        const hasCount = (pk) => Object.keys(buildCountMap(priorItemsOf(pk))).length > 0
+        const { openingPeriod, gapPeriods, spanWeeks } = resolveOpeningWindow(periodKey, hasCount, WALK_CAP)
+        const immediatePrior = getPriorKey(periodKey)
+
+        // SOLD ← salesItems.qtySold summed over ALL gap periods (not just current), joined via
+        // soldAliases. Required for window alignment: opening from N periods back means the
+        // window spans those weeks' sales too — omitting them over-reports loss.
         const aliasToCanonical = {}
         for (const m of mappings) for (const a of m.soldAliases || []) aliasToCanonical[a] = m.canonicalId
-        const soldByCanonical = {}
-        const hasSoldFeed = salesSnap.size > 0
-        salesSnap.forEach((d) => {
-          const x = d.data(); const cid = aliasToCanonical[x.itemName]
-          if (cid) soldByCanonical[cid] = (soldByCanonical[cid] || 0) + (Number(x.qtySold) || 0)
-        })
+        const gapSalesSnaps = await Promise.all(gapPeriods.map((pk) => getDocs(collection(db, 'tenants', orgId, 'salesItems', lk, 'periods', pk, 'items'))))
+        const perPeriodSold = gapSalesSnaps.map((snap) => snap.docs.map((d) => d.data()))
+        const soldByCanonical = aggregateSold(perPeriodSold, aliasToCanonical)
+        const hasSoldFeed = gapSalesSnaps.some((s) => s.size > 0)
 
-        // PURCHASED ← invoice lineItems.eachesTotal for this loc+period, resolved to a
-        // canonical LIVE against the current mappings (not the stored l.canonicalId, which
-        // froze at parse time). A code mapped AFTER an invoice was parsed self-heals here on
-        // next load — no backfill of invoice docs needed.
+        // PURCHASED ← invoice lineItems.eachesTotal over ALL gap periods (same window as sold),
+        // resolved to a canonical LIVE against the current mappings (not the stored
+        // l.canonicalId, which froze at parse time). A code mapped AFTER an invoice was parsed
+        // self-heals here on next load — no backfill of invoice docs needed.
+        const gapSet = new Set(gapPeriods)
         const purchaseLookup = buildPurchaseLookup(mappings)
         const purchasedByCanonical = {}
         const purchasedUnresolvedByCanonical = {}   // canonical has ≥1 resolved line with unknown eaches
         invSnap.forEach((d) => {
           const inv = d.data()
-          if (inv.location !== location || inv.periodKey !== periodKey) return
+          if (inv.location !== location || !gapSet.has(inv.periodKey)) return
           const vendorKey = inv.vendorKey || (inv.vendor || '').toLowerCase().replace(/[^a-z0-9]+/g, '_')
           for (const l of inv.lineItems || []) {
             const cid = resolvePurchaseLineLive(purchaseLookup, vendorKey, l)
@@ -116,9 +130,9 @@ export default function ShrinkageTable() {
         // ONE shared builder for both feeds (buildCountMap) so opening (prior) and closing
         // (current) are keyed identically — itemNameKey(name), isCounted-gated — and can't
         // drift. The row resolves both through the same countNameKeys (canonicalName + countAliases).
-        const priorItems = (priorSnap && priorSnap.exists() && priorSnap.data().items) || []
+        const openingItems = openingPeriod ? priorItemsOf(openingPeriod) : []   // walked-back open
         const curItems = (curSnap && curSnap.exists() && curSnap.data().items) || []
-        const openingByName = buildCountMap(priorItems)
+        const openingByName = buildCountMap(openingItems)
         const closingByName = buildCountMap(curItems)
         const unitCostByCat = {}
         catSnap.forEach((d) => { const x = d.data(); if (x.unitCost != null) unitCostByCat[d.id] = x.unitCost })
@@ -126,14 +140,16 @@ export default function ShrinkageTable() {
         // CASE; buildUnitCostMap divides by qtyPerPack). Current (closing) count first, prior
         // as fallback, so a location-catalog (slug-id) match — absent from the global catalog —
         // still gets its $Lost. computeShrinkageRow falls back to unitCostByCat, then "—".
-        const unitCostByName = { ...buildUnitCostMap(priorItems), ...buildUnitCostMap(curItems) }
+        const unitCostByName = { ...buildUnitCostMap(openingItems), ...buildUnitCostMap(curItems) }
         // Banner/KPI flags: base on ACTUALLY-counted lines, so an all-blank doc reads "no
         // real count" for the heads-up (not just "doc exists").
         const hasOpeningDoc = Object.keys(openingByName).length > 0
         const hasClosingDoc = Object.keys(closingByName).length > 0
 
-        const feeds = { hasSoldFeed, openingByName, closingByName, purchasedByCanonical, purchasedUnresolvedByCanonical, soldByCanonical, unitCostByCat, unitCostByName }
-        setFeedState({ hasSoldFeed, hasOpeningDoc, hasClosingDoc })
+        // Window label: only when opening came from FURTHER back than the immediate prior.
+        const openingFromPeriod = (openingPeriod && openingPeriod !== immediatePrior) ? openingPeriod : null
+        const feeds = { hasSoldFeed, openingByName, closingByName, purchasedByCanonical, purchasedUnresolvedByCanonical, soldByCanonical, unitCostByCat, unitCostByName, openingFromPeriod, spanWeeks }
+        setFeedState({ hasSoldFeed, hasOpeningDoc, hasClosingDoc, openingFromPeriod, spanWeeks })
         setRows(computeShrinkageRows(mappings, feeds))
       } catch (err) {
         console.error('shrinkage load failed:', err)
@@ -259,6 +275,15 @@ export default function ShrinkageTable() {
           {!feedState.hasSoldFeed && ' No Product Mix (sold) data for this period.'}
           {!feedState.hasClosingDoc && ' No closing inventory count for this period.'}
           {' '}Rows show what's known; shrinkage computes once the feed lands.
+        </div>
+      )}
+
+      {/* skipped-period window banner — opening came from further back than the immediate prior */}
+      {feedState.openingFromPeriod && (
+        <div style={S.warn}>
+          <AlertTriangle size={14} color="#d97706" />
+          {' '}Opening from <b>{feedState.openingFromPeriod}</b> — the immediately-prior period had no count, so this
+          shrinkage spans <b>{feedState.spanWeeks} weeks</b> (sold + purchased are summed over the same window).
         </div>
       )}
 

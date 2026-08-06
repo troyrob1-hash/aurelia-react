@@ -218,6 +218,30 @@ export function getPriorKey(key) {
   return `${yr-1}-P12-W${decWeeks}`
 }
 
+// Resolve the shrinkage OPENING window when the immediately-prior period may have been
+// skipped (a 1-day stub week, a month-close-instead-of-count, or just not yet counted).
+// Walks backward via getPriorKey until a period with a real count is found (hasCount(key)
+// truthy), capped at `cap` steps. Returns:
+//   openingPeriod : the found prior count period (its CLOSE is the opening) — null if none.
+//   gapPeriods    : EVERY fiscal period the shrinkage window now covers — current plus each
+//                   skipped (uncounted) period walked past. This is the pivot: sold + purchased
+//                   MUST be summed over ALL of these, or the skipped week's activity is missing
+//                   from the identity and shrinkage reads as overstated loss.
+//   spanWeeks     : gapPeriods.length — 1 in the normal (immediate-prior counted) case.
+// Pure: `hasCount` is injected (the caller reads the count docs) so it's fully testable.
+export function resolveOpeningWindow(currentKey, hasCount, cap = 5) {
+  const gapPeriods = [currentKey]              // the window always covers the current period...
+  let cursor = currentKey
+  for (let i = 0; i < cap; i++) {
+    const prior = getPriorKey(cursor)
+    if (!prior) break
+    if (hasCount(prior)) return { openingPeriod: prior, gapPeriods, spanWeeks: gapPeriods.length }
+    gapPeriods.push(prior)                     // ...plus each skipped (uncounted) period walked past
+    cursor = prior
+  }
+  return { openingPeriod: null, gapPeriods, spanWeeks: gapPeriods.length }   // no count within cap → "—"
+}
+
 // Build a list of N trailing period keys ending at (and including) currentKey.
 // Example: getTrailingPeriodKeys('2026-P04-W2', 12) returns
 //   ['2026-P01-W3', '2026-P01-W4', '2026-P02-W1', ..., '2026-P04-W2']

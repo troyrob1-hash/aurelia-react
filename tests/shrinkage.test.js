@@ -2,7 +2,8 @@
 //   shrinkage = opening + purchased − sold − closing ;  $lost = shrinkage × unitCost
 // and the HONESTY rule (missing feed → null cell + incomplete flag, never a fake zero).
 import { describe, it, expect } from 'vitest'
-import { computeShrinkageRow, computeShrinkageRows, shrinkageKpis, countEaches, isCounted, itemNameKey, buildCountMap, perEachCost, buildUnitCostMap } from '@/lib/shrinkage'
+import { computeShrinkageRow, computeShrinkageRows, shrinkageKpis, countEaches, isCounted, itemNameKey, buildCountMap, perEachCost, buildUnitCostMap, aggregateSold } from '@/lib/shrinkage'
+import { resolveOpeningWindow } from '@/lib/pnl'
 
 // A fully-fed canonical: Kit Kat. Opening/Closing join on the NAME key (count docs don't
 // carry catalogItemId) — itemNameKey('Kit Kat 1.5oz') = 'kit-kat-1-5oz'. Opening 40, bought
@@ -378,5 +379,71 @@ describe('$Lost — per-each unit cost (count-line per-CASE ÷ qtyPerPack, catal
     expect(r.shrinkage).toBe(5)                        // units present
     expect(r.unitCost).toBeNull()
     expect(r.shrinkageValue).toBeNull()                // "—", never a fake $0
+  })
+})
+
+describe('resolveOpeningWindow — walk back to the last real count; gap covers the whole window', () => {
+  const P = '2026-P08-W3', P1 = '2026-P08-W2', P2 = '2026-P08-W1'   // within-period: getPriorKey = W-1
+  it('normal: immediately-prior period has a count → opening=P-1, gap=[P], span 1', () => {
+    const r = resolveOpeningWindow(P, (k) => k === P1)
+    expect(r.openingPeriod).toBe(P1)
+    expect(r.gapPeriods).toEqual([P])
+    expect(r.spanWeeks).toBe(1)
+  })
+  it('STUB: P-1 (skipped) has no count, P-2 does → opening=P-2, gap=[P, P-1], span 2', () => {
+    const r = resolveOpeningWindow(P, (k) => k === P2)
+    expect(r.openingPeriod).toBe(P2)
+    expect(r.gapPeriods).toEqual([P, P1])     // the skipped P-1 is IN the window
+    expect(r.spanWeeks).toBe(2)
+  })
+  it('no count within cap → opening null (→ "—"), window still bounded by the cap', () => {
+    const r = resolveOpeningWindow(P, () => false, 3)
+    expect(r.openingPeriod).toBeNull()
+    expect(r.gapPeriods).toHaveLength(4)      // current + 3 walked
+    expect(r.spanWeeks).toBe(4)
+  })
+})
+
+describe('aggregateSold — window alignment: sold summed over ALL gap periods', () => {
+  const a2c = { 'Cold Brew Choc': 'cbc' }
+  it('an item sold in the SKIPPED prior week IS included in sold (not overstated loss)', () => {
+    const perPeriod = [
+      [{ itemName: 'Cold Brew Choc', qtySold: 2 }],   // current
+      [{ itemName: 'Cold Brew Choc', qtySold: 3 }],   // the skipped prior week
+    ]
+    expect(aggregateSold(perPeriod, a2c)['cbc']).toBe(5)   // 2 + 3 across the window, not just 2
+  })
+  it('empty / unmapped safe', () => {
+    expect(aggregateSold([], {})).toEqual({})
+    expect(aggregateSold([[{ itemName: 'X', qtySold: 9 }]], {})).toEqual({})   // unmapped → skipped
+  })
+})
+
+describe('window-aligned shrinkage — the skipped-week sales prevent OVERSTATED loss (#3/#4 proof)', () => {
+  const IT = { canonicalId: 'x', canonicalName: 'X', catalogItemId: 'x', soldAliases: ['x'] }
+  const K = itemNameKey('X')
+  // Opening (P-2 close) 30. During skipped P-1: sold 10. During current P: purchased 5, sold 5, closing 20.
+  // Truth over the [P-2 → P] window: 30 + 5 − (10+5) − 20 = 0  (no shrinkage).
+  const windowed = { hasSoldFeed: true, openingByName: { [K]: 30 }, closingByName: { [K]: 20 }, purchasedByCanonical: { x: 5 }, soldByCanonical: { x: 15 }, unitCostByCat: {}, unitCostByName: {} }
+  const buggy = { ...windowed, soldByCanonical: { x: 5 } }   // sold only the CURRENT week (the pre-fix behavior)
+
+  it('windowed sold (15) → shrinkage 0 (correct)', () => {
+    expect(computeShrinkageRow(IT, windowed).shrinkage).toBe(0)
+  })
+  it('current-only sold (5) → shrinkage 10 (WRONG — the skipped week is over-reported as loss)', () => {
+    expect(computeShrinkageRow(IT, buggy).shrinkage).toBe(10)
+  })
+})
+
+describe('window honesty label — openingFromPeriod + spanWeeks carried to the row', () => {
+  it('multi-week window carries the label', () => {
+    const r = computeShrinkageRow(KITKAT, { ...fullFeeds, openingFromPeriod: '2026-P07-W4', spanWeeks: 2 })
+    expect(r.openingFromPeriod).toBe('2026-P07-W4')
+    expect(r.spanWeeks).toBe(2)
+  })
+  it('normal single-week window → no label (openingFromPeriod null, spanWeeks 1)', () => {
+    const r = computeShrinkageRow(KITKAT, fullFeeds)
+    expect(r.openingFromPeriod).toBeNull()
+    expect(r.spanWeeks).toBe(1)
   })
 })
