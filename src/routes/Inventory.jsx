@@ -540,6 +540,7 @@ export default function Inventory() {
   // ─── Use Inventory Hook ────────────────────────────────────────────────────
   const {
     items,
+    priorFromPeriod,
     categories,
     catStats,
     totals,
@@ -1455,8 +1456,8 @@ export default function Inventory() {
           </div>
           <div className={styles.kpi}>
             <div className={styles.kpiLabel}>Opening Value</div>
-            <div className={styles.kpiValue} style={{ color: '#888' }}>{fmt$(totals.openingValue)}</div>
-            <div className={styles.kpiSub}>Prior week closing</div>
+            <div className={styles.kpiValue} style={{ color: '#888' }}>{fmt$(totals.openingValueDisplay)}</div>
+            <div className={styles.kpiSub}>{priorFromPeriod ? `From ${priorFromPeriod} (prior week skipped)` : 'Prior week closing'}</div>
           </div>
           <div className={styles.kpi}>
             <div className={styles.kpiLabel}>Progress</div>
@@ -1741,7 +1742,7 @@ export default function Inventory() {
                     {!isMobile && <th className={styles.thCenter}>Pack</th>}
                     {!isMobile && <th className={styles.thCenter}>Qty/pk</th>}
                     {!isMobile && <th className={styles.thRight}>Pack $</th>}
-                    {!isMobile && <th className={styles.thCenter}>Prior</th>}
+                    {!isMobile && <th className={styles.thCenter} title={priorFromPeriod ? `The immediately-prior period had no count — Prior shown is from ${priorFromPeriod}` : undefined}>Prior{priorFromPeriod && <div style={{ fontSize: 9, fontWeight: 400, color: '#d97706', textTransform: 'none', letterSpacing: 0 }}>from {priorFromPeriod}</div>}</th>}
                     <th className={styles.thCenter} style={{ width: isMobile ? 100 : 130 }}>Count<div style={{ fontSize: 9, fontWeight: 400, color: '#94a3b8', textTransform: 'none', letterSpacing: 0 }}>cases · .5 ok</div></th>
                     {!isMobile && <th className={styles.thCenter}>Variance</th>}
                     {!isMobile && <th className={styles.thRight}>Value</th>}

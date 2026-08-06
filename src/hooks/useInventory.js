@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { doc, getDoc, setDoc, collection, getDocs, serverTimestamp, writeBatch, deleteDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
-import { getPriorKey as getPriorKeyLib, locId as locIdLib, isPeriodLocked } from '@/lib/pnl'
+import { getPriorKey as getPriorKeyLib, locId as locIdLib, isPeriodLocked, resolveOpeningWindow } from '@/lib/pnl'
 import { classifyVariance } from '@/lib/variance'
 import { useCountsListener } from '@/hooks/useCountsListener'
 import { useToast } from '@/components/ui/Toast'
@@ -214,6 +214,7 @@ export function touchedIdsToClear(touchedSnapshot, persistedCounts, latestItems)
 export function useInventory(orgId, locationId, periodKey, user, liveSync = false) {
   const [items, setItems] = useState([])
   const [priorItems, setPriorItems] = useState([])
+  const [priorFromPeriod, setPriorFromPeriod] = useState(null)   // set when Prior walked back past the immediate prior
   const [openingValue, setOpeningValue] = useState(0)
   const [purchases, setPurchases] = useState(0)
   const [categories, setCategories] = useState([])
@@ -265,6 +266,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
     if (!locationId || !periodKey || !orgId) {
       setItems([])
       setPriorItems([])
+      setPriorFromPeriod(null)
       setOpeningValue(0)
       setPurchases(0)
       return
@@ -544,35 +546,45 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       }
       setItems(dedupedItems)
 
-      // Load prior period items from Path B snapshot for variance + copyPrior.
-      // Best-effort: if no prior snapshot exists, priorItems stays empty.
+      // Load prior period items for the Prior column (variance + copyPrior reference).
+      // WALK-BACK: the immediately-prior period may have been skipped (a 1-day stub week the
+      // team skipped for a month-close), so reuse resolveOpeningWindow — the SAME helper the
+      // shrinkage OPENING uses — to reach back (cap 5) to the most recent period that actually
+      // has a count. Display-only: the reference may be older than last week, and we surface
+      // which period it came from (setPriorFromPeriod) so the counter knows. Best-effort.
       try {
-        if (priorKey) {
-          // Dual-read the prior week (carries qty AND eaches): per-item
-          // subcollection first, then legacy array counts doc, then the even
-          // older Path B snapshot for pre-refactor weeks (qty only).
-          let priorArr = []
-          const priorItemsSnap = await getDocs(collection(db, 'tenants', orgId, 'inventory', locId, 'counts', priorKey, 'items'))
-          if (!priorItemsSnap.empty) {
-            priorArr = priorItemsSnap.docs.map(d => { const data = d.data(); return { ...data, id: data.itemId ?? d.id } })
+        const WALK_CAP = 5
+        const priorCandidates = []
+        { let cur = periodKey; for (let i = 0; i < WALK_CAP; i++) { const p = getPriorKey(cur); if (!p) break; priorCandidates.push(p); cur = p } }
+        // Pre-read each candidate's per-item counts subcollection (the canonical count store);
+        // hasCount = non-empty. Bounded reads, only walked when the immediate prior is empty.
+        const candSnaps = await Promise.all(priorCandidates.map((pk) =>
+          getDocs(collection(db, 'tenants', orgId, 'inventory', locId, 'counts', pk, 'items')).catch(() => null)))
+        const snapItems = (pk) => { const i = priorCandidates.indexOf(pk); const s = i >= 0 ? candSnaps[i] : null; return (s && !s.empty) ? s.docs.map(d => { const x = d.data(); return { ...x, id: x.itemId ?? d.id } }) : null }
+        const hasCount = (pk) => !!snapItems(pk)
+        const { openingPeriod } = resolveOpeningWindow(periodKey, hasCount, WALK_CAP)
+
+        let priorArr = []
+        if (openingPeriod) {
+          priorArr = snapItems(openingPeriod) || []
+        } else if (priorKey) {
+          // No per-item counts within the cap — preserve the legacy fallback on the IMMEDIATE
+          // prior (older pre-refactor periods stored counts as an array / Path B snapshot).
+          const priorCounts = await getDoc(doc(db, 'tenants', orgId, 'inventory', locId, 'counts', priorKey))
+          if (priorCounts.exists() && Array.isArray(priorCounts.data().items) && priorCounts.data().items.length) {
+            priorArr = priorCounts.data().items
           } else {
-            const priorCounts = await getDoc(doc(db, 'tenants', orgId, 'inventory', locId, 'counts', priorKey))
-            if (priorCounts.exists() && Array.isArray(priorCounts.data().items) && priorCounts.data().items.length) {
-              priorArr = priorCounts.data().items
-            } else {
-              const priorSnap = await getDoc(doc(db, 'tenants', orgId, 'locations', locId, 'inventory', priorKey))
-              if (priorSnap.exists() && Array.isArray(priorSnap.data().items)) {
-                priorArr = priorSnap.data().items
-              }
-            }
+            const priorSnap = await getDoc(doc(db, 'tenants', orgId, 'locations', locId, 'inventory', priorKey))
+            if (priorSnap.exists() && Array.isArray(priorSnap.data().items)) priorArr = priorSnap.data().items
           }
-          setPriorItems(priorArr)
-        } else {
-          setPriorItems([])
         }
+        setPriorItems(priorArr)
+        // Label only when Prior came from FURTHER back than the immediate prior.
+        setPriorFromPeriod(openingPeriod && openingPeriod !== priorKey ? openingPeriod : null)
       } catch (e) {
         console.warn('Failed to load prior period items:', e)
         setPriorItems([])
+        setPriorFromPeriod(null)
       }
 
       if (priorPnlSnap?.exists()) {
@@ -1547,16 +1559,36 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
     return stats
   }, [itemsWithMeta, categories])
 
+  // DISPLAY-ONLY opening value for the KPI card, walked back to match the Prior column: when
+  // the immediately-prior period was skipped (priorFromPeriod set), openingValue (the pnl-based
+  // immediate-prior close, used by save() + liveCOGS below) is $0, while the Prior column shows
+  // the walked-back counts. Derive the card's value from those SAME walked-back count items
+  // (they carry packPrice/qtyPerPack/unitCost) so the $ total and the column agree. Falls back
+  // to openingValue in the normal (immediate-prior) case and for old count docs missing prices —
+  // so nothing changes off a stub, and save()/liveCOGS are untouched.
+  const openingValueDisplay = useMemo(() => {
+    if (!priorFromPeriod || !priorItems.length) return openingValue
+    let sum = 0, priced = false
+    for (const p of priorItems) {
+      const pp = Number(p.packPrice) || ((Number(p.qtyPerPack) || 1) * (Number(p.unitCost) || 0))
+      const ep = (Number(p.qtyPerPack) || 1) > 0 ? pp / (Number(p.qtyPerPack) || 1) : (Number(p.unitCost) || 0)
+      if (pp > 0) priced = true
+      sum += ((Number(p.qty) || 0) * pp) + ((Number(p.eaches) || 0) * ep)
+    }
+    return priced ? sum : openingValue
+  }, [priorFromPeriod, priorItems, openingValue])
+
   const totals = useMemo(() => {
     const closingValue = itemsWithMeta.reduce((sum, i) => sum + i._value, 0)
     const counted = itemsWithMeta.filter(hasCount).length
-    const liveCOGS = Math.max(0, openingValue + purchases - closingValue)
+    const liveCOGS = Math.max(0, openingValue + purchases - closingValue)   // save-aligned (immediate-prior)
     const belowPar = itemsWithMeta.filter(i => i._belowPar).length
     const atReorder = itemsWithMeta.filter(i => i._atReorder).length
 
     return {
       closingValue,
       openingValue,
+      openingValueDisplay,           // walked-back for the KPI card (== openingValue in the normal case)
       purchases,
       liveCOGS,
       counted,
@@ -1566,7 +1598,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       atReorder,
       wellStocked: items.length - belowPar - atReorder
     }
-  }, [itemsWithMeta, openingValue, purchases, items.length])
+  }, [itemsWithMeta, openingValue, openingValueDisplay, purchases, items.length])
 
   const varianceAlerts = useMemo(() => {
     return itemsWithMeta
@@ -1583,6 +1615,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
 
   return {
     items: itemsWithMeta,
+    priorFromPeriod,          // non-null when the Prior column walked back past the immediate prior
     categories,
     catStats,
     totals,
