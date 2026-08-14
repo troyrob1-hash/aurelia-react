@@ -117,11 +117,11 @@ const DEFAULT_SCHEMA = [
                + retail + computeFoodCogs(p)
         }
       },
-      // LAYER 2 — retail food-cost ratio, shown like the other "% of GFS" lines. Carries
-      // the estimate flag (estFn) when a count is missing so it never reads as a true COGS%.
-      { key: '_pct_cogs_retail', label: 'COGS % of Retail', pct: true, indent: 1,
-        computeFn: p => { const c = computeCogsRetail(p); return c.pct != null ? c.pct / 100 : null },
-        estFn: p => computeCogsRetail(p).isEstimate },
+      // LAYER 2 — food-cost ratio (COGS % of total GFS), shown like the other "% of GFS" lines.
+      // Carries the estimate flag (estFn) when a count is missing so it never reads as a true COGS%.
+      { key: '_pct_cogs_sales', label: 'COGS % of Sales', pct: true, indent: 1,
+        computeFn: p => { const c = computeCogsPct(p); return c.pct != null ? c.pct / 100 : null },
+        estFn: p => computeCogsPct(p).isEstimate },
     ]
   },
   {
@@ -254,28 +254,40 @@ function computePrimeCost(p) {
   return rev > 0 ? (labor + cogs) / rev : null
 }
 
-// COGS % of RETAIL — the retail food-cost efficiency ratio (shared by all three layers:
+// COGS % of SALES — the standard food-cost efficiency ratio (shared by all three layers:
 // the KPI card, the P&L line annotation, and the drill-down).
 //   COGS $  = computeFoodCogs(p) = max(0, inventory delta + purchases)  (the single
 //             canonical food-COGS roll-up; cogs_inventory is the pure opening−closing
 //             delta, cogs_purchases the hardened invoice sum, added once). CF-auth closing where set.
-//   ratio   = COGS $ ÷ gfs_retail  (retail COGS ÷ retail sales — the matched operation, NOT total).
+//   ratio   = COGS $ ÷ gfs_total  (inventory COGS ÷ TOTAL Gross Food Sales — the food-cost %
+//             operators actually use; 28–35% is healthy for an inventory-driven café).
+// This REPLACES the old "÷ retail sales" denominator, which paired the whole café's inventory
+// COGS with the retail LINE alone and produced >100% nonsense (Cafe_AZ: 6,599/3,524 = 187%).
+// NOTE: on popup-heavy sites total GFS includes revenue-share popup sales that carry NO Fooda
+// inventory COGS (the popup payout is booked separately as rev_popup_cogs), so this ratio reads
+// LOW there — correctly (popup is asset-light), not broken.
 // HONESTY GUARD: a TRUE COGS only when BOTH opening AND closing counts exist. If either is
 // missing, the inventory delta is absent and COGS collapses toward ~purchases (overstated) —
 // the ratio is still returned, but `isEstimate` is true so callers can flag it and never pass
-// it off as a real food-cost %. Retail = 0 → pct null (no divide-by-zero).
-export function computeCogsRetail(p) {
-  const opening   = p?.inv_opening || 0
+// it off as a real food-cost %. Sales = 0 → pct null (no divide-by-zero).
+export function computeCogsPct(p) {
+  // Read the canonical count snapshots the client writes (openingValue/closingValue);
+  // fall back to the legacy inv_opening/inv_closing that writeInventoryPnL emits. The
+  // old code read ONLY inv_* — absent on client-written docs (e.g. Cafe_AZ) — so the
+  // drill-down showed Opening/Closing $0 (breakdown didn't reconcile) and the estimate
+  // flag falsely reported "no opening count". Display + estimate-flag only; the COGS
+  // numerator is computeFoodCogs (cogs_inventory/cogs_purchases), untouched.
+  const opening   = Number(p?.openingValue ?? p?.inv_opening ?? 0) || 0
   const purchases = p?.cogs_purchases || 0
-  const closing   = p?.inv_closing || 0
+  const closing   = Number(p?.closingValue ?? p?.inv_closing ?? 0) || 0
   const cogs      = computeFoodCogs(p)
-  const retail    = p?.gfs_retail || 0
+  const sales     = p?.gfs_total || 0
   const hasClosing = !!p?.inventoryCountedAt || closing > 0
   const hasOpening = opening > 0
   const isEstimate = !(hasClosing && hasOpening)
   return {
-    opening, purchases, closing, cogs, retail,
-    pct: retail > 0 ? (cogs / retail) * 100 : null,
+    opening, purchases, closing, cogs, sales,
+    pct: sales > 0 ? (cogs / sales) * 100 : null,
     hasOpening, hasClosing, isEstimate,
     flagReason: !isEstimate ? null : !hasClosing ? 'no closing count' : 'no opening count',
   }
@@ -376,7 +388,7 @@ export default function Dashboard() {
   const [collapsed,    setCollapsed]    = useState({})
   const [refreshing,   setRefreshing]   = useState(false)
   const [whyLine,      setWhyLine]      = useState(null)  // {line, actual, budget, prior}
-  const [showCogsDetail, setShowCogsDetail] = useState(false)  // COGS %-of-retail drill-down
+  const [showCogsDetail, setShowCogsDetail] = useState(false)  // COGS %-of-sales drill-down
 
   // ── Scenario scratchpad state ──
   // Three sliders that produce a derived pnl for what-if modeling.
@@ -563,9 +575,9 @@ export default function Dashboard() {
   const varGFS       = budgetGFS    ? gfs    - budgetGFS    : null
   const varEBITDA    = budgetEBITDA ? ebitda - budgetEBITDA : null
 
-  // COGS % of retail — see computeCogsRetail. Shared by the KPI card, the P&L annotation,
+  // COGS % of sales — see computeCogsPct. Shared by the KPI card, the P&L annotation,
   // and the drill-down below.
-  const cr = computeCogsRetail(pnl)
+  const cr = computeCogsPct(pnl)
 
   // Prior period
   const priorGFS    = priorPnl.gfs_total || 0
@@ -1064,17 +1076,17 @@ export default function Dashboard() {
             valueColor: '#0f172a',
           },
           {
-            // Honest label: 'COGS % of Retail' only when it's a true COGS (both counts);
-            // otherwise 'Est. COGS ÷ Retail' so a purchases-inflated number never
+            // Honest label: 'COGS % of Sales' only when it's a true COGS (both counts);
+            // otherwise 'Est. COGS ÷ Sales' so a purchases-inflated number never
             // masquerades as a precise food-cost %. Click → drill-down (the why).
-            label: cr.isEstimate ? 'Est. COGS ÷ Retail' : 'COGS % of Retail',
+            label: cr.isEstimate ? 'Est. COGS ÷ Sales' : 'COGS % of Sales',
             value: cr.pct != null ? cr.pct.toFixed(1) + '%' : '—',
             delta: null,
             sub: cr.pct == null
-              ? 'no retail sales this period'
+              ? 'no sales this period'
               : cr.isEstimate
                 ? `⚠ estimate — ${cr.flagReason} · details ▾`
-                : `${fmtSmall$(cr.cogs)} COGS / ${fmtSmall$(cr.retail)} retail · details ▾`,
+                : `${fmtSmall$(cr.cogs)} COGS / ${fmtSmall$(cr.sales)} sales · details ▾`,
             subColor: cr.isEstimate && cr.pct != null ? '#d97706' : '#94a3b8',
             sparkData: [],   // no historical series for this card (Sparkline renders a placeholder)
             sparkColor: '#BA7517',
@@ -1121,7 +1133,7 @@ export default function Dashboard() {
         )
       })()}
 
-      {/* ── LAYER 3 · COGS %-of-retail drill-down (audit + why the estimate flag) ── */}
+      {/* ── LAYER 3 · COGS %-of-sales drill-down (audit + why the estimate flag) ── */}
       {showCogsDetail && (
         <div style={{
           margin: '-12px 0 24px', padding: '16px 20px', borderRadius: 12,
@@ -1129,7 +1141,7 @@ export default function Dashboard() {
           background: cr.isEstimate ? '#fffbeb' : '#f8fafc',
         }}>
           <div style={{ fontSize: 13, fontWeight: 800, color: '#0f172a', marginBottom: 10 }}>
-            COGS % of Retail — how it’s calculated ({cleanLocName(location) || 'this location'} · {periodKey})
+            COGS % of Sales — how it’s calculated ({cleanLocName(location) || 'this location'} · {periodKey})
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: 8, fontSize: 14, color: '#334155', fontVariantNumeric: 'tabular-nums' }}>
             <span>Opening <b>{fmt$(cr.opening)}</b></span><span>+</span>
@@ -1137,7 +1149,7 @@ export default function Dashboard() {
             <span>Closing <b>{fmt$(cr.closing)}</b></span><span>=</span>
             <span><b>COGS {fmt$(cr.cogs)}</b></span>
             <span style={{ margin: '0 4px' }}>÷</span>
-            <span>Retail sales <b>{fmt$(cr.retail)}</b></span><span>=</span>
+            <span>Total sales <b>{fmt$(cr.sales)}</b></span><span>=</span>
             <span style={{ fontWeight: 800, color: cr.isEstimate ? '#b45309' : '#0f766e' }}>{cr.pct != null ? cr.pct.toFixed(1) + '%' : '—'}</span>
           </div>
           {cr.isEstimate ? (
@@ -1148,11 +1160,11 @@ export default function Dashboard() {
             </div>
           ) : (
             <div style={{ marginTop: 10, fontSize: 12.5, color: '#64748b', lineHeight: 1.5 }}>
-              True COGS — both opening and closing inventory counts are in for this period. Denominator is retail sales (the “11 Dining” bucket), so this is retail COGS ÷ retail sales — the matched operation.
+              True COGS — both opening and closing inventory counts are in for this period. Denominator is TOTAL Gross Food Sales, so this is the standard food-cost % (28–35% healthy). On popup-heavy sites it reads low: revenue-share popup sales carry no inventory COGS (that payout is booked separately), so they dilute the ratio.
             </div>
           )}
-          {cr.retail === 0 && (
-            <div style={{ marginTop: 8, fontSize: 12.5, color: '#64748b' }}>No retail sales this period — ratio not shown (would divide by zero).</div>
+          {cr.sales === 0 && (
+            <div style={{ marginTop: 8, fontSize: 12.5, color: '#64748b' }}>No sales this period — ratio not shown (would divide by zero).</div>
           )}
         </div>
       )}
