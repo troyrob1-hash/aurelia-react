@@ -6,7 +6,7 @@ import { useToast } from '@/components/ui/Toast'
 import { useAuthStore } from '@/store/authStore'
 import { db } from '@/lib/firebase'
 import { doc, getDoc } from 'firebase/firestore'
-import { readPnL, getPriorKey, getTrailingPeriodKeys, writePeriodClose, computeRevenue, computeOnsiteLabor, computeFoodCogs, REV_SUBLINES } from '@/lib/pnl'
+import { readPnL, getPriorKey, getTrailingPeriodKeys, writePeriodClose, computeRevenue, computeOnsiteLabor, computeFoodCogs, computeTotalCogs, REV_SUBLINES } from '@/lib/pnl'
 import { usePeriodStatus } from '@/hooks/usePeriodStatus'
 import { usePnL, useLedgerEnrichedPnL, useMultiLocationPnL, useLedgerEnrichedMultiPnL, usePnLHistory } from '@/lib/usePnL'
 import { usePeriod } from '@/store/PeriodContext'
@@ -108,14 +108,9 @@ const DEFAULT_SCHEMA = [
       // is fully implemented in Purchasing and Inventory tabs.
       // Total COGS
       { key: '_total_cogs',          label: 'Total COGS',                       bold: true, budgetKey: 'budget_cogs',
-        computeFn: p => {
-          const labor = computeOnsiteLabor(p)
-          const ec    = (p.cogs_cleaning||0) + (p.cogs_equipment||0) + (p.cogs_ec_barista||0)
-                      + (p.cogs_paper||0) + (p.cogs_supplies||0) + (p.cogs_uniforms||0)
-          const retail = (p.cogs_retail_barista||0) + (p.cogs_retail_cafeteria||0) + (p.cogs_retail_managed||0)
-          return labor + ec + (p.cogs_maintenance||0) + (p.cogs_payment_processing||0)
-               + retail + computeFoodCogs(p)
-        }
+        // Shared canonical roll-up (pnl.js) — the Total COGS KPI card reads the SAME
+        // helper, so the headline number and this line can never disagree.
+        computeFn: p => computeTotalCogs(p),
       },
       // LAYER 2 — food-cost ratio (COGS % of total GFS), shown like the other "% of GFS" lines.
       // Carries the estimate flag (estFn) when a count is missing so it never reads as a true COGS%.
@@ -566,7 +561,8 @@ export default function Dashboard() {
   const revenue      = computeRevenue(pnl)
   const labor        = computeOnsiteLabor(pnl)
   const payproc      = pnl.cogs_payment_processing || 0   // real merchant-fee cost, not 1.8% of GFS
-  const totalCOGS    = labor + computeFoodCogs(pnl) + payproc
+  const totalCOGS    = labor + computeFoodCogs(pnl) + payproc   // margin/EBITDA basis (labor+food+payproc); NOT the P&L Total COGS line
+  const totalCogsLine = computeTotalCogs(pnl)                    // the P&L "Total COGS" line ($6,665 = +ec/maint/retail) — the KPI card value
   const grossMargin  = revenue - totalCOGS
   const ebitda       = grossMargin - (pnl.exp_comp_benefits||0)
   const primeCost    = computePrimeCost(pnl)
@@ -585,6 +581,7 @@ export default function Dashboard() {
   const priorLabor  = computeOnsiteLabor(priorPnl)
   const priorPayp   = priorPnl.cogs_payment_processing || 0
   const priorCOGS   = priorLabor + computeFoodCogs(priorPnl) + priorPayp
+  const priorTotalCogsLine = computeTotalCogs(priorPnl)   // same basis as totalCogsLine, for the KPI delta
   const priorEBITDA = (priorRev - priorCOGS) - (priorPnl.exp_comp_benefits||0)
 
   // Budget pacing
@@ -623,6 +620,7 @@ export default function Dashboard() {
     const ebitdaArr  = []
     const primeArr   = []
     const laborPctArr = []
+    const cogsArr    = []
     trailingKeys.forEach(k => {
       const p = history[k] || {}
       const g = p.gfs_total || 0
@@ -639,8 +637,9 @@ export default function Dashboard() {
       ebitdaArr.push(eb)
       primeArr.push(pc != null ? pc * 100 : null)
       laborPctArr.push(lp != null ? lp * 100 : null)
+      cogsArr.push(computeTotalCogs(p))   // per-period Total COGS $ (same canonical roll-up as the card)
     })
-    return { gfs: gfsArr, revenue: revArr, ebitda: ebitdaArr, primeCost: primeArr, laborPct: laborPctArr }
+    return { gfs: gfsArr, revenue: revArr, ebitda: ebitdaArr, primeCost: primeArr, laborPct: laborPctArr, cogs: cogsArr }
   })()
 
   // Delta helpers for the 5 KPI cards — compared to the prior period value.
@@ -655,6 +654,8 @@ export default function Dashboard() {
   const gfsDelta      = deltaPct(gfs, priorGFS)
   const revDelta      = deltaPct(revenue, priorRev)
   const ebitdaDelta   = ebitda != null && priorEBITDA != null ? ebitda - priorEBITDA : null
+  // Total COGS $ delta vs prior — lower is better (down = green), like the Labor% card.
+  const cogsDelta     = priorTotalCogsLine > 0 ? totalCogsLine - priorTotalCogsLine : null
 
   // Mini inline SVG sparkline — hand-rolled, no recharts for this tiny thing.
   // data: array of numbers (nulls allowed), color: stroke color, height: px.
@@ -1093,6 +1094,27 @@ export default function Dashboard() {
             valueColor: cr.isEstimate && cr.pct != null ? '#d97706' : '#0f172a',
             onClick: () => setShowCogsDetail(v => !v),
           },
+          {
+            // Total COGS $ — reads the SAME computeTotalCogs helper as the P&L "Total COGS"
+            // line, so this headline equals that line exactly ($6,665 = labor+ec+maint+
+            // payproc+retail+food; NOT the narrower render totalCOGS). Dollar card like
+            // GFS/Revenue/EBITDA. NO healthy-band color: on popup-heavy sites COGS% reads low
+            // from revenue-share dilution (not efficiency), so only delta-direction signals —
+            // down = green (lower COGS is good), matching the Labor% card.
+            label: 'Total COGS',
+            value: fmtBig$(totalCogsLine),
+            delta: cogsDelta != null ? (
+              <span style={{ fontSize: 11, fontWeight: 500, color: cogsDelta <= 0 ? '#059669' : '#dc2626' }}>
+                {cogsDelta <= 0 ? '▼' : '▲'} {fmtSmall$(Math.abs(cogsDelta))}
+              </span>
+            ) : null,
+            // Ties the dollar to the ratio (Total COGS ÷ total GFS), like the Net-revenue
+            // card's "% of GFS" — does NOT duplicate card #6's dedicated COGS % of Sales.
+            sub: gfs > 0 ? `${Math.round(totalCogsLine / gfs * 100)}% of GFS` : 'vs last period',
+            sparkData: sparkSeries.cogs,
+            sparkColor: '#BA7517',
+            valueColor: '#0f172a',
+          },
         ]
         return (
           <div style={{
@@ -1102,7 +1124,7 @@ export default function Dashboard() {
             padding: '22px 28px',
             marginBottom: 24,
             display: 'grid',
-            gridTemplateColumns: 'repeat(6, minmax(0, 1fr))',
+            gridTemplateColumns: 'repeat(7, minmax(0, 1fr))',
             gap: 0,
           }}>
             {columns.map((c, i) => (

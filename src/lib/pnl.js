@@ -426,6 +426,25 @@ export function computeFoodCogs(p) {
   return Math.max(0, (p?.cogs_inventory || 0) + (p?.cogs_purchases || 0))
 }
 
+// Total COGS — the canonical roll-up behind BOTH the Dashboard "Total COGS" P&L line and
+// the Total COGS KPI card. Both route through this so the headline number and the P&L line
+// can never silently disagree (the card must NOT reuse the narrower render `totalCOGS` =
+// labor+food+payproc, which omits ec/maintenance/retail).
+//   = onsite labor + equipment & consumables (ec) + maintenance + payment processing
+//     + retail COGS + food COGS (computeFoodCogs, the unified inventory number).
+// cogs_retail_* have no running writer yet (they're 0), so they add nothing today — kept in
+// the sum so the line lights up automatically if a retail split is ever wired, with no
+// double-count here (food COGS stays the single unified inventory atom).
+export function computeTotalCogs(p) {
+  if (!p) return 0
+  const labor  = computeOnsiteLabor(p)
+  const ec     = (p.cogs_cleaning||0) + (p.cogs_equipment||0) + (p.cogs_ec_barista||0)
+               + (p.cogs_paper||0) + (p.cogs_supplies||0) + (p.cogs_uniforms||0)
+  const retail = (p.cogs_retail_barista||0) + (p.cogs_retail_cafeteria||0) + (p.cogs_retail_managed||0)
+  return labor + ec + (p.cogs_maintenance||0) + (p.cogs_payment_processing||0)
+       + retail + computeFoodCogs(p)
+}
+
 // Inventory week close → inventory DELTA (opening − closing). NOT purchases-inclusive and
 // NOT clamped at write: a genuine stock-up week (real prior close, closing > opening) is
 // legitimately negative and must offset that week's purchases at aggregation (see
