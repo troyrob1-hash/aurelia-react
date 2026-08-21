@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
-import { usePeriod } from '@/store/PeriodContext'
+import { usePeriod, isShortWeek } from '@/store/PeriodContext'
 import { readPeriodClose, getPriorKey, writePeriodClose, lockPeriod } from '@/lib/pnl'
 import { db } from '@/lib/firebase'
 import { useInventory, fmt$, sanitizeDocId, hasCount } from '@/hooks/useInventory'
@@ -395,7 +395,7 @@ export default function Inventory() {
     }
   }
 
-  const { periodKey, isCurrentPeriod } = usePeriod()
+  const { periodKey, isCurrentPeriod, currentWeek, week } = usePeriod()
 
   // ─── Local UI State ────────────────────────────────────────────────────────
   // ESC key closes any open panel
@@ -578,7 +578,22 @@ export default function Inventory() {
     periodLocked,
     markPeriodLocked,
     applyUploadedCounts,
+    rollOverFromPrior,
   } = useInventory(orgId, location, periodKey, user, isCurrentPeriod)
+
+  // Roll-over-inventory button: only on a short/stub week (< 7 days) that hasn't been
+  // counted yet. Once ANY item has a count, rolling over would silently overwrite a real
+  // (possibly partial) count — the button disappears rather than risk that.
+  const showRollover = isShortWeek(currentWeek, week) && !items.some(hasCount)
+  const [rollingOver, setRollingOver] = useState(false)
+  async function handleRollOver() {
+    if (!window.confirm(
+      `Roll over ${cleanLocName(location)}'s prior week's closing count as this stub week's count?\n\n` +
+      `This is a shortcut, not a lock — you can still edit any line afterward.`
+    )) return
+    setRollingOver(true)
+    try { await rollOverFromPrior() } finally { setRollingOver(false) }
+  }
 
   // Effective locked state for the count UI: the canonical periodLocks doc
   // (periodLocked, the enforcement gate) OR the P&L periodStatus (periodClosed).
@@ -1417,6 +1432,28 @@ export default function Inventory() {
             >
               <Upload size={14} /> Upload counts
             </button>
+
+            {/* Short/stub-week shortcut: carry the prior week's closing count forward as
+                THIS week's count, instead of physically counting a 1-day week. Only shows
+                on a short week (<7 days) with no count yet — disappears the moment any
+                item has a real count, so it can never silently overwrite one. */}
+            {showRollover && (
+              <button
+                onClick={handleRollOver}
+                disabled={rollingOver || locked}
+                title="Carry the prior period's closing count forward as this stub week's count. Editable afterward — not a lock."
+                style={{
+                  padding: '8px 14px', fontSize: 12, fontWeight: 600,
+                  background: locked ? '#e2e8f0' : '#d9770618', color: locked ? '#94a3b8' : '#d97706',
+                  borderRadius: 8, border: '1px solid ' + (locked ? '#e2e8f0' : '#d9770640'),
+                  cursor: (rollingOver || locked) ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: 6,
+                }}
+              >
+                <RefreshCw size={14} className={rollingOver ? styles.spin : ''} />
+                {rollingOver ? 'Rolling over…' : 'Roll over inventory'}
+              </button>
+            )}
+
             <label
               htmlFor="catalog-upload"
               className={styles.btnIcon}

@@ -76,6 +76,16 @@ export function getWeekLabel(weekObj, weekNum) {
   return `Wk ${weekNum}: ${start} – ${end}${short}`
 }
 
+// A "short"/stub week spans fewer than 7 calendar days — a team-skipped 1-day week at a
+// month boundary being the common case. Same threshold getWeekLabel already uses for its
+// "(Nd)" suffix, exposed as a boolean predicate for gating the inventory rollover button.
+// weekNum === 0 is the MONTHLY aggregate view (all weeks combined) — never "short".
+export function isShortWeek(weekObj, weekNum) {
+  if (weekNum === 0 || !weekObj?.start || !weekObj?.end) return false
+  const days = Math.round((weekObj.end - weekObj.start) / 86400000) + 1
+  return days < 7
+}
+
 // Find current period and week based on today
 function getCurrentPeriodWeek() {
   const today  = new Date()

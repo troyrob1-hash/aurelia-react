@@ -69,6 +69,32 @@ export function hasCount(item) {
 }
 
 /**
+ * Pure "roll forward" transform for the short-week rollover button: copies each item's
+ * qty/eaches from priorItems (by id) into items, for the stub week that has no real count
+ * yet. An item with no matching prior entry, or a prior that itself has no count, is left
+ * untouched (never fabricates a count the prior week didn't have). Exported so the actual
+ * copy logic is unit-testable without Firestore.
+ */
+export function applyRollover(items, priorItems, meta = {}) {
+  const priorById = new Map((priorItems || []).map(p => [String(p.id), p]))
+  const at = meta.at ?? null
+  const by = meta.by || 'unknown'
+  return (items || []).map(item => {
+    const p = priorById.get(String(item.id))
+    if (!p || !hasCount(p)) return item
+    return {
+      ...item,
+      qty: p.qty ?? null,
+      eaches: p.eaches ?? 0,
+      lastCountedAt: at,
+      lastCountedBy: by,
+      _qtyRaw: null,
+      _eachesRaw: null,
+    }
+  })
+}
+
+/**
  * Merge a fresh batch of counted items into the existing Firestore items list,
  * applying explicit deletions for items the user cleared in this session.
  *
@@ -1128,19 +1154,24 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
   // Lightweight autosave: persist counts (qty/eaches) to the per-week counts
   // doc and refresh the live PnL closingValue, WITHOUT marking the session
   // completed or closing the period. Safe to call repeatedly (debounced).
-  const saveCounts = useCallback(async () => {
+  const saveCounts = useCallback(async (opts = {}) => {
     if (!locationId || !periodKey) return false
     if (blockedByLock()) return false   // period closed — no count writes
+    // sourceItems lets rollOverFromPrior pass the just-computed rolled-forward array
+    // directly, rather than the (still-stale, pre-render) `items` closure — setItems()
+    // is async, so a caller that setItems()s then immediately calls saveCounts() would
+    // otherwise persist the OLD items. Normal callers omit itemsOverride and get `items`.
+    const sourceItems = opts.itemsOverride || items
     // Guard: if items haven't loaded yet (transition / reload), do NOT write —
     // saving an empty/partial set here would clobber real counts.
-    if (!Array.isArray(items) || items.length === 0) return false
+    if (!Array.isArray(sourceItems) || sourceItems.length === 0) return false
     try {
       const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
       // Include any item with EITHER qty OR positive eaches — see hasCount.
       // Pre-fix this filtered on qty != null alone, so eaches-only entries
       // never landed on the counts doc even though they contributed to
       // closingValue (W1 $3.83 divergence, 2026-06-18).
-      const newCounts = items
+      const newCounts = sourceItems
         // Touched-scope (Phase 3 step 3): persist ONLY items the local user
         // touched this session — never re-write another counter's merged items
         // under our attribution. closingValue (below) stays FULL-set.
@@ -1166,7 +1197,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       // Snapshot the set first so items touched DURING the async writes remain
       // pending for the next save.
       const touchedSnapshot = new Set(touchedItemsRef.current)
-      const deletions = items
+      const deletions = sourceItems
         .filter(i => !hasCount(i) && touchedSnapshot.has(String(i.id)))
         .map(i => String(i.id))
       // Per-item count docs (Phase 1) — one doc per touched item, cleared items
@@ -1181,7 +1212,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         console.error('Per-item count write failed (P&L still written from local items):', countErr)
         setError('Some counts failed to save; totals were still updated.')
       }
-      const closingValue = items.reduce((sum, item) => {
+      const closingValue = sourceItems.reduce((sum, item) => {
         const pp = item.packPrice || ((item.qtyPerPack || 1) * (item.unitCost || 0))
         const packVal = (item.qty || 0) * pp
         const eachPrice = (item.qtyPerPack || 1) > 0 ? pp / (item.qtyPerPack || 1) : (item.unitCost || 0)
@@ -1236,10 +1267,16 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         cfAuthoritative = false
       }
 
+      // rolledOverFrom: set ONLY on the rollover's own write (opts.rolledOverFrom is the
+      // source period). Every OTHER call to saveCounts — autosave, a manual edit — omits
+      // it, so this line always writes `null` and CLEARS a stale flag the moment the
+      // manager touches anything post-rollover (point 4: editable, not a lock).
+      const rolledOverFrom = opts.rolledOverFrom || null
+
       // LIVE P&L write — skipped when the CF is authoritative for this location.
       if (!cfAuthoritative) await setDoc(
         doc(db, 'tenants', orgId, 'pnl', locId, 'periods', periodKey),
-        { closingValue, openingValue: freshOpening, cogs_inventory: cogs, inventoryCountedAt: serverTimestamp(), inventoryCountedBy: user?.email },
+        { closingValue, openingValue: freshOpening, cogs_inventory: cogs, inventoryCountedAt: serverTimestamp(), inventoryCountedBy: user?.email, rolledOverFrom },
         { merge: true }
       )
 
@@ -1252,7 +1289,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       // qty!=null TODO that dropped them; the 121-vs-282 Wesley gap). AFTER the
       // P&L write, in its OWN try — a Path B failure must never abort the counts
       // or P&L write above.
-      const snapshotItems = items
+      const snapshotItems = sourceItems
         .filter(hasCount)
         .map(i => ({
           id: i.id,
@@ -1267,6 +1304,9 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         }))
       // Path B write — also skipped when the CF owns this location (it rebuilds
       // Path B server-side). Own try so a Path B failure never aborts the save.
+      // rolledOverFrom lands here too (not just the P&L doc) because ShrinkageTable reads
+      // its closing feed from THIS doc — that's the flag it checks to withhold a phantom
+      // shrinkage number for a stub week that was carried forward, not physically counted.
       if (!cfAuthoritative) try {
         await setDoc(
           doc(db, 'tenants', orgId, 'locations', locId, 'inventory', periodKey),
@@ -1277,6 +1317,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
             locationName: locationId,
             updatedAt:    serverTimestamp(),
             updatedBy:    user?.email || 'unknown',
+            rolledOverFrom,
           },
           { merge: true }
         )
@@ -1287,8 +1328,10 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       // Scope the touched-clear to ids whose CURRENT local value still matches
       // what we persisted. Ids re-typed during the await (or newly-counted after
       // a delete) stay touched so the next save persists them — fixes the
-      // eaches-stranding race. itemsRef.current = latest items (closure is stale).
-      const cleared = touchedIdsToClear(touchedSnapshot, newCounts, itemsRef.current)
+      // eaches-stranding race. itemsRef.current is the latest React-state items;
+      // for an itemsOverride call itemsRef hasn't caught up to the just-setItems()
+      // value yet (state update is still in-flight), so fall back to sourceItems.
+      const cleared = touchedIdsToClear(touchedSnapshot, newCounts, opts.itemsOverride || itemsRef.current)
       cleared.forEach(id => touchedItemsRef.current.delete(id))
       // Root-cause fix for stale-raw (#7): drop _qtyRaw/_eachesRaw (to null, not
       // '') on the just-cleared ids so a later remote merge shows the merged qty,
@@ -1305,6 +1348,33 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       return false
     }
   }, [items, locationId, locId, periodKey, orgId, openingValue, purchases, user])
+
+  // Short-week rollover: carry the prior period's counts forward as THIS (stub) week's
+  // count doc, so a 1-day week the team skipped doesn't leave the next full week's
+  // opening dangling (see resolveOpeningWindow's walk-back — this makes the walk-back
+  // unnecessary in the common case, kept as a safety net for weeks nobody rolls over).
+  // Writes a NORMAL editable count doc (any line can still be overwritten by a real
+  // count) carrying rolledOverFrom so ShrinkageTable knows this closing isn't a physical
+  // count and withholds a computed shrinkage number for it (point 6 — see saveCounts).
+  const rollOverFromPrior = useCallback(async () => {
+    if (blockedByLock()) return false
+    if (!Array.isArray(priorItems) || priorItems.length === 0) {
+      toast.error('No prior period count to roll over')
+      return false
+    }
+    const sourcePeriod = priorFromPeriod || priorKey
+    if (!sourcePeriod) {
+      toast.error('No prior period to roll over from')
+      return false
+    }
+    const rolledItems = applyRollover(items, priorItems, { at: new Date().toISOString(), by: user?.email })
+    rolledItems.forEach(i => { if (hasCount(i)) touchedItemsRef.current.add(String(i.id)) })
+    setItems(rolledItems)
+    setDirty(true)
+    const ok = await saveCounts({ itemsOverride: rolledItems, rolledOverFrom: sourcePeriod })
+    if (ok) toast.success(`Rolled over counts from ${sourcePeriod}`)
+    return ok
+  }, [items, priorItems, priorFromPeriod, priorKey, user, saveCounts, blockedByLock, toast])
 
   const save = useCallback(async () => {
     if (!locationId || !periodKey) return false
@@ -1428,6 +1498,11 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       }
 
       // LIVE P&L write — skipped when the CF is authoritative for this location.
+      // Deliberately does NOT touch `rolledOverFrom` here (unlike saveCounts): this is
+      // the explicit "Close Period" action, not autosave, and merge:true on an omitted
+      // field leaves whatever saveCounts last wrote untouched — so closing a period right
+      // after a rollover (no intervening real edit) can't accidentally clobber the flag
+      // ShrinkageTable relies on to withhold a phantom shrinkage number (point 6).
       if (!cfAuthoritative) await setDoc(
         doc(db, 'tenants', orgId, 'pnl', locId, 'periods', periodKey),
         {
@@ -1646,6 +1721,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
     markSectionComplete,
     save,
     saveCounts,
+    rollOverFromPrior,
     mergeDraft,
     patchItemFields,
     setCategoriesLocal,

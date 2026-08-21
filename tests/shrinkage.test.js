@@ -299,6 +299,47 @@ describe('HONESTY — missing feed → null cell + incomplete, never a fake zero
   })
 })
 
+// ROLLOVER HONESTY (point 6) — a "Roll over inventory" stub week carries the prior week's
+// closing count FORWARD as this week's count (see rollOverFromPrior in useInventory.js).
+// ShrinkageTable detects this via the closing doc's rolledOverFrom flag and builds
+// closingByName from an EMPTY items array for that period (buildCountMap([]) === {}) —
+// exactly the same "closing missing" shape already proven honest above. This locks in
+// WHY that matters: without it, opening === closing (the carried-forward value) would
+// collapse shrinkage to purchased − sold — a phantom variance sized to whatever sold
+// during the stub day, not a real count discrepancy.
+describe('ROLLOVER HONESTY — a rolled-over (not physically counted) closing must read incomplete, never purchased−sold', () => {
+  it('opening === closing (the rollover) WOULD read as a confident-but-fake purchased−sold shrinkage if fed through normally', () => {
+    // Same opening/closing value (18) — as if the stub week's count is just the prior
+    // week's carried-forward close. Sales still happened that day (sold: 6), purchases
+    // too (purchased: 2). If ShrinkageTable naively fed this closing in, the formula
+    // would compute a confident-looking number that has nothing to do with real shrink.
+    const feeds = { ...fullFeeds, openingByName: { [NK]: 18 }, closingByName: { [NK]: 18 }, purchasedByCanonical: { 'kit-kat': 2 }, soldByCanonical: { 'kit-kat': 6 } }
+    const r = computeShrinkageRow(KITKAT, feeds)
+    expect(r.complete).toBe(true)
+    expect(r.shrinkage).toBe(-4)   // 18 + 2 − 6 − 18 = −4 : looks like real data, but it's an artifact of the copy
+  })
+
+  it('the fix: withholding the closing feed (rolledOverFrom → closingByName {}) turns that same row honest — "—", not the phantom −4', () => {
+    const feeds = { ...fullFeeds, openingByName: { [NK]: 18 }, closingByName: {}, purchasedByCanonical: { 'kit-kat': 2 }, soldByCanonical: { 'kit-kat': 6 } }
+    const r = computeShrinkageRow(KITKAT, feeds)
+    expect(r.closing).toBeNull()
+    expect(r.shrinkage).toBeNull()       // rendered "—" by ShrinkageTable, not −4
+    expect(r.complete).toBe(false)
+    expect(r.missing).toContain('closing')
+  })
+
+  it('the NEXT full week is unaffected — once real, its own opening/closing pair computes normally', () => {
+    // Chain effect (point 3): the stub´s rolled closing becomes the next full week's
+    // OPENING — a real prior-count value, not itself withheld. Only the STUB week's own
+    // closing (and therefore its own shrinkage row) is withheld.
+    const nextWeekFeeds = { ...fullFeeds, openingByName: { [NK]: 18 }, closingByName: { [NK]: 10 } }
+    const r = computeShrinkageRow(KITKAT, nextWeekFeeds)
+    expect(r.opening).toBe(18)
+    expect(r.complete).toBe(true)
+    expect(r.shrinkage).toBe(18 + 24 - 50 - 10)
+  })
+})
+
 describe('pack-unresolved excluded from KPI totals', () => {
   const canon = { canonicalId: 'kit-kat', canonicalName: 'Kit Kat 1.5oz', catalogItemId: 'kk', soldAliases: ['x'] }
   it('an incomplete (pack-unresolved) row does not inflate/deflate the honest total', () => {

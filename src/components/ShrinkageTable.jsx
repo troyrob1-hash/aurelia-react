@@ -44,7 +44,7 @@ export default function ShrinkageTable() {
   const { periodKey } = usePeriod()
   const [loading, setLoading] = useState(true)
   const [rows, setRows] = useState([])
-  const [feedState, setFeedState] = useState({ hasSoldFeed: false, hasOpeningDoc: false, hasClosingDoc: false })
+  const [feedState, setFeedState] = useState({ hasSoldFeed: false, hasOpeningDoc: false, hasClosingDoc: false, rolledOverFrom: null })
   const [search, setSearch] = useState('')
   const [sortBy, setSortBy] = useState('shrinkage')
   const [hideEmpty, setHideEmpty] = useState(true)   // open clean: computed + partial rows only
@@ -131,9 +131,20 @@ export default function ShrinkageTable() {
         // (current) are keyed identically — itemNameKey(name), isCounted-gated — and can't
         // drift. The row resolves both through the same countNameKeys (canonicalName + countAliases).
         const openingItems = openingPeriod ? priorItemsOf(openingPeriod) : []   // walked-back open
-        const curItems = (curSnap && curSnap.exists() && curSnap.data().items) || []
+        const curData = (curSnap && curSnap.exists()) ? curSnap.data() : null
+        const curItems = curData?.items || []
+        // A rolled-over stub week's closing is a carried-forward SNAPSHOT of the prior
+        // week's count, not a physical count taken this period (see the inventory rollover
+        // button). Feeding it into shrinkage would compute opening + purchased − sold −
+        // closing with opening == closing, collapsing to purchased − sold — a phantom
+        // variance sized to whatever sold that stub day, not a real count discrepancy.
+        // Treat the closing feed as absent (buildCountMap([])) so every row reads
+        // incomplete/"—" for this period, same honesty rule as any other missing feed.
+        // Pricing (unitCostByName below) still uses curItems — that's catalog metadata,
+        // not a computed variance, so it's harmless to keep.
+        const curRolledOverFrom = curData?.rolledOverFrom || null
         const openingByName = buildCountMap(openingItems)
-        const closingByName = buildCountMap(curItems)
+        const closingByName = buildCountMap(curRolledOverFrom ? [] : curItems)
         const unitCostByCat = {}
         catSnap.forEach((d) => { const x = d.data(); if (x.unitCost != null) unitCostByCat[d.id] = x.unitCost })
         // PER-EACH unit cost keyed by count-line name — the count lines carry unitCost (per
@@ -142,14 +153,17 @@ export default function ShrinkageTable() {
         // still gets its $Lost. computeShrinkageRow falls back to unitCostByCat, then "—".
         const unitCostByName = { ...buildUnitCostMap(openingItems), ...buildUnitCostMap(curItems) }
         // Banner/KPI flags: base on ACTUALLY-counted lines, so an all-blank doc reads "no
-        // real count" for the heads-up (not just "doc exists").
+        // real count" for the heads-up (not just "doc exists"). A rolled-over closing
+        // (closingByName forced empty above) correctly reads as hasClosingDoc: false here —
+        // there IS a doc, but it isn't a physical count, and that's exactly what "needs a
+        // real count" should mean for shrinkage purposes.
         const hasOpeningDoc = Object.keys(openingByName).length > 0
         const hasClosingDoc = Object.keys(closingByName).length > 0
 
         // Window label: only when opening came from FURTHER back than the immediate prior.
         const openingFromPeriod = (openingPeriod && openingPeriod !== immediatePrior) ? openingPeriod : null
         const feeds = { hasSoldFeed, openingByName, closingByName, purchasedByCanonical, purchasedUnresolvedByCanonical, soldByCanonical, unitCostByCat, unitCostByName, openingFromPeriod, spanWeeks }
-        setFeedState({ hasSoldFeed, hasOpeningDoc, hasClosingDoc, openingFromPeriod, spanWeeks })
+        setFeedState({ hasSoldFeed, hasOpeningDoc, hasClosingDoc, openingFromPeriod, spanWeeks, rolledOverFrom: curRolledOverFrom })
         setRows(computeShrinkageRows(mappings, feeds))
       } catch (err) {
         console.error('shrinkage load failed:', err)
@@ -273,8 +287,20 @@ export default function ShrinkageTable() {
         <div style={S.warn}>
           <AlertTriangle size={14} color="#d97706" />
           {!feedState.hasSoldFeed && ' No Product Mix (sold) data for this period.'}
-          {!feedState.hasClosingDoc && ' No closing inventory count for this period.'}
+          {!feedState.hasClosingDoc && !feedState.rolledOverFrom && ' No closing inventory count for this period.'}
+          {!feedState.hasClosingDoc && feedState.rolledOverFrom && ' Closing count was rolled over, not physically counted, this period.'}
           {' '}Rows show what's known; shrinkage computes once the feed lands.
+        </div>
+      )}
+
+      {/* rolled-over closing banner — a stub week's count was carried forward from the prior
+          week rather than physically counted, so shrinkage is withheld for this period (the
+          "—" rows below are correct, not a bug — see the inventory rollover button). */}
+      {feedState.rolledOverFrom && (
+        <div style={S.warn}>
+          <AlertTriangle size={14} color="#d97706" />
+          {' '}This period's closing count was <b>rolled over from {feedState.rolledOverFrom}</b> (a stub week, not a
+          physical count) — shrinkage reads incomplete rather than a computed number until a real count is taken.
         </div>
       )}
 

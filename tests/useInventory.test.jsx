@@ -7,7 +7,7 @@
 // or preserve."
 
 import { describe, it, expect } from 'vitest'
-import { mergeCountsWithDeletions, hasCount } from '../src/hooks/useInventory'
+import { mergeCountsWithDeletions, hasCount, applyRollover } from '../src/hooks/useInventory'
 
 describe('mergeCountsWithDeletions', () => {
   it('removes cleared items via the deletion sentinel — regression for the W1 $61K bug', () => {
@@ -163,5 +163,68 @@ describe('Van $3.83 repro — eaches-only items land on the counts doc', () => {
     )
     expect(result.find(i => i.id === 'C').eaches).toBe(1.08)
     expect(result.find(i => i.id === 'C').qty).toBeNull()
+  })
+})
+
+// applyRollover — the "Roll over inventory" button's core transform: carry the prior
+// week's counts forward onto this (stub) week's items, by id. Pure so the copy logic is
+// testable without mocking Firestore (rollOverFromPrior in the hook wraps this + saveCounts).
+describe('applyRollover — short-week rollover copy', () => {
+  it('copies qty + eaches from the matching prior item, by id', () => {
+    const items = [
+      { id: 'A', qty: null, eaches: 0 },
+      { id: 'B', qty: null, eaches: 0 },
+    ]
+    const prior = [
+      { id: 'A', qty: 12, eaches: 3 },
+      { id: 'B', qty: null, eaches: 0 },   // prior B was NOT counted (hasCount false) — see next test
+    ]
+    const result = applyRollover(items, prior, { at: '2026-08-21T00:00:00.000Z', by: 'mgr@example.com' })
+    expect(result.find(i => i.id === 'A')).toMatchObject({ qty: 12, eaches: 3, lastCountedBy: 'mgr@example.com' })
+    expect(result.find(i => i.id === 'B')).toEqual(items[1])   // untouched — prior had no count
+  })
+
+  it('leaves an item untouched when the prior item itself has no count (never fabricates a count the prior week lacked)', () => {
+    const items = [{ id: 'A', qty: null, eaches: 0 }]
+    const prior = [{ id: 'A', qty: null, eaches: 0 }]   // prior itself uncounted
+    const result = applyRollover(items, prior)
+    expect(result[0]).toEqual(items[0])
+  })
+
+  it('leaves an item untouched when there is no matching prior item at all (new item this week)', () => {
+    const items = [{ id: 'NEW', qty: null, eaches: 0 }]
+    const result = applyRollover(items, [{ id: 'OTHER', qty: 5, eaches: 0 }])
+    expect(result[0]).toEqual(items[0])
+  })
+
+  it('a real zero count (qty: 0) on the prior item DOES roll over — hasCount(0) is true', () => {
+    const items = [{ id: 'A', qty: null, eaches: 0 }]
+    const prior = [{ id: 'A', qty: 0, eaches: 0 }]
+    const result = applyRollover(items, prior)
+    expect(result[0].qty).toBe(0)
+  })
+
+  it('clears any stale typed-string raw fields so the rolled value displays cleanly', () => {
+    const items = [{ id: 'A', qty: null, eaches: 0, _qtyRaw: '1.', _eachesRaw: '0.5' }]
+    const prior = [{ id: 'A', qty: 9, eaches: 1 }]
+    const result = applyRollover(items, prior)
+    expect(result[0]._qtyRaw).toBeNull()
+    expect(result[0]._eachesRaw).toBeNull()
+  })
+
+  it('closing == opening after a full rollover (the point-6 COGS-delta claim): closingValue computed from rolled items matches the prior closing', () => {
+    // Same valuation math saveCounts uses: qty*packPrice + eaches*eachPrice.
+    const valuation = (arr) => arr.reduce((sum, i) => {
+      const pp = i.packPrice || ((i.qtyPerPack || 1) * (i.unitCost || 0))
+      const ep = (i.qtyPerPack || 1) > 0 ? pp / (i.qtyPerPack || 1) : (i.unitCost || 0)
+      return sum + (i.qty || 0) * pp + (i.eaches || 0) * ep
+    }, 0)
+    const prior = [
+      { id: 'A', qty: 10, eaches: 0, packPrice: 12, qtyPerPack: 4 },
+      { id: 'B', qty: 0, eaches: 5, unitCost: 2, qtyPerPack: 1 },
+    ]
+    const items = prior.map(p => ({ ...p, qty: null, eaches: 0 }))   // this week: uncounted
+    const rolled = applyRollover(items, prior)
+    expect(valuation(rolled)).toBe(valuation(prior))
   })
 })
