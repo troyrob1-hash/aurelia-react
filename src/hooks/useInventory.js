@@ -659,10 +659,20 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
           }]
         }
         setSession(newSession)
-        await setDoc(
-          doc(db, 'tenants', orgId, 'inventorySessions', `${locId}_${periodKey}`),
-          newSession
-        )
+        // Best-effort, own try — the session doc is tracking metadata (who's counting,
+        // when it started), not the count data itself. A write failure here (e.g. a
+        // permission gap on a legacy role) must NEVER fail the whole page load: items/
+        // openingValue/purchases/categories above already loaded successfully and must
+        // still render. Same "isolate a non-critical write" pattern as the prior-period-
+        // items walk-back above.
+        try {
+          await setDoc(
+            doc(db, 'tenants', orgId, 'inventorySessions', `${locId}_${periodKey}`),
+            newSession
+          )
+        } catch (e) {
+          console.warn('Failed to create inventory session doc (non-blocking):', e)
+        }
       }
 
       setDirty(false)

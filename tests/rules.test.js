@@ -154,6 +154,43 @@ describe('role-based writes on invoices', () => {
 })
 
 // ============================================================
+// STAFF == MANAGER (legacy role alias — must match src/lib/permissions.js
+// singleRole(), which collapses 'staff' to 'manager' client-side. Regression
+// guard for the VF Corporation "Failed to load inventory data" bug: a staff-
+// role user's inventorySessions write was silently rejected while the client
+// showed the Inventory page as fully enabled — isManager() had no 'staff'
+// branch even though the client and rules are documented to agree "by
+// construction" on the same Cognito custom:role claim.
+// ============================================================
+describe('staff role — same tier as manager (inventory writes)', () => {
+  const fooda = (role) => authedContext('u', { 'custom:tenantId': 'fooda', 'custom:role': role })
+
+  test('staff CAN create an inventorySessions doc (the exact write that failed)', async () => {
+    await assertSucceeds(
+      fooda('staff').doc('tenants/fooda/inventorySessions/CR_Best_Buy_2026-P09-W2').set({ status: 'in_progress' })
+    )
+  })
+
+  test('staff CAN write inventory counts (per-item count docs)', async () => {
+    await assertSucceeds(
+      fooda('staff').doc('tenants/fooda/inventory/CR_Best_Buy/counts/2026-P09-W2/items/id_1').set({ qty: 5, eaches: 0 })
+    )
+  })
+
+  test('staff CAN write inventory item overrides, same as manager', async () => {
+    await assertSucceeds(
+      fooda('staff').doc('tenants/fooda/inventory/CR_Best_Buy/items/1').set({ qty: 5 })
+    )
+  })
+
+  test('viewer still CANNOT write inventorySessions (staff isn\'t a blanket bypass)', async () => {
+    await assertFails(
+      fooda('viewer').doc('tenants/fooda/inventorySessions/CR_Best_Buy_2026-P09-W2').set({ status: 'in_progress' })
+    )
+  })
+})
+
+// ============================================================
 // ORGS COLLECTION (Settings UI)
 // ============================================================
 describe('orgs/{orgId} access', () => {

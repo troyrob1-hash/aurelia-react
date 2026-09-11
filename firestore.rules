@@ -16,7 +16,13 @@ service cloud.firestore {
 
     function isAdmin()    { return role() == 'admin'    || role() == 'Admin'; }
     function isDirector() { return role() == 'director' || role() == 'Director' || isAdmin(); }
-    function isManager()  { return role() == 'manager'  || role() == 'Manager'  || isDirector(); }
+    // 'staff' is a legacy alias for 'manager' — same tier, same access (see
+    // src/lib/permissions.js singleRole(), which collapses staff -> manager
+    // client-side). Must include it here too, or a legacy staff-role user's
+    // writes (inventory counts, sessions, etc.) get silently rejected while
+    // the client UI shows them as fully enabled — the two are documented to
+    // agree "by construction" on the same Cognito custom:role claim.
+    function isManager()  { return role() == 'manager'  || role() == 'Manager'  || role() == 'staff' || role() == 'Staff' || isDirector(); }
     // VP is a peer of director (sees all, can't administer) but is NOT in the
     // isManager chain. Standalone helper so callers can opt VPs in explicitly.
     function isVp()       { return role() == 'vp'       || role() == 'VP'       || role() == 'Vp'; }
