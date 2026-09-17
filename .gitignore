@@ -24,3 +24,8 @@ scripts/
 src/fixtures/real/
 .env.local*
 functions/.env
+
+# Debug/seed HTML pages under public/ ship as live static assets on deploy —
+# never commit one (the app's real entry point is the root index.html, not
+# anything under public/).
+public/*.html
