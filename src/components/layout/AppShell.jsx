@@ -1,7 +1,7 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import React, { useState, useEffect } from 'react'
 import { useAuthStore } from '@/store/authStore'
-import { changePassword } from '@/lib/auth'
+import { changePassword, friendlyAuthError } from '@/lib/auth'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { usePeriod, getWeekLabel } from '@/store/PeriodContext'
 import { readPeriodClose, writePeriodClose, lockPeriod, unlockPeriod, isPeriodLocked } from '@/lib/pnl'
@@ -253,12 +253,13 @@ export default function AppShell() {
     if (pwForm.newPw.length < 8) { setPwError('Password must be at least 8 characters'); return }
     setPwSaving(true); setPwError(null)
     try {
-      const session = useAuthStore.getState().session
-      await changePassword(session.accessToken, pwForm.current, pwForm.newPw)
+      // Post-cutover `changePassword` reauthenticates against Firebase with the
+      // current password itself — there is no Cognito access token to pass.
+      await changePassword(pwForm.current, pwForm.newPw)
       setPwSuccess(true)
       setTimeout(() => { setShowChangePw(false); setPwSuccess(false); setPwForm({ current: '', newPw: '', confirm: '' }) }, 2000)
     } catch (err) {
-      setPwError(err.message || 'Failed to change password')
+      setPwError(friendlyAuthError(err))
     } finally { setPwSaving(false) }
   }
   function handleNavClick() { setSidebarOpen(false) }

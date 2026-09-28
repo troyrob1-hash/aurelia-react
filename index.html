@@ -7,7 +7,9 @@
     <title>Aurelia</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="preconnect" href="https://firestore.googleapis.com" />
-    <link rel="preconnect" href="https://cognito-idp.us-east-2.amazonaws.com" />
+    <!-- Cognito preconnect removed in the 2026-09-28 Firebase Auth cutover;
+         sign-in now hits Google's identitytoolkit, not AWS. -->
+    <link rel="preconnect" href="https://identitytoolkit.googleapis.com" />
   </head>
   <body>
     <div id="root"></div>

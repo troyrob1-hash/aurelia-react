@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app'
-import { getFunctions, httpsCallable } from 'firebase/functions'
-import { getAuth, signInWithCustomToken, signOut as firebaseSignOut } from 'firebase/auth'
+import { getFunctions } from 'firebase/functions'
+import { getAuth } from 'firebase/auth'
 import { getStorage } from 'firebase/storage'
 import { getFirestore, doc, getDoc, setDoc, collection, query, where, getDocs, onSnapshot } from 'firebase/firestore'
 
@@ -19,37 +19,11 @@ export const functions = getFunctions(app)
 export const auth = getAuth(app)
 export const storage = getStorage(app)
 
-// ── Firebase Auth with Cognito Token ──────────────────────────
-
-/**
- * Exchange Cognito ID token for Firebase custom token and sign in
- */
-export async function signInWithCognito(cognitoIdToken) {
-  try {
-    const mintToken = httpsCallable(functions, 'mintFirebaseToken')
-    const result = await mintToken({ idToken: cognitoIdToken })
-    const { firebaseToken } = result.data
-    
-    await signInWithCustomToken(auth, firebaseToken)
-    console.log('Firebase Auth: signed in with Cognito token')
-    return true
-  } catch (err) {
-    console.error('Firebase Auth failed:', err)
-    return false
-  }
-}
-
-/**
- * Sign out of Firebase Auth
- */
-export async function signOutFirebase() {
-  try {
-    await firebaseSignOut(auth)
-    console.log('Firebase Auth: signed out')
-  } catch (err) {
-    console.error('Firebase signOut error:', err)
-  }
-}
+// ── Auth ──────────────────────────────────────────────────────
+// `signInWithCognito` / `signOutFirebase` were removed in the 2026-09-28
+// Cognito→Firebase Auth cutover. The Cognito ID token → `mintFirebaseToken`
+// → `signInWithCustomToken` bridge no longer exists; `src/lib/auth.js` signs
+// in against Firebase directly and owns every auth entry point.
 
 // ── Tenant-scoped helpers ─────────────────────────────────────
 

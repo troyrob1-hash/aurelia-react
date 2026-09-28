@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, Link, useLocation } from 'react-router-dom'
-import { signIn, getUser, completeNewPassword } from '@/lib/auth'
+import { signIn, friendlyAuthError } from '@/lib/auth'
 import { useAuthStore } from '@/store/authStore'
 import styles from './Auth.module.css'
 
@@ -59,18 +59,14 @@ function ProductPreview() {
 
 export default function LoginPage() {
   const locState = useLocation().state || {}
-  const [step, setStep]           = useState(locState.challenge === 'new_password' ? 'new_password' : 'login')
   const [email, setEmail]         = useState(locState.email || '')
   const [pw, setPw]               = useState('')
-  const [newPw, setNewPw]         = useState('')
-  const [confirmPw, setConfirmPw] = useState('')
-  const [session, setSession]     = useState(locState.session || null)
   const [loading, setLoading]     = useState(false)
   const [error, setError]         = useState('')
   const [showLogin, setShowLogin] = useState(false)
   const [scrolled, setScrolled]   = useState(false)
 
-  const { setAuth } = useAuthStore()
+  const hydrate = useAuthStore(s => s.hydrate)
   const nav = useNavigate()
 
   useEffect(() => {
@@ -79,38 +75,20 @@ export default function LoginPage() {
     return () => window.removeEventListener('scroll', fn)
   }, [])
 
+  // The Cognito NEW_PASSWORD_REQUIRED challenge (and the "Set your password"
+  // step it drove) is gone — Firebase has no equivalent challenge. First-time
+  // users and everyone migrated off Cognito set their password through the
+  // emailed reset link instead, then sign in here normally.
   async function handleLogin(e) {
     e.preventDefault(); setError(''); setLoading(true)
     try {
-      const r = await signIn(email.trim().toLowerCase(), pw)
-      if (r.type === 'new_password') { setSession(r.session); setStep('new_password'); setShowLogin(false); setLoading(false); return }
-      const a = await getUser(r.session.accessToken); setAuth(r.session, a); nav('/')
-    } catch (err) { setError(friendly(err.message)) } finally { setLoading(false) }
+      await signIn(email.trim().toLowerCase(), pw)
+      // Populate the store BEFORE navigating: ProtectedRoute reads `user`, and
+      // onAuthStateChanged alone would race the nav and bounce back to /login.
+      await hydrate()
+      nav('/')
+    } catch (err) { setError(friendlyAuthError(err)) } finally { setLoading(false) }
   }
-
-  async function handleNewPw(e) {
-    e.preventDefault(); setError('')
-    if (newPw !== confirmPw) { setError('Passwords do not match.'); return }
-    if (newPw.length < 8) { setError('Min 8 characters.'); return }
-    setLoading(true)
-    try { const s = await completeNewPassword(email.trim().toLowerCase(), newPw, session); const a = await getUser(s.accessToken); setAuth(s, a); nav('/') }
-    catch (err) { setError(err.message) } finally { setLoading(false) }
-  }
-
-  if (step === 'new_password') return (
-    <div className={styles.page}><div className={styles.card}>
-      <div className={styles.logo}><div className={styles.logoBox}><svg width="22" height="22" viewBox="0 0 32 32"><path d="M16 6 L26 27 L21 27 L19 22.5 L13 22.5 L11 27 L6 27 Z M14.3 18.5 L17.7 18.5 L16 14.8 Z" fill="#fff"/></svg></div>
-      <div><div className={styles.appName}>Aurelia</div><div className={styles.appSub}>Operations Management Suite</div></div></div>
-      <h1 className={styles.heading}>Set your password</h1>
-      <p style={{color:'#64748b',fontSize:13,marginBottom:16}}>Welcome! Create a password to continue.</p>
-      {error && <div className={styles.error}>{error}</div>}
-      <form onSubmit={handleNewPw} className={styles.form}>
-        <div className={styles.field}><label className={styles.label}>New password</label><input type="password" value={newPw} onChange={e=>setNewPw(e.target.value)} placeholder="Min 8 characters" className={styles.input} required autoFocus/></div>
-        <div className={styles.field}><label className={styles.label}>Confirm</label><input type="password" value={confirmPw} onChange={e=>setConfirmPw(e.target.value)} placeholder="Repeat password" className={styles.input} required/></div>
-        <button type="submit" className={styles.btnPrimary} disabled={loading}>{loading ? 'Setting...' : 'Set password & sign in'}</button>
-      </form>
-    </div></div>
-  )
 
   return (
     <div className={styles.landing}>
@@ -185,9 +163,5 @@ export default function LoginPage() {
   )
 }
 
-function friendly(msg='') {
-  if (msg.includes('NotAuthorizedException') || msg.includes('Incorrect username or password')) return 'Incorrect email or password.'
-  if (msg.includes('UserNotFoundException')) return 'No account found with this email.'
-  if (msg.includes('UserNotConfirmedException')) return 'Please verify your email first.'
-  return msg || 'Sign in failed. Please try again.'
-}
+// The Cognito-exception string matching that used to live here moved to
+// `friendlyAuthError` in @/lib/auth, keyed on Firebase `err.code`.

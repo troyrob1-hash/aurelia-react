@@ -83,6 +83,19 @@ const SYSTEM_ACTOR = { uid: "system", email: "system@aurelia-fms", displayName: 
 // CALLABLE: mintFirebaseToken
 // Verifies Cognito ID token and returns a Firebase custom token
 // ============================================================
+//
+// !! DEAD AS OF THE 2026-09-28 COGNITO → FIREBASE AUTH CUTOVER !!
+//
+// No caller remains: `src/lib/firebase.js` no longer has `signInWithCognito`,
+// and `src/lib/auth.js` signs in against Firebase Auth directly. Left in place
+// only so this deploy is a pure no-op for the login path; delete it in the
+// follow-up that ports the three admin callables below.
+//
+// It FAILS CLOSED, so it is not a live hole despite `invoker: "public"`:
+// `verifyCognitoToken` fetches JWKS from the deleted pool
+// (us-east-2_O2djCRxsH), which 404s, so no token can ever verify and no
+// Firebase custom token can be minted. Do not "fix" that fetch.
+// ============================================================
 exports.mintFirebaseToken = onCall(
   { invoker: "public" },
   async (request) => {
@@ -198,6 +211,25 @@ exports.auditApiKeyWrite = onDocumentWritten("orgs/{orgId}/apiKeys/{keyId}", asy
 
 // ============================================================
 // CALLABLE: inviteUser
+// ============================================================
+//
+// !! TEMPORARILY BROKEN — DEFERRED FROM THE 2026-09-28 CUTOVER !!
+//
+// Calls `adminGetUser` / `adminCreateUser` / `adminSetUserPassword` /
+// `adminUpdateUserAttributes` against the DELETED Cognito pool. Every
+// invocation now throws ResourceNotFoundException. Inviting a new user is
+// broken until this is ported.
+//
+// Deliberately deferred: this is admin-only and NOT on the login path, and
+// leaving it broken for a day restored sign-in for all 35 active users sooner.
+//
+// PORT TO: admin.auth().createUser({ email, displayName }) +
+// setCustomUserClaims(uid, { "custom:tenantId", "custom:role" }) +
+// generatePasswordResetLink (or the client SDK's sendPasswordResetEmail) in
+// place of the temporary-password email. Use the Firebase uid as the
+// orgs/{orgId}/users doc id, exactly as the migration does. Drop the
+// AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY secrets and the SES mail path with
+// it — see migrations/migrate-cognito-to-firebase-auth.cjs for the patterns.
 // ============================================================
 exports.inviteUser = onCall(
   { invoker: "public", secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY] },
@@ -380,6 +412,18 @@ exports.inviteUser = onCall(
 
 // ============================================================
 // CALLABLE: deactivateUser
+// ============================================================
+//
+// !! TEMPORARILY BROKEN — DEFERRED FROM THE 2026-09-28 CUTOVER !!
+//
+// `adminDisableUser` targets the deleted Cognito pool and throws
+// ResourceNotFoundException before the Firestore write, so deactivation is a
+// no-op — the user stays active and CAN still sign in. Admin-only, not on the
+// login path. To deactivate someone in the meantime, disable them in the
+// Firebase console AND set `active: false` on orgs/{orgId}/users/{uid}.
+//
+// PORT TO: admin.auth().updateUser(targetUid, { disabled: true }), which is the
+// direct equivalent and keeps the existing fail-before-Firestore ordering.
 // ============================================================
 exports.deactivateUser = onCall(
   { invoker: "public", secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY] },
@@ -858,6 +902,29 @@ exports.updateUserRoles = onCall(
   const primaryRole = TIER_ORDER.find(r => roles.includes(r)) || roles[0];
   updatePayload.role = primaryRole;
 
+  // !! TEMPORARILY BROKEN — DEFERRED FROM THE 2026-09-28 CUTOVER !!
+  //
+  // This block targets the deleted Cognito pool, so it always throws and the
+  // `catch` converts that into HttpsError("internal") — meaning role changes
+  // are currently REJECTED outright rather than half-applied. That is the safe
+  // failure (Firestore is never left showing a role the gates won't honor), and
+  // it is why this was safe to defer. Admin-only, not on the login path.
+  //
+  // To change a role in the meantime: set the custom claim by hand
+  // (admin.auth().setCustomUserClaims) and update the Firestore doc to match.
+  //
+  // PORT TO: admin.auth().setCustomUserClaims(targetUid, {
+  //   "custom:tenantId": orgId, "custom:role": primaryRole, ... })
+  // — preserve existing claims by reading getUser(uid).customClaims first, and
+  // note the claim only reaches the client on the next ID-token refresh, so
+  // force one (revokeRefreshTokens, or getIdToken(true) client-side).
+  //
+  // The comment below describes the PRE-cutover authority direction and is now
+  // inverted — the Firestore doc is the source of record and the claim is
+  // seeded from it. See the AUTHORITY INVERSION note in src/store/authStore.js.
+  // Keep writing the claim before the Firestore mirror regardless: the claim is
+  // still the only thing firestore.rules enforces on.
+  //
   // Cognito custom:role is the authoritative source of truth for permission
   // gates — write it FIRST and require it to succeed before mirroring to
   // Firestore. If Cognito rejects, abort the whole operation so we never

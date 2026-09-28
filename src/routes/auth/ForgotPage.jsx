@@ -1,17 +1,25 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { forgotPassword, confirmForgotPassword } from '@/lib/auth'
+import { forgotPassword, friendlyAuthError } from '@/lib/auth'
 import styles from './Auth.module.css'
 
+/**
+ * CUTOVER 2026-09-28 (Cognito → Firebase Auth): this page used to be two steps
+ * — Cognito emailed a 6-digit code, the user typed it back here along with a
+ * new password, and `confirmForgotPassword` verified both.
+ *
+ * Firebase instead emails a signed reset link and hosts the reset page itself,
+ * so the app never sees a code and never handles the new password. The second
+ * step (code + new password fields) is therefore gone, not relocated.
+ *
+ * This is also the path every migrated user takes to set their first Firebase
+ * password — Cognito's password hashes did not (and could not) come across.
+ */
 export default function ForgotPage() {
   const [step, setStep]           = useState('email')
   const [email, setEmail]         = useState('')
-  const [code, setCode]           = useState('')
-  const [newPw, setNewPw]         = useState('')
-  const [confirmPw, setConfirmPw] = useState('')
   const [loading, setLoading]     = useState(false)
   const [error, setError]         = useState('')
-  const [success, setSuccess]     = useState('')
   const [resending, setResending] = useState(false)
   const [cooldown, setCooldown]   = useState(0)
 
@@ -21,47 +29,39 @@ export default function ForgotPage() {
     return () => clearTimeout(t)
   }, [cooldown])
 
-  async function handleResend() {
-    if (cooldown > 0 || resending) return
-    setError('')
-    setResending(true)
+  async function send(addr) {
+    // Deliberately not surfacing auth/user-not-found: on an unauthenticated
+    // form that is an account-enumeration oracle. The user sees the same
+    // confirmation whether or not the address is on file.
     try {
-      await forgotPassword(email.trim().toLowerCase())
-      setSuccess(`New code sent to ${email}`)
-      setCooldown(30)
+      await forgotPassword(addr)
     } catch (err) {
-      setError(err.message)
-    } finally {
-      setResending(false)
+      if (err?.code === 'auth/user-not-found') return
+      throw err
     }
   }
 
-  async function handleSendCode(e) {
+  async function handleSend(e) {
     e.preventDefault()
-    setError('')
-    setLoading(true)
+    setError(''); setLoading(true)
     try {
-      await forgotPassword(email.trim().toLowerCase())
-      setStep('reset')
-      setSuccess(`Reset code sent to ${email}`)
+      await send(email.trim().toLowerCase())
+      setStep('sent')
+      setCooldown(30)
     } catch (err) {
-      setError(err.message)
+      setError(friendlyAuthError(err))
     } finally { setLoading(false) }
   }
 
-  async function handleReset(e) {
-    e.preventDefault()
-    setError('')
-    if (newPw !== confirmPw) { setError('Passwords do not match.'); return }
-    if (newPw.length < 8)   { setError('Password must be at least 8 characters.'); return }
-    setLoading(true)
+  async function handleResend() {
+    if (cooldown > 0 || resending) return
+    setError(''); setResending(true)
     try {
-      await confirmForgotPassword(email.trim().toLowerCase(), code.trim(), newPw)
-      setStep('done')
+      await send(email.trim().toLowerCase())
+      setCooldown(30)
     } catch (err) {
-      setError(err.message.includes('CodeMismatchException')
-        ? 'Invalid reset code.' : err.message)
-    } finally { setLoading(false) }
+      setError(friendlyAuthError(err))
+    } finally { setResending(false) }
   }
 
   return (
@@ -75,39 +75,15 @@ export default function ForgotPage() {
           </div>
         </div>
 
-        {step === 'done' ? (
+        {step === 'sent' ? (
           <>
-            <h1 className={styles.heading}>Password reset</h1>
-            <div className={styles.success}>Password updated successfully. You can now sign in.</div>
-            <Link to="/login" className={styles.btnPrimary} style={{ display: 'block', textAlign: 'center', marginTop: 8 }}>
-              Sign In
-            </Link>
-          </>
-        ) : step === 'email' ? (
-          <>
-            <h1 className={styles.heading}>Reset password</h1>
-            <p style={{ color: '#6b7280', fontSize: 13, marginBottom: 20 }}>
-              Enter your email and we'll send you a reset code.
-            </p>
-            {error && <div className={styles.error}>{error}</div>}
-            <form onSubmit={handleSendCode} className={styles.form}>
-              <div className={styles.field}>
-                <label className={styles.label}>Email</label>
-                <input type="email" value={email} onChange={e => setEmail(e.target.value)}
-                  placeholder="you@fooda.com" className={styles.input} required autoFocus />
-              </div>
-              <button type="submit" className={styles.btnPrimary} disabled={loading}>
-                {loading ? 'Sending...' : 'Send Reset Code'}
-              </button>
-            </form>
-          </>
-        ) : (
-          <>
-            <h1 className={styles.heading}>Enter new password</h1>
-            {success && <div className={styles.success}>{success}</div>}
-            {error   && <div className={styles.error}>{error}</div>}
-            <div style={{color:'#6b7280',fontSize:12,marginBottom:16,lineHeight:1.5}}>
-              Didn't get it within a few minutes? Check your spam folder, or{' '}
+            <h1 className={styles.heading}>Check your email</h1>
+            <div className={styles.success}>
+              If an account exists for {email}, a password reset link is on its way.
+            </div>
+            <div style={{color:'#6b7280',fontSize:12,margin:'16px 0',lineHeight:1.5}}>
+              Open the link to set a new password, then sign in. Didn't get it
+              within a few minutes? Check your spam folder, or{' '}
               <button
                 type="button"
                 onClick={handleResend}
@@ -122,28 +98,30 @@ export default function ForgotPage() {
                   textDecoration:'underline',
                 }}
               >
-                {resending ? 'resending…' : cooldown > 0 ? `resend in ${cooldown}s` : 'resend the code'}
+                {resending ? 'resending…' : cooldown > 0 ? `resend in ${cooldown}s` : 'send it again'}
               </button>
               . If it still doesn't arrive, contact your administrator.
             </div>
-            <form onSubmit={handleReset} className={styles.form}>
+            {error && <div className={styles.error}>{error}</div>}
+            <Link to="/login" className={styles.btnPrimary} style={{ display: 'block', textAlign: 'center', marginTop: 8 }}>
+              Back to Sign In
+            </Link>
+          </>
+        ) : (
+          <>
+            <h1 className={styles.heading}>Reset password</h1>
+            <p style={{ color: '#6b7280', fontSize: 13, marginBottom: 20 }}>
+              Enter your email and we'll send you a link to set a new password.
+            </p>
+            {error && <div className={styles.error}>{error}</div>}
+            <form onSubmit={handleSend} className={styles.form}>
               <div className={styles.field}>
-                <label className={styles.label}>Reset Code</label>
-                <input type="text" value={code} onChange={e => setCode(e.target.value)}
-                  placeholder="000000" maxLength={6} className={styles.codeInput} required autoFocus />
-              </div>
-              <div className={styles.field}>
-                <label className={styles.label}>New Password</label>
-                <input type="password" value={newPw} onChange={e => setNewPw(e.target.value)}
-                  placeholder="Min 8 characters" className={styles.input} required />
-              </div>
-              <div className={styles.field}>
-                <label className={styles.label}>Confirm Password</label>
-                <input type="password" value={confirmPw} onChange={e => setConfirmPw(e.target.value)}
-                  placeholder="Repeat password" className={styles.input} required />
+                <label className={styles.label}>Email</label>
+                <input type="email" value={email} onChange={e => setEmail(e.target.value)}
+                  placeholder="you@fooda.com" className={styles.input} required autoFocus />
               </div>
               <button type="submit" className={styles.btnPrimary} disabled={loading}>
-                {loading ? 'Resetting...' : 'Reset Password'}
+                {loading ? 'Sending...' : 'Send Reset Link'}
               </button>
             </form>
           </>
