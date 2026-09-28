@@ -79,11 +79,18 @@ export default function ForgotPage() {
           <>
             <h1 className={styles.heading}>Check your email</h1>
             <div className={styles.success}>
-              If an account exists for {email}, a password reset link is on its way.
+              If an account exists for {email}, a password reset link has been sent.
+            </div>
+            {/* Deliberately not promising arrival — see the delivery notice on
+                the email step. Mail filtering is the likely outcome, so the
+                admin route is named up front rather than buried after a wait. */}
+            <div className={styles.info} style={{ margin: '14px 0' }}>
+              If it doesn't arrive within a few minutes, it has most likely been caught by
+              Fooda's mail filter — <strong>ask your admin for a one-time reset link</strong>
+              rather than waiting.
             </div>
             <div style={{color:'#6b7280',fontSize:12,margin:'16px 0',lineHeight:1.5}}>
-              Open the link to set a new password, then sign in. Didn't get it
-              within a few minutes? Check your spam folder, or{' '}
+              Open the link to set a new password, then sign in. You can also{' '}
               <button
                 type="button"
                 onClick={handleResend}
@@ -100,7 +107,7 @@ export default function ForgotPage() {
               >
                 {resending ? 'resending…' : cooldown > 0 ? `resend in ${cooldown}s` : 'send it again'}
               </button>
-              . If it still doesn't arrive, contact your administrator.
+              , and it's worth checking your spam folder.
             </div>
             {error && <div className={styles.error}>{error}</div>}
             <Link to="/login" className={styles.btnPrimary} style={{ display: 'block', textAlign: 'center', marginTop: 8 }}>
@@ -110,8 +117,23 @@ export default function ForgotPage() {
         ) : (
           <>
             <h1 className={styles.heading}>Reset password</h1>
+            {/* Delivery notice (2026-09-28). The reset MECHANISM works — it was
+                verified end-to-end — but Fooda's M365/EOP gateway quarantines
+                mail from Firebase's default sender, and aurelia.com has no MX
+                records at all, so for most users nothing arrives. Leading with
+                that is the difference between a user who knows to ask their
+                admin and a user stranded on "check your email".
+                The form below is intentionally left working: it needs no code
+                change to come good the moment a custom SMTP sender is
+                configured, and it may already work for other domains.
+                Delete this block once delivery is fixed. */}
+            <div className={styles.info} style={{ marginBottom: 14 }}>
+              Password reset emails are not reliably reaching Fooda addresses right now.
+              The fastest way in is to <strong>ask your admin for a one-time reset link</strong>.
+              You can still try email below.
+            </div>
             <p style={{ color: '#6b7280', fontSize: 13, marginBottom: 20 }}>
-              Enter your email and we'll send you a link to set a new password.
+              Enter your email and we'll try to send you a link to set a new password.
             </p>
             {error && <div className={styles.error}>{error}</div>}
             <form onSubmit={handleSend} className={styles.form}>

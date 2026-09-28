@@ -117,6 +117,15 @@ export default function LoginPage() {
               </div>
               <button onClick={()=>setShowLogin(false)} style={{background:'none',border:'none',fontSize:20,color:'#94a3b8',cursor:'pointer',padding:0}}>&#x2715;</button>
             </div>
+            {/* Post-cutover notice (2026-09-28). Every pre-existing account was
+                migrated off Cognito with no password carried over, so an old
+                password simply will not work and the failure looks like a typo.
+                Neutral .info styling on purpose — this is an explanation, not an
+                error. Remove once everyone has reset (uptake is measurable:
+                count Firebase Auth users with the 'password' provider). */}
+            <div className={styles.info}>
+              Login was recently upgraded. If your password no longer works, contact your admin for a one-time reset link.
+            </div>
             {error && <div className={styles.error}>{error}</div>}
             <form onSubmit={handleLogin} className={styles.form}>
               <div className={styles.field}><label className={styles.label}>Email</label><input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@company.com" className={styles.input} autoComplete="email" required autoFocus/></div>

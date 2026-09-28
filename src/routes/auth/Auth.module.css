@@ -335,6 +335,18 @@
   font-size: 13px;
   margin-bottom: 4px;
 }
+/* Neutral informational note — deliberately NOT .error/.success colored, so a
+   routine notice (e.g. the post-cutover login-upgrade banner) doesn't read as
+   a failure the user has to act on. */
+.info {
+  background: #f1f5f9;
+  color: #475569;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  margin-bottom: 4px;
+}
 
 /* New password page */
 .page {
