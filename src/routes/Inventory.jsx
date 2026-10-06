@@ -509,35 +509,6 @@ export default function Inventory() {
 
   const location = selectedLocation === 'all' ? null : selectedLocation
 
-  // Edit-panel save state — autosave-on-blur stays the data path, this tracks
-  // in-flight writes so the panel's Done button can reflect "Saving…" /
-  // "All changes saved" aggregate state instead of relying only on per-field
-  // toasts. Declared AFTER `location` so the useCallback's [location, orgId]
-  // deps are both initialized before it closes over them (TDZ fix).
-  const [editSavingCount, setEditSavingCount] = useState(0)
-  const [editLastSavedAt, setEditLastSavedAt] = useState(null)
-  const editSaving = editSavingCount > 0
-  const editHasSaved = editLastSavedAt !== null
-  const saveEditField = useCallback(async (itemId, field, val) => {
-    setEditSavingCount(c => c + 1)
-    try {
-      // setDoc({merge:true}) not updateDoc: items never edited at this location
-      // have no override doc yet, and updateDoc throws "No document to update"
-      // on a missing doc. merge creates-or-patches a single field, leaving every
-      // other field on the doc untouched (no clobber).
-      const { doc: fbDoc, setDoc } = await import('firebase/firestore')
-      const locKey = sanitizeDocId(location)
-      await setDoc(fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', itemId), { [field]: val }, { merge: true })
-      setEditLastSavedAt(Date.now())
-    } finally {
-      setEditSavingCount(c => c - 1)
-    }
-  }, [location, orgId])
-  // Reset the "all saved" affordance when the panel switches items (or closes).
-  // Without this, opening item B right after editing item A would briefly show
-  // "✓ All changes saved" stale from A's session.
-  useEffect(() => { setEditLastSavedAt(null) }, [whyItem?.id])
-
   // ─── Use Inventory Hook ────────────────────────────────────────────────────
   const {
     items,
@@ -580,6 +551,61 @@ export default function Inventory() {
     applyUploadedCounts,
     rollOverFromPrior,
   } = useInventory(orgId, location, periodKey, user, isCurrentPeriod)
+
+  // Edit-panel save state — autosave-on-blur stays the data path, this tracks
+  // in-flight writes so the panel's Done button can reflect "Saving…" /
+  // "All changes saved" aggregate state instead of relying only on per-field
+  // toasts.
+  //
+  // Declared AFTER the useInventory destructure (it used to sit above it, just
+  // below `location`): saveEditField now needs `patchItemFields` from the hook,
+  // so the hook's bindings must exist before this useCallback closes over them.
+  // `location` is still initialized further up, so both deps are safe here.
+  const [editSavingCount, setEditSavingCount] = useState(0)
+  const [editLastSavedAt, setEditLastSavedAt] = useState(null)
+  const editSaving = editSavingCount > 0
+  const editHasSaved = editLastSavedAt !== null
+  /**
+   * Persist one edit-panel field, then mirror it into local state.
+   *
+   * `extra` carries sibling fields that must land in the SAME write as `field`
+   * — currently just `categoryExplicit: true` for the category picker, so the
+   * sentinel can never be written without the category it qualifies (a split
+   * write could be interrupted and leave an explicit flag on a stale label).
+   */
+  const saveEditField = useCallback(async (itemId, field, val, extra = {}) => {
+    // `location` is null when the picker is on "All locations" — sanitizeDocId
+    // would yield '' and Firestore throws on an empty path segment. Fail with a
+    // message that says what to do instead of an opaque FirebaseError.
+    if (!location) throw new Error('Pick a single location before editing items.')
+    setEditSavingCount(c => c + 1)
+    try {
+      // setDoc({merge:true}) not updateDoc: items never edited at this location
+      // have no override doc yet, and updateDoc throws "No document to update"
+      // on a missing doc. merge creates-or-patches a single field, leaving every
+      // other field on the doc untouched (no clobber).
+      const { doc: fbDoc, setDoc } = await import('firebase/firestore')
+      const locKey = sanitizeDocId(location)
+      const payload = { [field]: val, ...extra }
+      await setDoc(fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', itemId), payload, { merge: true })
+      // Only AFTER the write commits: mirror the same payload into the in-memory
+      // items so the edit shows up without a reload. Same pattern (and same
+      // reason) as persistReorder — load() is deliberately NOT called here
+      // because it would discard unsaved counts, but without this patch the
+      // write was invisible: the item's category group is derived from local
+      // state by assignCategory, so it kept rendering under its old category
+      // while the Done state said "All changes saved". If the write throws we
+      // never reach here and local state stays consistent with the server.
+      patchItemFields({ [itemId]: payload })
+      setEditLastSavedAt(Date.now())
+    } finally {
+      setEditSavingCount(c => c - 1)
+    }
+  }, [location, orgId, patchItemFields])
+  // Reset the "all saved" affordance when the panel switches items (or closes).
+  // Without this, opening item B right after editing item A would briefly show
+  // "✓ All changes saved" stale from A's session.
+  useEffect(() => { setEditLastSavedAt(null) }, [whyItem?.id])
 
   // Roll-over-inventory button: only on a short/stub week (< 7 days) that hasn't been
   // counted yet. Once ANY item has a count, rolling over would silently overwrite a real
@@ -1967,7 +1993,14 @@ export default function Inventory() {
         {whyItem && (() => {
           // Build the narrative inline. The data is already in the item — we
           // just package it into a friendly story. No Firestore reads needed.
-          const item = whyItem
+          //
+          // Re-resolve against the LIVE items array rather than rendering the
+          // `whyItem` state snapshot captured on row click. saveEditField now
+          // patches local state after a successful write, and the panel has to
+          // read that back or its own controls would keep showing the values
+          // from the moment the panel opened. Falls back to the snapshot if the
+          // id is no longer present (e.g. the item was removed while open).
+          const item = items.find(i => i.id === whyItem.id) || whyItem
           const cur = item.qty
           const prior = item._priorQty || 0
           const variance = item._variance || 0
@@ -2146,17 +2179,29 @@ export default function Inventory() {
                         <label style={{ fontSize: 13, color: '#475569', minWidth: 100 }}>{f.label}</label>
                         {f.type === 'select' ? (
                           <select
-                            defaultValue={(() => {
-                              const catName = (item.category || '').toLowerCase()
-                              const keyMap = { barista: 'bar_items', snacks: 'pantry', beverages: 'beverages', condiments: 'condiments', cafeteria: 'pantry', dairy: 'dairy', frozen: 'frozen' }
-                              return keyMap[catName] || item._cat || 'general'
-                            })()}
+                            // CONTROLLED off _cat, which assignCategory derives
+                            // from local state — so after saveEditField patches
+                            // items, this reflects the resolved key. It used to
+                            // be `defaultValue` with its own private alias map
+                            // (7 entries, no fallback to the location's category
+                            // list), which both froze the dropdown at mount and
+                            // could disagree with the grouped table's key.
+                            value={item._cat || 'general'}
                             onChange={async (e) => {
                               const catKey = e.target.value
                               const catLabel = categories.find(cat => cat.key === catKey)?.label || catKey
-                              await saveEditField(item.id, 'category', catLabel)
-                              // Do NOT call load() — it would wipe unsaved counts. Category is persisted.
-                              toast.success('Category updated')
+                              try {
+                                // categoryExplicit marks this as a human choice so
+                                // assignCategory honors it verbatim — including
+                                // 'General', which is otherwise read as "uncategorized"
+                                // and sent back through keyword inference.
+                                await saveEditField(item.id, 'category', catLabel, { categoryExplicit: true })
+                                // Still no load() — it would wipe unsaved counts.
+                                // saveEditField patches local state instead.
+                                toast.success('Category updated')
+                              } catch (err) {
+                                toast.error('Failed to update category: ' + (err.message || ''))
+                              }
                             }}
                             style={{ width: 180, padding: '5px 8px', fontSize: 13, borderRadius: 6, border: '0.5px solid #e2e8f0' }}
                           >

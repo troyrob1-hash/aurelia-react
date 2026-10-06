@@ -153,6 +153,19 @@ export function mergeCountsWithDeletions(existing, newCounts, deletions) {
  * "__…__" id, and encodeURIComponent removes "/". The RAW id is also stored in
  * the doc data (itemId) so the read matches on the raw id directly.
  */
+/**
+ * Shallow-merge `patches` ({ [itemId]: {field: value} }) into an items array.
+ *
+ * The reducer behind patchItemFields, extracted so the "an edit-panel write
+ * shows up without a reload" guarantee is unit-testable against the SAME code
+ * the hook runs — rather than a copy of it in the test that could drift.
+ * Untouched ids keep their identity; only patched fields change on patched ids.
+ */
+export function applyItemPatches(items, patches) {
+  if (!patches || !Object.keys(patches).length) return items
+  return (items || []).map(i => (patches[i.id] ? { ...i, ...patches[i.id] } : i))
+}
+
 export function countDocId(id) {
   return 'id_' + encodeURIComponent(String(id ?? ''))
 }
@@ -392,7 +405,16 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
               avgDailyUsage: item.avgDailyUsage,
               lastCountedAt: item.lastCountedAt || null,
               isCatalogItem: true,
-              category: (item.category && item.category !== 'General' && item.category !== 'Other') ? item.category : inferCategory(item.glCode, item.itemType, item.name),
+              // categoryExplicit (set by the edit panel) means a human picked
+              // this — honor it verbatim, including 'General'/'Other'. Only an
+              // unattributed 'General'/'Other' (catalog/upload filler) falls
+              // through to inference. See assignCategory for the full rationale.
+              category: (item.categoryExplicit === true && item.category)
+                ? item.category
+                : (item.category && item.category !== 'General' && item.category !== 'Other')
+                  ? item.category
+                  : inferCategory(item.glCode, item.itemType, item.name),
+              categoryExplicit: item.categoryExplicit === true,
               // Shelf-to-sheet ordering (Stage 1). Location-own catalog doc IS
               // the per-location record, so read directly off item.X (no
               // override layer here).
@@ -433,6 +455,10 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
             lastCountedBy: override.lastCountedBy,
             isKey: override.isKey || false,
             category: override.category || inferCategory(item.glCode, item.itemType, item.name),
+            // Carried so assignCategory can tell a user-picked category from an
+            // inferred one. The read above already honored any non-empty
+            // override; this is what stops assignCategory re-inferring over it.
+            categoryExplicit: override.categoryExplicit === true,
             // Shelf-to-sheet ordering (Stage 1) — per-location physical order.
             // catShelfOrder sorts within the category group; flatShelfOrder
             // sorts all items in the location. Same override.X ?? item.X ?? null
@@ -459,6 +485,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
             vendor: data.vendor || null,
             glCode: data.glCode || null,
             category: data.category || inferCategory(data.glCode, null, data.name),
+            categoryExplicit: data.categoryExplicit === true,
             qty: data.qty ?? null,
             parLevel: data.parLevel || null,
             reorderPoint: data.reorderPoint || null,
@@ -894,7 +921,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
   // owns the Firestore write and should call this only after it succeeds.
   const patchItemFields = useCallback((patches) => {
     if (!patches || !Object.keys(patches).length) return
-    setItems(prev => prev.map(i => patches[i.id] ? { ...i, ...patches[i.id] } : i))
+    setItems(prev => applyItemPatches(prev, patches))
   }, [])
 
   // Bulk-apply file-uploaded counts to local items, then mark them touched so the
@@ -1741,24 +1768,61 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
   }
 }
 
-function assignCategory(item, categories) {
-  // Use the item's own category first (set by inferCategory or upload)
-  if (item.category && item.category !== 'Other' && item.category !== 'General') {
-    const catName = item.category.toLowerCase()
-    // Map common names to category keys
-    const keyMap = {
-      'barista': 'bar_items',
-      'snacks': 'pantry',
-      'beverages': 'beverages',
-      'condiments': 'condiments',
-      'cafeteria': 'pantry',
-      'dairy': 'dairy',
-      'frozen': 'frozen',
-      'proteins': 'proteins',
-      'produce': 'produce',
-    }
-    if (keyMap[catName]) return keyMap[catName]
-    const match = categories.find(c => c.key === catName || c.label.toLowerCase() === catName)
+/**
+ * Legacy label → built-in category key aliases.
+ *
+ * Hoisted to module scope so the edit panel's <select> and assignCategory read
+ * ONE map. They previously kept private copies that had drifted: the panel's
+ * had 7 entries (no proteins/produce) and no fallback to the location's own
+ * category list, so a saved category could resolve to a different key in the
+ * dropdown than in the grouped table.
+ */
+export const CATEGORY_ALIASES = {
+  'barista': 'bar_items',
+  'snacks': 'pantry',
+  'beverages': 'beverages',
+  'condiments': 'condiments',
+  'cafeteria': 'pantry',
+  'dairy': 'dairy',
+  'frozen': 'frozen',
+  'proteins': 'proteins',
+  'produce': 'produce',
+}
+
+/**
+ * Resolve an item to a category KEY.
+ *
+ * `item.categoryExplicit === true` is the sentinel meaning "a human picked this
+ * category in the edit panel" — as opposed to `item.category` holding a value
+ * that arrived from a catalog upload or a previous inferCategory() run. The two
+ * cases need opposite handling and used to be indistinguishable:
+ *
+ *   - NOT explicit: 'General'/'Other' mean "nobody categorized this", so they
+ *     are ignored and the name/glCode inference below runs. Preserved exactly
+ *     as-is — uploads legitimately carry those as filler.
+ *   - EXPLICIT: the stored label is the user's decision and is honored verbatim,
+ *     INCLUDING 'General'/'Other'. Without this, picking General sent the item
+ *     straight back through inference — i.e. back to the keyword guess the user
+ *     was trying to correct, which read as "the change didn't save."
+ *
+ * Alias precedence also flips for an explicit choice: the location's own
+ * category list wins over CATEGORY_ALIASES, so a per-location category whose
+ * label happens to collide with a built-in alias (e.g. one named "Snacks")
+ * keeps its own key instead of being rerouted to 'pantry'. For non-explicit
+ * values the aliases still win, preserving historical grouping.
+ */
+export function assignCategory(item, categories) {
+  const explicit = item?.categoryExplicit === true
+  const raw = item?.category
+  const usable = raw && (explicit || (raw !== 'Other' && raw !== 'General'))
+
+  if (usable) {
+    const catName = String(raw).toLowerCase()
+    const match = (categories || []).find(
+      c => c.key === catName || String(c.label).toLowerCase() === catName
+    )
+    if (explicit && match) return match.key
+    if (CATEGORY_ALIASES[catName]) return CATEGORY_ALIASES[catName]
     if (match) return match.key
     return catName
   }
