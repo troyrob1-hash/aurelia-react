@@ -81,7 +81,7 @@ The companion UI is `src/components/SaveStatusBar.jsx`. Sales/Inventory/Budgets/
 ### Two function backends
 
 - **Firebase Cloud Functions v2** (`functions/index.js`): `mintFirebaseToken`, `inviteUser`, `deactivateUser`, `updateUserRoles`, `updateRegion`, `submitAccessRequest`, `createAPIKey` / `getAPIKeyValue` / `revokeAPIKey` (API keys stored in Secret Manager), `processScheduledPayments` + `processRecurringInvoices` (scheduled), `cleanExpiredSessions`, `claudeProxy`, `integrationWebhook`, plus `auditUserWrite` / `auditLocationWrite` / `auditApiKeyWrite` Firestore triggers writing `orgs/{orgId}/auditLog`. Server-side admin SDK writes bypass rules and are how privileged operations land.
-- **Netlify Function** (`netlify/functions/claude.js`): production Claude API proxy. Dev mode uses an inline Vite middleware in `vite.config.js` (`claudeProxy`) — both read `ANTHROPIC_API_KEY` / `VITE_ANTHROPIC_KEY`. Calls `/api/claude` from the frontend.
+- **Netlify Function** (`netlify/functions/claude.cjs`): production Claude API proxy. Dev mode uses an inline Vite middleware in `vite.config.js` (`claudeProxy`) — both read `ANTHROPIC_API_KEY` / `VITE_ANTHROPIC_KEY`. Calls `/api/claude` from the frontend.
 
 `INTEGRATIONS_ARCHITECTURE.md` captures the canonical pattern for external sync (Order Hub → Purchasing draft invoice trigger, NetSuite push on payment): Firestore document triggers, never frontend calls; sync state on the source doc; failures don't block user actions.
 

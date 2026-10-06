@@ -42,7 +42,7 @@ These show up multiple times across files. Fixing one instance and not the other
 - **`functions/index.js:1153`** — `integrationWebhook` is `invoker:"public"`, logs whether `x-webhook-signature` is present but never verifies it. Any unauthenticated caller can write fake invoices, POs, POS transactions, JE-syncs.
   - **Impact:** Financial-record corruption with no audit link to a person; some paths auto-approve when a `poNumber` matches.
   - **Fix sketch:** HMAC-verify the signature against a per-integration secret from Secret Manager before any write; reject if invalid or missing.
-- **`netlify/functions/claude.js`** — Same as `functions/index.js:1112` but on the Netlify edge. No auth, no origin check, no body-size cap.
+- **`netlify/functions/claude.cjs`** — Same as `functions/index.js:1112` but on the Netlify edge. No auth, no origin check, no body-size cap.
   - **Impact:** Same Anthropic billing-abuse vector, exposed on the public Netlify host.
   - **Fix sketch:** Require Firebase ID token in Authorization header; verify with `firebase-admin`; cap body size.
 - **`functions/index.js:197`** — `inviteUser` accepts caller role of `director` *and* allows the `roles` array to include `"admin"`. A director can mint a Cognito admin in their tenant.
