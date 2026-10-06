@@ -1480,13 +1480,37 @@ export default function Inventory() {
               </button>
             )}
 
+            {/* Item list = item DEFINITIONS (catalog) — the AMBER counterpart to
+                the green "Upload counts" above: amber = definitions, green = counts.
+                directions.js documents it as "the amber Item list button" in five
+                places, so the white styling it had was contradicting the docs users
+                are told to follow. Reuses the same amber token as "Roll over
+                inventory" (#d97706 family) in the shape "Upload counts" uses for
+                green, so the pair reads as a pair.
+
+                It previously used styles.btnIcon, whose fixed 36x36 square (meant
+                for the icon-ONLY buttons — Download/.xlsx/Refresh) forced the text
+                onto two lines and overflowed the box. It sizes to content now, like
+                the text siblings; whiteSpace:nowrap keeps that guarantee even if the
+                toolbar is squeezed (flex items can shrink before the row wraps).
+
+                NOTE: intentionally has NO locked/disabled state. Unlike Upload
+                counts (which has both an `if (locked)` guard and disabled={locked}),
+                uploadCatalog() only guards on !file/!location — so greying this out
+                would render as disabled while still working. Also a <label>, which
+                cannot take `disabled` at all. */}
             <label
               htmlFor="catalog-upload"
-              className={styles.btnIcon}
-              style={{ cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600 }}
+              style={{
+                padding: '8px 14px', fontSize: 12, fontWeight: 600,
+                background: '#d9770618', color: '#d97706',
+                borderRadius: 8, border: '1px solid #d9770640',
+                cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
+                whiteSpace: 'nowrap',
+              }}
               title="Upload item list (.xlsx, .csv) — item definitions only (name, vendor, pack size, price, GL, category). Does NOT import counts."
             >
-              <Upload size={15} /> Item list
+              <Upload size={14} /> Item list
             </label>
             <button className={styles.btnIcon} onClick={() => exportInventory('csv')} title="Export CSV">
               <Download size={15} />
