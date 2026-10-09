@@ -79,8 +79,30 @@ export default function InviteModal({ orgId, onClose, onSuccess, prefillEmail, p
         managedRegionIds: seesAll ? [] : managedRegionIds,
         assignedLocations: seesAll ? [] : assignedLocations,
       });
-      const pw = result?.data?.tempPassword || "Welcome2026!";
-      window.alert("Account created for " + displayName.trim() + "\n\nEmail: " + email.trim() + "\nTemp password: " + pw + "\n\nShare this with them — they\'ll set a new password on first login.");
+      // There is no temp password any more. inviteUser returns a single-use
+      // Firebase password-reset link instead (the old flow handed out the
+      // shared literal "Welcome2026!" to every invitee). Firebase's reset
+      // EMAIL does not reach Fooda addresses — M365/EOP quarantines the
+      // default sender and aurelia.com has no MX records — so the approver
+      // passes this link on directly, same as migrations/reset-link.cjs.
+      const link = result?.data?.resetLink;
+      const who = displayName.trim() + " (" + email.trim() + ")";
+      if (link) {
+        window.alert(
+          "Account created for " + who + "\n\n" +
+          "Send them this link so they can set a password:\n\n" + link + "\n\n" +
+          "Treat it like a password — anyone holding it can take over the account. " +
+          "DM it to them individually, never a channel or shared doc. It expires in about an hour; " +
+          "if it lapses, an admin can mint a fresh one."
+        );
+      } else {
+        // Account IS provisioned; only the link failed (non-fatal server-side).
+        window.alert(
+          "Account created for " + who + ".\n\n" +
+          "The password-setup link could not be generated. Ask an admin to run:\n" +
+          "  node migrations/reset-link.cjs " + email.trim()
+        );
+      }
       onSuccess();
     } catch (e) {
       setError(e.message || "Failed to send invitation.");

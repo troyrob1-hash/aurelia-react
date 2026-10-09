@@ -4,21 +4,63 @@
 const { onCall, HttpsError }    = require("firebase-functions/v2/https");
 const { onDocumentWritten }     = require("firebase-functions/v2/firestore");
 const { onSchedule }            = require("firebase-functions/v2/scheduler");
-const { defineSecret }          = require("firebase-functions/params");
 const admin                     = require("firebase-admin");
 const { v4: uuid }              = require("uuid");
 const jwt                       = require("jsonwebtoken");
 const jwksClient                = require("jwks-rsa");
 
-// AWS credentials live in Secret Manager (functions:secrets:set), bound to
-// each function below via the `secrets` option. aws-sdk v2's default
-// credential chain reads them from process.env at SDK-call time — no change
-// to the AWS client constructors themselves is needed.
-const AWS_ACCESS_KEY_ID     = defineSecret("AWS_ACCESS_KEY_ID");
-const AWS_SECRET_ACCESS_KEY = defineSecret("AWS_SECRET_ACCESS_KEY");
+// AWS is gone. The Cognito pool was deleted with the lapsed AWS subscription
+// (2026-09-28 cutover) and every remaining AWS call site — inviteUser,
+// deactivateUser, updateUserRoles, and the submitAccessRequest SES email — has
+// been ported to the Firebase Admin SDK. The AWS_ACCESS_KEY_ID /
+// AWS_SECRET_ACCESS_KEY secrets and the aws-sdk v2 dependency are therefore
+// no longer bound to any function, which closes both the plaintext-keys and
+// the aws-sdk-EOL items in CLAUDE.md's Known Issues.
 
 admin.initializeApp();
 const db = admin.firestore();
+
+
+// ============================================================
+// FIREBASE AUTH CLAIMS — the one shape firestore.rules enforces on
+// ============================================================
+//
+// firestore.rules reads:
+//     request.auth.token["custom:tenantId"]   (helper tenantId())
+//     request.auth.token["custom:role"]       (helper role())
+//
+// so claims MUST use those LITERAL prefixed keys. Setting { tenantId, role }
+// instead lands them at request.auth.token.tenantId, every rules helper reads
+// null, and EVERY authenticated request from EVERY user is denied — nothing
+// throws, the writes succeed, only reads fail. Identical shape to
+// migrations/migrate-cognito-to-firebase-auth.cjs (and to what the retired
+// mintFirebaseToken embedded); tests/authClaims.test.js pins all three sites.
+const CLAIM_TENANT = "custom:tenantId";
+const CLAIM_ROLE   = "custom:role";
+const CLAIM_NAME   = "custom:name";
+
+/**
+ * Set tenant/role claims on a user, MERGING over whatever is already present.
+ *
+ * setCustomUserClaims REPLACES the entire claims object. A partial write (say,
+ * role only) would silently drop custom:tenantId and lock that user out of
+ * every read — so never call setCustomUserClaims directly for these; go
+ * through here. Returns the merged claims actually written.
+ */
+async function setTenantClaims(uid, { orgId, role, displayName } = {}) {
+  const existing = (await admin.auth().getUser(uid)).customClaims || {};
+  const next = { ...existing };
+  if (orgId)       next[CLAIM_TENANT] = orgId;
+  if (role)        next[CLAIM_ROLE]   = role;
+  if (displayName) next[CLAIM_NAME]   = displayName;
+  await admin.auth().setCustomUserClaims(uid, next);
+  return next;
+}
+
+/** Firebase Admin surfaces the code on errorInfo; fall back to .code. */
+function authErrCode(err) {
+  return err?.errorInfo?.code || err?.code || "";
+}
 
 const POOL_ID        = process.env.COGNITO_USER_POOL_ID;
 const CLIENT_ID      = process.env.COGNITO_CLIENT_ID;
@@ -213,26 +255,28 @@ exports.auditApiKeyWrite = onDocumentWritten("orgs/{orgId}/apiKeys/{keyId}", asy
 // CALLABLE: inviteUser
 // ============================================================
 //
-// !! TEMPORARILY BROKEN — DEFERRED FROM THE 2026-09-28 CUTOVER !!
+// Provisions (or reactivates) one user on Firebase Auth. Also the back end of
+// the access-request approval flow: Settings → Users → Approve opens
+// InviteModal, which calls this.
 //
-// Calls `adminGetUser` / `adminCreateUser` / `adminSetUserPassword` /
-// `adminUpdateUserAttributes` against the DELETED Cognito pool. Every
-// invocation now throws ResourceNotFoundException. Inviting a new user is
-// broken until this is ported.
+// PORTED 2026-10-09 from Cognito (adminGetUser / adminCreateUser /
+// adminSetUserPassword / adminUpdateUserAttributes), which had been failing
+// with "invalid security token" against the deleted pool — blocking all
+// onboarding. Now: createUser → setTenantClaims → Firestore doc →
+// generatePasswordResetLink.
 //
-// Deliberately deferred: this is admin-only and NOT on the login path, and
-// leaving it broken for a day restored sign-in for all 35 active users sooner.
-//
-// PORT TO: admin.auth().createUser({ email, displayName }) +
-// setCustomUserClaims(uid, { "custom:tenantId", "custom:role" }) +
-// generatePasswordResetLink (or the client SDK's sendPasswordResetEmail) in
-// place of the temporary-password email. Use the Firebase uid as the
-// orgs/{orgId}/users doc id, exactly as the migration does. Drop the
-// AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY secrets and the SES mail path with
-// it — see migrations/migrate-cognito-to-firebase-auth.cjs for the patterns.
+// Three things worth knowing:
+//   - The uid is pinned to an existing (deactivated) Firestore doc id when one
+//     exists, so reactivation can't orphan that doc behind a new uid.
+//   - Claims are REQUIRED to succeed. Without them the account exists but
+//     every Firestore read is denied, which reads as a wholly broken app.
+//   - There is no temp password any more. It used to be the shared literal
+//     "Welcome2026!" for every invite; it is now a single-use reset link the
+//     approver passes on out-of-band (Firebase's reset email does not reach
+//     Fooda addresses — see migrations/reset-link.cjs).
 // ============================================================
 exports.inviteUser = onCall(
-  { invoker: "public", secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY] },
+  { invoker: "public" },
   async (request) => {
   if (!request.auth) throw new HttpsError("unauthenticated", "Must be signed in.");
 
@@ -257,10 +301,16 @@ exports.inviteUser = onCall(
     throw new HttpsError("invalid-argument", `Invalid role: ${invalid}`);
   }
 
-  // Check caller role from auth token (set by Cognito via mintFirebaseToken)
+  // Caller role comes from the custom:role claim on the Firebase ID token (set
+  // by inviteUser/updateUserRoles via setTenantClaims; previously by Cognito
+  // through the retired mintFirebaseToken bridge).
+  //
+  // The gate deliberately allows DIRECTOR as well as admin — unchanged. Only
+  // the message is corrected here: it had said "Only admins", which told a
+  // denied user the wrong thing and made the gate look narrower than it is.
   const callerRole = request.auth.token["custom:role"] || "";
   if (callerRole !== "admin" && callerRole !== "director") {
-    throw new HttpsError("permission-denied", "Only admins can invite users. Your role: " + callerRole);
+    throw new HttpsError("permission-denied", "Only admins and directors can invite users. Your role: " + callerRole);
   }
 
   // Email is the authoritative chokepoint — Cognito Username and the
@@ -288,80 +338,87 @@ exports.inviteUser = onCall(
     // below will reactivate the account.
   }
 
-  const AWS     = require("aws-sdk");
-  const cognito = new AWS.CognitoIdentityServiceProvider({ region: "us-east-2" });
   const TIER_ORDER = ["admin", "vp", "director", "manager"];
   const primaryRole = TIER_ORDER.find(r => roles.includes(r)) || roles[0];
-  const tempPassword = "Welcome2026!";
+
+  // Reuse the uid of an existing (deactivated) Firestore doc for this email so
+  // reactivating never orphans that doc behind a freshly-assigned uid. Same
+  // uid-pinning trick the cutover migration used to keep doc id == uid true for
+  // every uid-keyed record (profile, audit entries, inventory attribution).
+  const existingDocId = existingByEmail.empty ? null : existingByEmail.docs[0].id;
 
   let uid = null;
   let isNew = false;
 
-  // Step 1: Check if user already exists in Cognito
+  // Step 1: find or create the Firebase Auth credential.
   try {
-    const existing = await cognito.adminGetUser({ UserPoolId: POOL_ID, Username: email }).promise();
-    uid = existing.Username;
-    console.log("inviteUser: existing Cognito user found:", uid);
-    // Update their attributes
-    await cognito.adminUpdateUserAttributes({
-      UserPoolId: POOL_ID,
-      Username: email,
-      UserAttributes: [
-        { Name: "custom:tenantId", Value: orgId },
-        { Name: "custom:role", Value: primaryRole },
-        { Name: "name", Value: displayName },
-      ],
-    }).promise();
-    // Reset their password so they can log in with the temp password
-    await cognito.adminSetUserPassword({
-      UserPoolId: POOL_ID,
-      Username: email,
-      Password: tempPassword,
-      Permanent: true,
-    }).promise();
-    console.log("inviteUser: password set (permanent) for existing user:", email);
+    const existingAuth = await admin.auth().getUserByEmail(email);
+    uid = existingAuth.uid;
+    // Re-enable if they had been deactivated, and refresh the display name.
+    await admin.auth().updateUser(uid, { disabled: false, displayName });
+    if (existingDocId && existingDocId !== uid) {
+      // Shouldn't happen, but say so loudly rather than silently writing a
+      // second doc: the Auth uid wins (the credential is what rules see).
+      console.warn(
+        "inviteUser: Firestore doc id " + existingDocId + " != Auth uid " + uid +
+        " for " + email + " — writing to the Auth uid; the stale doc needs merging by hand."
+      );
+    }
   } catch (lookupErr) {
-    if (lookupErr.code === "UserNotFoundException") {
-      // Step 2: User doesn't exist — create them
-      try {
-        const created = await cognito.adminCreateUser({
-          UserPoolId: POOL_ID,
-          Username: email,
-          MessageAction: "SUPPRESS",
-          // TemporaryPassword intentionally omitted — Cognito generates a
-          // throwaway random temp password we never use. Passing our own
-          // here AND then setting the SAME value as Permanent below causes
-          // Cognito to no-op the second call and leave the user in
-          // FORCE_CHANGE_PASSWORD. Letting Cognito invent the temp value
-          // ensures the Permanent set below is a real password change that
-          // transitions the user to CONFIRMED.
-          UserAttributes: [
-            { Name: "email", Value: email },
-            { Name: "email_verified", Value: "true" },
-            { Name: "name", Value: displayName },
-            { Name: "custom:tenantId", Value: orgId },
-            { Name: "custom:role", Value: primaryRole },
-          ],
-        }).promise();
-        uid = created.User.Username;
-        isNew = true;
-        console.log("inviteUser: new Cognito user created:", uid);
-        // Set password as permanent so they can log in immediately
-        await cognito.adminSetUserPassword({
-          UserPoolId: POOL_ID,
-          Username: email,
-          Password: tempPassword,
-          Permanent: true,
-        }).promise();
-        console.log("inviteUser: password set (permanent) for new user:", email);
-      } catch (createErr) {
-        console.error("inviteUser: create failed:", createErr);
-        throw new HttpsError("internal", "Failed to create account: " + createErr.message);
-      }
-    } else {
-      console.error("inviteUser: lookup failed:", lookupErr);
+    if (authErrCode(lookupErr) !== "auth/user-not-found") {
+      console.error("inviteUser: Auth lookup failed:", lookupErr);
       throw new HttpsError("internal", "Failed to check account: " + lookupErr.message);
     }
+    // Step 2: no credential yet — create one, pinning the uid to the existing
+    // Firestore doc id when there is one.
+    try {
+      const created = await admin.auth().createUser({
+        ...(existingDocId ? { uid: existingDocId } : {}),
+        email,
+        emailVerified: false,
+        displayName,
+        disabled: false,
+      });
+      uid = created.uid;
+      isNew = true;
+      console.log("inviteUser: created Firebase Auth user", uid, "for", email);
+    } catch (createErr) {
+      console.error("inviteUser: create failed:", createErr);
+      throw new HttpsError("internal", "Failed to create account: " + createErr.message);
+    }
+  }
+
+  // Step 2b: CLAIMS. Must land, or the account exists but every Firestore read
+  // is denied — which looks to the new user like a totally broken app. Throwing
+  // here is better than returning success on a half-provisioned account.
+  try {
+    await setTenantClaims(uid, { orgId, role: primaryRole, displayName });
+  } catch (claimErr) {
+    console.error("inviteUser: claim write failed for", uid, ":", claimErr);
+    throw new HttpsError(
+      "internal",
+      "Account created but permissions failed to apply — re-run the invite. (" + claimErr.message + ")"
+    );
+  }
+
+  // Step 2c: password-setup link.
+  //
+  // Replaces the old shared temp password, which was the literal string
+  // "Welcome2026!" for every invite — same value for everyone, never rotated,
+  // and returned to the browser. A single-use reset link is strictly better.
+  //
+  // Firebase's own reset email does NOT reach Fooda addresses (M365/EOP
+  // quarantines the default firebaseapp.com sender) and aurelia.com has no MX
+  // records at all, so the approver hands this link over out-of-band — the same
+  // mechanism as migrations/reset-link.cjs. Single-use, ~1 hour TTL.
+  //
+  // Non-fatal: the account is fully provisioned without it, and a fresh link
+  // can always be minted later with reset-link.cjs.
+  let resetLink = null;
+  try {
+    resetLink = await admin.auth().generatePasswordResetLink(email);
+  } catch (linkErr) {
+    console.warn("inviteUser: reset-link generation failed (account IS provisioned):", linkErr.message);
   }
 
   // Step 3: Create or update Firestore user doc
@@ -406,7 +463,9 @@ exports.inviteUser = onCall(
     console.error("inviteUser: audit log failed (non-fatal):", auditErr);
   }
 
-  return { success: true, uid, tempPassword, isNew };
+  // `tempPassword` is deliberately gone from the contract — there is no shared
+  // password any more. Callers surface `resetLink` instead (InviteModal does).
+  return { success: true, uid, isNew, resetLink };
 });
 
 
@@ -414,19 +473,17 @@ exports.inviteUser = onCall(
 // CALLABLE: deactivateUser
 // ============================================================
 //
-// !! TEMPORARILY BROKEN — DEFERRED FROM THE 2026-09-28 CUTOVER !!
+// PORTED 2026-10-09 from Cognito `adminDisableUser` to
+// admin.auth().updateUser(uid, { disabled: true }).
 //
-// `adminDisableUser` targets the deleted Cognito pool and throws
-// ResourceNotFoundException before the Firestore write, so deactivation is a
-// no-op — the user stays active and CAN still sign in. Admin-only, not on the
-// login path. To deactivate someone in the meantime, disable them in the
-// Firebase console AND set `active: false` on orgs/{orgId}/users/{uid}.
-//
-// PORT TO: admin.auth().updateUser(targetUid, { disabled: true }), which is the
-// direct equivalent and keeps the existing fail-before-Firestore ordering.
+// While it pointed at the deleted pool this was a silent no-op in the worst
+// direction: it threw BEFORE the Firestore write, so a "deactivated" user kept
+// full working access. The credential disable is still deliberately ordered
+// first, for the same reason — Firestore must never claim someone is
+// deactivated while they can still sign in.
 // ============================================================
 exports.deactivateUser = onCall(
-  { invoker: "public", secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY] },
+  { invoker: "public" },
   async (request) => {
   if (!request.auth) throw new HttpsError("unauthenticated", "Must be signed in.");
 
@@ -442,10 +499,21 @@ exports.deactivateUser = onCall(
     throw new HttpsError("failed-precondition", "You cannot deactivate yourself.");
   }
 
-  const AWS     = require("aws-sdk");
-  const cognito = new AWS.CognitoIdentityServiceProvider({ region: "us-east-2" });
-
-  await cognito.adminDisableUser({ UserPoolId: POOL_ID, Username: targetUid }).promise();
+  // Disable the CREDENTIAL first and require it to succeed. If this failed and
+  // we still wrote active:false, Firestore would claim the user is deactivated
+  // while they could happily keep signing in — the exact silent-no-op this
+  // function had while it was pointed at the deleted Cognito pool.
+  try {
+    await admin.auth().updateUser(targetUid, { disabled: true });
+  } catch (err) {
+    if (authErrCode(err) !== "auth/user-not-found") {
+      console.error("deactivateUser: disable failed for", targetUid, ":", err.message);
+      throw new HttpsError("internal", "Failed to disable the sign-in credential; nothing was changed.");
+    }
+    // No Auth record — invited but never set a password. Nothing to disable;
+    // the Firestore active:false below is the whole gate for them.
+    console.warn("deactivateUser: no Auth credential for", targetUid, "— Firestore flag only.");
+  }
 
   const now = admin.firestore.FieldValue.serverTimestamp();
   await db.collection("orgs").doc(orgId).collection("users").doc(targetUid).update({
@@ -455,9 +523,8 @@ exports.deactivateUser = onCall(
   try {
     await admin.auth().revokeRefreshTokens(targetUid);
   } catch (err) {
-    if (err?.errorInfo?.code !== "auth/user-not-found") throw err;
-    // No Firebase Auth record (user never signed in via app). Nothing to revoke;
-    // the Cognito disable already blocks future sign-ins.
+    if (authErrCode(err) !== "auth/user-not-found") throw err;
+    // No Auth record, so nothing to revoke — already handled above.
   }
 
   await writeAuditLog(orgId,
@@ -493,15 +560,11 @@ exports.cleanExpiredSessions = onSchedule("every 60 minutes", async () => {
 
 
 // ============================================================
-// HELPER: generate secure temp password
-// ============================================================
-
-// ============================================================
 // CALLABLE: submitAccessRequest
 // Public — accepts access requests from unauthenticated visitors
 // ============================================================
 exports.submitAccessRequest = onCall(
-  { invoker: "public", secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY] },
+  { invoker: "public" },
   async (request) => {
     const { name, email, message } = request.data || {};
 
@@ -581,41 +644,22 @@ exports.submitAccessRequest = onCall(
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
-    // Email admin about new access request
-    try {
-      const AWS = require("aws-sdk");
-      const ses = new AWS.SES({ region: "us-east-2" });
-      await ses.sendEmail({
-        Source: "aurelia@fooda.com",
-        Destination: { ToAddresses: ["troy.robinson@fooda.com"] },
-        Message: {
-          Subject: { Data: "Aurelia — New access request from " + trimmedName },
-          Body: {
-            Html: {
-              Data: "<div style='font-family:sans-serif;max-width:480px;margin:0 auto;padding:20px;'>"
-                + "<div style='background:#F15D3B;color:#fff;padding:12px 20px;border-radius:10px 10px 0 0;font-weight:700;'>Aurelia FMS</div>"
-                + "<div style='background:#fff;border:1px solid #e5e7eb;border-top:none;padding:20px;border-radius:0 0 10px 10px;'>"
-                + "<h2 style='margin:0 0 12px;font-size:18px;color:#0f172a;'>New access request</h2>"
-                + "<p style='margin:0 0 8px;color:#334155;'><strong>" + trimmedName + "</strong> (" + trimmedEmail + ") requested access to Aurelia.</p>"
-                + (trimmedMsg ? "<p style='margin:0 0 8px;color:#64748b;font-style:italic;'>" + trimmedMsg + "</p>" : "")
-                + "<p style='margin:16px 0 0;'><a href='https://aureliafms.com/settings' style='display:inline-block;padding:10px 24px;background:#1D9E75;color:#fff;border-radius:8px;text-decoration:none;font-weight:600;'>Review in Aurelia</a></p>"
-                + "</div></div>"
-            }
-          }
-        }
-      }).promise();
-    } catch (emailErr) {
-      // Don't fail the request if email fails — notification is already in Firestore
-      console.warn("Failed to send admin email:", emailErr.message);
-    }
+    // The admin-notification EMAIL (AWS SES, hard-coded to
+    // troy.robinson@fooda.com) was removed in the 2026-10-09 AWS teardown. SES
+    // died with the lapsed AWS account, so the call had been throwing into its
+    // own catch and silently doing nothing since 2026-09-28 — and the catch
+    // itself documented that the Firestore notification above is the real
+    // channel. That notification (tenants/{tenantId}/notifications/{requestId})
+    // is what drives the in-app bell in AppShell, which is admin-only.
+    //
+    // Not re-implemented on another provider on purpose: outbound email to
+    // fooda.com is quarantined by M365/EOP regardless of sender (see
+    // migrations/reset-link.cjs), so a replacement would be equally invisible.
+    // If email notification is wanted later, fix the sender first.
 
     return { success: true, status: "created" };
   }
 );
-function generateTempPassword() {
-  const chars = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$";
-  return Array.from({ length: 16 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
-}
 // ============================================================
 // CALLABLE: createAPIKey
 // ============================================================
@@ -830,7 +874,7 @@ exports.revokeAPIKey = onCall(async (request) => {
 //   - Roles must be from the valid set
 // ============================================================
 exports.updateUserRoles = onCall(
-  { invoker: "public", secrets: [AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY] },
+  { invoker: "public" },
   async (request) => {
   if (!request.auth) throw new HttpsError("unauthenticated", "Must be signed in.");
 
@@ -902,58 +946,42 @@ exports.updateUserRoles = onCall(
   const primaryRole = TIER_ORDER.find(r => roles.includes(r)) || roles[0];
   updatePayload.role = primaryRole;
 
-  // !! TEMPORARILY BROKEN — DEFERRED FROM THE 2026-09-28 CUTOVER !!
+  // Write the CLAIM first and require it to succeed. firestore.rules enforces
+  // ONLY on the claim, so if this fails we must not leave Firestore showing a
+  // role the gates won't honor. Ordering preserved from the Cognito original;
+  // only the backend changed.
   //
-  // This block targets the deleted Cognito pool, so it always throws and the
-  // `catch` converts that into HttpsError("internal") — meaning role changes
-  // are currently REJECTED outright rather than half-applied. That is the safe
-  // failure (Firestore is never left showing a role the gates won't honor), and
-  // it is why this was safe to defer. Admin-only, not on the login path.
+  // setTenantClaims MERGES — a bare setCustomUserClaims({ "custom:role": … })
+  // would replace the whole claims object and drop custom:tenantId, denying
+  // this user every read.
   //
-  // To change a role in the meantime: set the custom claim by hand
-  // (admin.auth().setCustomUserClaims) and update the Firestore doc to match.
-  //
-  // PORT TO: admin.auth().setCustomUserClaims(targetUid, {
-  //   "custom:tenantId": orgId, "custom:role": primaryRole, ... })
-  // — preserve existing claims by reading getUser(uid).customClaims first, and
-  // note the claim only reaches the client on the next ID-token refresh, so
-  // force one (revokeRefreshTokens, or getIdToken(true) client-side).
-  //
-  // The comment below describes the PRE-cutover authority direction and is now
-  // inverted — the Firestore doc is the source of record and the claim is
-  // seeded from it. See the AUTHORITY INVERSION note in src/store/authStore.js.
-  // Keep writing the claim before the Firestore mirror regardless: the claim is
-  // still the only thing firestore.rules enforces on.
-  //
-  // Cognito custom:role is the authoritative source of truth for permission
-  // gates — write it FIRST and require it to succeed before mirroring to
-  // Firestore. If Cognito rejects, abort the whole operation so we never
-  // leave Firestore showing a role the gates won't honor.
+  // AUTHORITY NOTE: pre-cutover, Cognito's custom:role was authoritative and
+  // the Firestore doc was a display mirror. That is now INVERTED — the doc is
+  // the source of record and the claim is seeded from it. Same enforcement
+  // point, opposite direction. See src/store/authStore.js:loadProfile.
   try {
-    const AWS = require("aws-sdk");
-    const cognito = new AWS.CognitoIdentityServiceProvider({ region: "us-east-2" });
-    await cognito.adminUpdateUserAttributes({
-      UserPoolId: POOL_ID,
-      Username: targetUid,
-      UserAttributes: [
-        { Name: "custom:role", Value: primaryRole },
-      ],
-    }).promise();
+    await setTenantClaims(targetUid, { orgId, role: primaryRole });
   } catch (e) {
-    console.error("Cognito custom:role update failed for", targetUid, ":", e.message);
-    throw new HttpsError("internal", "Failed to update role in Cognito; change not applied");
+    console.error("updateUserRoles: claim write failed for", targetUid, ":", e.message);
+    throw new HttpsError(
+      "internal",
+      authErrCode(e) === "auth/user-not-found"
+        ? "That user has no sign-in credential yet — re-invite them instead of editing their role."
+        : "Failed to update the role claim; change not applied."
+    );
   }
 
-  // Mirror to Firestore — display layer only now that Cognito is authoritative.
+  // Mirror to Firestore. This is now the source of record (the claim above was
+  // seeded FROM the same primaryRole), not a display-only copy.
   await db.collection("orgs").doc(orgId).collection("users").doc(targetUid).update(updatePayload);
 
   // Revoke refresh tokens so the target user has to re-login and pick up new claims
   try {
     await admin.auth().revokeRefreshTokens(targetUid);
   } catch (err) {
-    if (err?.errorInfo?.code !== "auth/user-not-found") throw err;
-    // No Firebase Auth record (user never signed in via app). Nothing to revoke;
-    // the Cognito disable already blocks future sign-ins.
+    if (authErrCode(err) !== "auth/user-not-found") throw err;
+    // No Auth credential yet (invited but never set a password). Nothing to
+    // revoke — and setTenantClaims above would already have thrown for them.
   }
 
   // Audit log

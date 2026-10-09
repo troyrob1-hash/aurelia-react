@@ -38,6 +38,7 @@ const code = p => read(p)
 const RULES     = read('firestore.rules')
 const MIGRATION = code('migrations/migrate-cognito-to-firebase-auth.cjs')
 const AUTHSTORE = code('src/store/authStore.js')
+const FUNCTIONS = code('functions/index.js')
 
 const TENANT_KEY = 'custom:tenantId'
 const ROLE_KEY   = 'custom:role'
@@ -100,6 +101,81 @@ describe('the Cognito bridge is gone from the login path', () => {
 
   it('lib/firebase.js no longer exports the token-bridge helper', () => {
     expect(code('src/lib/firebase.js')).not.toMatch(/export\s+async\s+function\s+signInWithCognito/)
+  })
+})
+
+describe('Cloud Functions provisioning (2026-10-09 AWS teardown)', () => {
+  // inviteUser / updateUserRoles now set the claims that used to come from
+  // Cognito. They are the ONLY writers of these claims in production (the
+  // migration was one-time), so the same shape contract applies to them.
+  it('declares the prefixed claim constants', () => {
+    expect(FUNCTIONS).toMatch(new RegExp(`CLAIM_TENANT = "${TENANT_KEY}"`))
+    expect(FUNCTIONS).toMatch(new RegExp(`CLAIM_ROLE   = "${ROLE_KEY}"`))
+  })
+
+  it('routes every claim write through the MERGING helper', () => {
+    // A bare setCustomUserClaims({"custom:role": x}) would REPLACE the claims
+    // object and drop custom:tenantId — denying that user every read. Only
+    // setTenantClaims may call it, and it must merge over getUser().customClaims.
+    const helper = FUNCTIONS.slice(
+      FUNCTIONS.indexOf('async function setTenantClaims'),
+      FUNCTIONS.indexOf('function authErrCode')
+    )
+    expect(helper).toMatch(/getUser\(uid\)\)\.customClaims \|\| \{\}/)
+    expect(helper).toMatch(/const next = \{ \.\.\.existing \}/)
+    expect(helper).toMatch(/setCustomUserClaims\(uid, next\)/)
+
+    // Exactly one setCustomUserClaims call in the whole file — inside the helper.
+    expect(FUNCTIONS.match(/setCustomUserClaims\(/g)).toHaveLength(1)
+  })
+
+  it('invite and role-change both go through setTenantClaims', () => {
+    expect(FUNCTIONS).toMatch(/setTenantClaims\(uid, \{ orgId, role: primaryRole, displayName \}\)/)
+    expect(FUNCTIONS).toMatch(/setTenantClaims\(targetUid, \{ orgId, role: primaryRole \}\)/)
+  })
+
+  it('never writes a bare unprefixed tenantId/role claim', () => {
+    const helper = FUNCTIONS.slice(
+      FUNCTIONS.indexOf('async function setTenantClaims'),
+      FUNCTIONS.indexOf('function authErrCode')
+    )
+    expect(helper).not.toMatch(/next\.tenantId/)
+    expect(helper).not.toMatch(/next\.role\b/)
+  })
+
+  it('has no AWS/Cognito calls left', () => {
+    expect(FUNCTIONS).not.toMatch(/aws-sdk/)
+    expect(FUNCTIONS).not.toMatch(/CognitoIdentityServiceProvider/)
+    expect(FUNCTIONS).not.toMatch(/adminCreateUser|adminSetUserPassword|adminDisableUser|adminUpdateUserAttributes|adminGetUser/)
+    expect(FUNCTIONS).not.toMatch(/AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY/)
+    expect(FUNCTIONS).not.toMatch(/new AWS\.SES/)
+  })
+
+  it('aws-sdk is gone from functions/package.json', () => {
+    const pkg = JSON.parse(read('functions/package.json'))
+    expect(pkg.dependencies).not.toHaveProperty('aws-sdk')
+  })
+
+  it('no longer hands out a shared temp password', () => {
+    // The old flow returned the literal "Welcome2026!" to every invitee.
+    expect(FUNCTIONS).not.toMatch(/Welcome2026/)
+    expect(FUNCTIONS).not.toMatch(/tempPassword/)
+    expect(FUNCTIONS).toMatch(/generatePasswordResetLink\(email\)/)
+    // and the client must read the new field, not the old one
+    const modal = code('src/pages/Settings/components/InviteModal.jsx')
+    expect(modal).toMatch(/result\?\.data\?\.resetLink/)
+    expect(modal).not.toMatch(/tempPassword|Welcome2026/)
+  })
+
+  it('deactivateUser disables the credential before the Firestore flag', () => {
+    const fn = FUNCTIONS.slice(
+      FUNCTIONS.indexOf('exports.deactivateUser'),
+      FUNCTIONS.indexOf('exports.cleanExpiredSessions')
+    )
+    const disableAt = fn.indexOf('updateUser(targetUid, { disabled: true })')
+    const flagAt    = fn.indexOf('active: false')
+    expect(disableAt).toBeGreaterThan(-1)
+    expect(flagAt).toBeGreaterThan(disableAt)   // order matters: credential first
   })
 })
 
