@@ -151,9 +151,30 @@ describe('Cloud Functions provisioning (2026-10-09 AWS teardown)', () => {
     expect(FUNCTIONS).not.toMatch(/new AWS\.SES/)
   })
 
-  it('aws-sdk is gone from functions/package.json', () => {
+  it('the Cognito token bridge is fully gone (2026-10-09)', () => {
+    // mintFirebaseToken + its JWKS verification were the last Cognito code.
+    // Nothing may reintroduce them: the pool they verified against is deleted,
+    // so anything depending on it can only fail closed.
+    expect(FUNCTIONS).not.toMatch(/exports\.mintFirebaseToken/)
+    expect(FUNCTIONS).not.toMatch(/verifyCognitoToken|getSigningKey|jwksClient/)
+    expect(FUNCTIONS).not.toMatch(/require\("jsonwebtoken"\)|require\("jwks-rsa"\)/)
+    expect(FUNCTIONS).not.toMatch(/COGNITO_USER_POOL_ID|COGNITO_CLIENT_ID|COGNITO_ISSUER/)
+  })
+
+  it('functions/package.json carries no AWS or Cognito-only deps', () => {
     const pkg = JSON.parse(read('functions/package.json'))
-    expect(pkg.dependencies).not.toHaveProperty('aws-sdk')
+    for (const dep of ['aws-sdk', 'jsonwebtoken', 'jwks-rsa']) {
+      expect(pkg.dependencies, `direct dep ${dep}`).not.toHaveProperty(dep)
+    }
+  })
+
+  it('the functions lockfile matches package.json (npm ci would pass)', () => {
+    // The root lockfile drifting out of sync broke the Netlify deploy on
+    // 2026-10-06 (npm 10 rejects what npm 11 tolerates). Same guard here, since
+    // the functions deploy runs its own npm ci.
+    const pkg  = JSON.parse(read('functions/package.json'))
+    const lock = JSON.parse(read('functions/package-lock.json'))
+    expect(lock.packages[''].dependencies).toEqual(pkg.dependencies)
   })
 
   it('no longer hands out a shared temp password', () => {

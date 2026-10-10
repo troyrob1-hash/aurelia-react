@@ -6,8 +6,6 @@ const { onDocumentWritten }     = require("firebase-functions/v2/firestore");
 const { onSchedule }            = require("firebase-functions/v2/scheduler");
 const admin                     = require("firebase-admin");
 const { v4: uuid }              = require("uuid");
-const jwt                       = require("jsonwebtoken");
-const jwksClient                = require("jwks-rsa");
 
 // AWS is gone. The Cognito pool was deleted with the lapsed AWS subscription
 // (2026-09-28 cutover) and every remaining AWS call site — inviteUser,
@@ -62,42 +60,12 @@ function authErrCode(err) {
   return err?.errorInfo?.code || err?.code || "";
 }
 
-const POOL_ID        = process.env.COGNITO_USER_POOL_ID;
-const CLIENT_ID      = process.env.COGNITO_CLIENT_ID;
-const COGNITO_REGION = "us-east-2";
-const COGNITO_ISSUER = `https://cognito-idp.${COGNITO_REGION}.amazonaws.com/${POOL_ID}`;
-
-
-// ============================================================
-// COGNITO TOKEN VERIFICATION
-// ============================================================
-const client = jwksClient({
-  jwksUri: `${COGNITO_ISSUER}/.well-known/jwks.json`,
-  cache: true,
-  cacheMaxEntries: 5,
-  cacheMaxAge: 600000,
-});
-
-function getSigningKey(header, callback) {
-  client.getSigningKey(header.kid, (err, key) => {
-    if (err) return callback(err);
-    callback(null, key.getPublicKey());
-  });
-}
-
-function verifyCognitoToken(idToken) {
-  return new Promise((resolve, reject) => {
-    jwt.verify(
-      idToken,
-      getSigningKey,
-      { issuer: COGNITO_ISSUER, algorithms: ["RS256"] },
-      (err, decoded) => {
-        if (err) reject(err);
-        else resolve(decoded);
-      }
-    );
-  });
-}
+// The Cognito token-verification block (POOL_ID / CLIENT_ID / COGNITO_ISSUER,
+// the jwks-rsa client, getSigningKey, verifyCognitoToken) lived here to support
+// mintFirebaseToken. All of it was removed on 2026-10-09 along with that
+// function — the pool it verified against was deleted with the lapsed AWS
+// account, so every verification had been failing closed since 2026-09-28.
+// This was the last Cognito code in the repo.
 
 
 // ============================================================
@@ -121,76 +89,11 @@ async function writeAuditLog(orgId, actor, action, resource, before = null, afte
 const SYSTEM_ACTOR = { uid: "system", email: "system@aurelia-fms", displayName: "System", ip: null, userAgent: null };
 
 
-// ============================================================
-// CALLABLE: mintFirebaseToken
-// Verifies Cognito ID token and returns a Firebase custom token
-// ============================================================
-//
-// !! DEAD AS OF THE 2026-09-28 COGNITO → FIREBASE AUTH CUTOVER !!
-//
-// No caller remains: `src/lib/firebase.js` no longer has `signInWithCognito`,
-// and `src/lib/auth.js` signs in against Firebase Auth directly. Left in place
-// only so this deploy is a pure no-op for the login path; delete it in the
-// follow-up that ports the three admin callables below.
-//
-// It FAILS CLOSED, so it is not a live hole despite `invoker: "public"`:
-// `verifyCognitoToken` fetches JWKS from the deleted pool
-// (us-east-2_O2djCRxsH), which 404s, so no token can ever verify and no
-// Firebase custom token can be minted. Do not "fix" that fetch.
-// ============================================================
-exports.mintFirebaseToken = onCall(
-  { invoker: "public" },
-  async (request) => {
-    const { idToken } = request.data;
-    if (!idToken) {
-      throw new HttpsError("invalid-argument", "Missing idToken");
-    }
-    try {
-      const decoded = await verifyCognitoToken(idToken);
-
-    const uid = decoded.sub;
-    const email = decoded.email || "";
-    // Phase A observability for the 'fooda' silent-fallback bug cluster: log
-    // + audit-log when the Cognito token genuinely lacks the custom:tenantId
-    // claim. mapUser (client) has a matching console.warn. The fallback is
-    // kept for now to avoid locking out any legacy Cognito users whose pool
-    // entries pre-date the attribute; Phase B will remove it after the
-    // backfill script runs and these audit entries confirm zero recent hits.
-    const claimTenantId = decoded["custom:tenantId"];
-    if (!claimTenantId) {
-      console.warn(
-        `[mintFirebaseToken] custom:tenantId missing — uid=${uid} email=${email || "<none>"} — falling back to fooda. ` +
-        `Phase B will tighten this after Cognito backfill.`
-      );
-      try {
-        await writeAuditLog(
-          "fooda",
-          { uid, email: email || null, displayName: null, ip: null, userAgent: null },
-          "auth.tenantId_fallback",
-          { type: "auth", id: uid }
-        );
-      } catch (logErr) {
-        console.warn("[mintFirebaseToken] audit-log write failed:", logErr.message);
-      }
-    }
-    const tenantId = claimTenantId || "fooda";
-    const role = decoded["custom:role"] || "viewer";
-    const name = decoded["custom:managerName"] || decoded.name || email;
-
-    // Create custom token with claims embedded
-    const firebaseToken = await admin.auth().createCustomToken(uid, {
-      "custom:tenantId": tenantId,
-      "custom:role": role,
-      "custom:name": name,
-      email,
-    });
-
-    return { firebaseToken };
-  } catch (err) {
-    console.error("mintFirebaseToken error:", err);
-    throw new HttpsError("unauthenticated", "Invalid Cognito token: " + err.message);
-  }
-});
+// mintFirebaseToken was deleted here on 2026-10-09. It exchanged a Cognito ID
+// token for a Firebase custom token — the bridge the app used before the
+// 2026-09-28 cutover. It had no callers left (src/lib/auth.js signs in against
+// Firebase directly) and failed closed, since the pool whose JWKS it verified
+// against no longer exists.
 
 
 // ============================================================
@@ -319,10 +222,10 @@ exports.inviteUser = onCall(
   const email = String(rawEmail).trim().toLowerCase();
 
   // Dedupe guard — if an ACTIVE user doc already exists for this email
-  // in this org, refuse the invite. The existing-Cognito-user branch
-  // below would otherwise reset their password and overwrite their
-  // role/locations (and, if the existing Cognito Username has different
-  // casing, the create branch would silently make a second Cognito user).
+  // in this org, refuse the invite. The existing-credential branch below
+  // would otherwise overwrite their role/locations, and (before email was
+  // lower-cased above) a casing difference could have created a second
+  // account for the same person.
   const existingByEmail = await db.collection("orgs").doc(orgId)
     .collection("users").where("email", "==", email).limit(1).get();
   if (!existingByEmail.empty) {
@@ -334,8 +237,8 @@ exports.inviteUser = onCall(
         "Edit that user's access instead of inviting them again."
       );
     }
-    // Deactivated → fall through; the existing-Cognito-user branch
-    // below will reactivate the account.
+    // Deactivated → fall through; the branch below reactivates the account
+    // and reuses its uid.
   }
 
   const TIER_ORDER = ["admin", "vp", "director", "manager"];
@@ -490,7 +393,7 @@ exports.deactivateUser = onCall(
   const { orgId, targetUid } = request.data;
   const callerUid = request.auth.uid;
 
-  // Check caller role from auth token (set by Cognito via mintFirebaseToken)
+  // Caller role from the custom:role claim on the Firebase ID token.
   const callerRole = request.auth.token["custom:role"] || "";
   if (callerRole !== "admin") {
     throw new HttpsError("permission-denied", "Only admins can deactivate users. Your role: " + callerRole);
@@ -673,7 +576,7 @@ exports.createAPIKey = onCall(async (request) => {
     throw new HttpsError("invalid-argument", "orgId, label, and rawKey are required.");
   }
 
-  // Check caller role from auth token (set by Cognito via mintFirebaseToken)
+  // Caller role from the custom:role claim on the Firebase ID token.
   const callerRole = request.auth.token["custom:role"] || "";
   if (callerRole !== "admin") {
     throw new HttpsError("permission-denied", "Only admins can create API keys. Your role: " + callerRole);
@@ -749,7 +652,7 @@ exports.getAPIKeyValue = onCall(async (request) => {
     throw new HttpsError("invalid-argument", "orgId and keyId are required.");
   }
 
-  // Check caller role from auth token (set by Cognito via mintFirebaseToken)
+  // Caller role from the custom:role claim on the Firebase ID token.
   const callerRole = request.auth.token["custom:role"] || "";
   if (callerRole !== "admin") {
     throw new HttpsError("permission-denied", "Only admins can reveal API keys. Your role: " + callerRole);
@@ -804,7 +707,7 @@ exports.revokeAPIKey = onCall(async (request) => {
     throw new HttpsError("invalid-argument", "orgId and keyId are required.");
   }
 
-  // Check caller role from auth token (set by Cognito via mintFirebaseToken)
+  // Caller role from the custom:role claim on the Firebase ID token.
   const callerRole = request.auth.token["custom:role"] || "";
   if (callerRole !== "admin") {
     throw new HttpsError("permission-denied", "Only admins can revoke API keys. Your role: " + callerRole);
@@ -860,7 +763,7 @@ exports.revokeAPIKey = onCall(async (request) => {
 
 // ============================================================
 // CALLABLE: update a user's roles and region/location assignments.
-// Writes to Firestore, syncs to Cognito custom:role claim, writes audit log.
+// Writes the custom:role Firebase Auth claim, mirrors to Firestore, audits.
 //
 // Payload: { orgId, targetUid, roles, managedRegionIds, assignedLocations }
 //   - roles: array of role strings (['manager', 'director', 'vp', 'admin'])
@@ -1033,7 +936,7 @@ exports.updateRegion = onCall(async (request) => {
     throw new HttpsError("invalid-argument", "action must be create, update, or delete.");
   }
 
-  // Check caller role from auth token (set by Cognito via mintFirebaseToken)
+  // Caller role from the custom:role claim on the Firebase ID token.
   const callerRole = request.auth.token["custom:role"] || "";
   if (callerRole !== "admin") {
     throw new HttpsError("permission-denied", "Only admins can manage regions. Your role: " + callerRole);
