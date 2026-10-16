@@ -1,11 +1,14 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
-import { doc, getDoc, setDoc, collection, getDocs, serverTimestamp, writeBatch, deleteDoc } from 'firebase/firestore'
+import { doc, getDoc, setDoc, collection, getDocs, serverTimestamp, writeBatch, deleteDoc, deleteField } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { getPriorKey as getPriorKeyLib, locId as locIdLib, isPeriodLocked, resolveOpeningWindow } from '@/lib/pnl'
 import { classifyVariance } from '@/lib/variance'
 import { useCountsListener } from '@/hooks/useCountsListener'
 import { useToast } from '@/components/ui/Toast'
 import { resolveZones } from '@/lib/zoneHelpers'
+// Phase 1 model layer — the single source of the zone arithmetic and the
+// honesty rule. The write path CALLS these; it never restates them.
+import { hasZoneData, zoneHasEntry, derivedTotalEaches } from '@/lib/zones'
 
 // getPriorKey + sanitizeDocId moved to @/lib/pnl as the canonical source.
 // Re-exported here so existing call sites (Inventory.jsx imports sanitizeDocId
@@ -64,6 +67,15 @@ function inferCategory(glCode, itemType, itemName) {
  */
 export function hasCount(item) {
   if (!item) return false
+  // ZONED item (Phase 2): counted-ness is decided by the ZONES, never by the
+  // derived top-level. Two reasons this must come first:
+  //   1. A fully-counted item whose zones legitimately total 0 would otherwise
+  //      fail the `eaches > 0` test below, get filtered out of newCounts AND
+  //      swept into `deletions` — destroying the zone data for a real count.
+  //   2. An INCOMPLETE item writes a null top-level on purpose; it still has
+  //      zone entries worth persisting and must not be deleted.
+  // Legacy items (no zones map) fall through to the original logic unchanged.
+  if (hasZoneData(item)) return Object.values(item.zones).some(zoneHasEntry)
   if (item.qty != null) return true
   if (typeof item.eaches === 'number' && item.eaches > 0) return true
   return false
@@ -171,13 +183,93 @@ export function countDocId(id) {
   return 'id_' + encodeURIComponent(String(id ?? ''))
 }
 
+/**
+ * Build the `zones` sub-map for a zoned count write.
+ *
+ * A zone holding a real count writes its {qty, eaches}. A zone the user CLEARED
+ * writes deleteField() at zones.<key> rather than {qty:null,eaches:null} —
+ * merge:true cannot express "remove" by omission, and the two states are not
+ * the same thing: an absent key means "not counted here" (so completeness falls
+ * back to whether the zone was swept), whereas a stored null would read as an
+ * entry. Getting this wrong turns "I haven't counted the cooler" into "the
+ * cooler is empty".
+ */
+function buildZonePayload(zones) {
+  const out = {}
+  for (const [key, entry] of Object.entries(zones || {})) {
+    out[key] = zoneHasEntry(entry)
+      ? { qty: entry.qty ?? null, eaches: Number(entry.eaches) || 0 }
+      : deleteField()
+  }
+  return out
+}
+
+/**
+ * The top-level {qty, eaches} to persist for one item.
+ *
+ * LEGACY (no zones map): unchanged from the pre-zones write — qty passed
+ * through null-preserving, eaches coerced to a finite number. Byte-identical.
+ *
+ * ZONED: the top-level becomes the DERIVED denormalisation of the zones, so
+ * every existing consumer (closing value, Path B, exports, shrinkage's
+ * countEaches) keeps working without being taught about zones. It is expressed
+ * purely in eaches with qty:null, which is value-preserving — eachPrice is
+ * packPrice ÷ packSize, so totalEaches × eachPrice equals the per-zone sum of
+ * (qty × packPrice + eaches × eachPrice).
+ *
+ * derivedTotalEaches returns null unless the item is COMPLETE, so an item with
+ * an unswept, unentered zone writes a null total rather than a low one. That
+ * null is what makes the honesty rule hold downstream for free: isCounted and
+ * hasCount already read null as uncounted and render "—".
+ */
+export function zonedTopLevel(item, zones, zonesCompleted) {
+  const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
+  if (!hasZoneData(item)) {
+    return { qty: item?.qty == null ? null : num(item.qty), eaches: num(item?.eaches) }
+  }
+  return { qty: null, eaches: derivedTotalEaches(item, zones, zonesCompleted) }
+}
+
+/**
+ * Dollar value of one counted item. The SINGLE construction, shared by both
+ * closingValue reduces and itemsWithMeta._value — those were three separate
+ * copies of the same expression and would otherwise have to learn about zones
+ * independently (and could drift).
+ *
+ * LEGACY: identical expression to before — qty × packPrice + eaches × eachPrice.
+ *
+ * ZONED: values the DERIVED total at eachPrice. Arithmetically the same number
+ * the per-zone sum would give, because eachPrice = packPrice ÷ packSize.
+ *
+ * An INCOMPLETE zoned item has a null total and so contributes 0 — deliberately
+ * the same treatment an uncounted item already gets today, not a new silent
+ * understatement. The counter sees "—" on the line (Phase 4 surfaces which zone
+ * is pending); what must never happen is a confident partial, which is exactly
+ * what derivedTotalEaches refuses to produce.
+ */
+export function itemValue(item, zones, zonesCompleted) {
+  const pp = item?.packPrice || ((item?.qtyPerPack || 1) * (item?.unitCost || 0))
+  const eachPrice = (item?.qtyPerPack || 1) > 0 ? pp / (item?.qtyPerPack || 1) : (item?.unitCost || 0)
+  if (hasZoneData(item)) {
+    return (derivedTotalEaches(item, zones, zonesCompleted) || 0) * eachPrice
+  }
+  return ((item?.qty || 0) * pp) + ((item?.eaches || 0) * eachPrice)
+}
+
 export async function persistCountItems(colRef, newCounts, deletions, updatedBy, locationName) {
   const ops = [
     ...(newCounts || [])
       .filter(c => c && c.id != null && String(c.id) !== '')
       .map(c => ({
         type: 'set', docId: countDocId(c.id),
+        // ZONED items merge; legacy items keep the original whole-record write.
+        // Whole-record set() on a zoned item would clobber a zone this client
+        // never saw — the exact cross-device loss zones must not introduce.
+        // With merge:true Firestore merges nested maps key-by-key, so
+        // zones.cooler and zones.storage written by two devices BOTH survive.
+        merge: hasZoneData(c),
         data: {
+          ...(hasZoneData(c) ? { zones: buildZonePayload(c.zones) } : {}),
           itemId: String(c.id),   // RAW id — read matches on this (encoding-independent)
           qty: c.qty, eaches: c.eaches,
           countedAt: c.countedAt ?? null, countedBy: c.countedBy ?? null,
@@ -202,7 +294,13 @@ export async function persistCountItems(colRef, newCounts, deletions, updatedBy,
     const batch = writeBatch(db)
     for (const op of slice) {
       const ref = doc(colRef, op.docId)   // encoded id → always a legal doc reference
-      if (op.type === 'set') batch.set(ref, op.data)   // full record — clean last-write-wins per item
+      if (op.type === 'set') {
+        // Legacy (unzoned): full record, clean last-write-wins per item —
+        // byte-identical to the pre-zones write. Zoned: merge, so a concurrent
+        // write to a DIFFERENT zone of the same item is preserved.
+        if (op.merge) batch.set(ref, op.data, { merge: true })
+        else batch.set(ref, op.data)
+      }
       else batch.delete(ref)
     }
     await batch.commit()
@@ -234,6 +332,27 @@ export function touchedIdsToClear(touchedSnapshot, persistedCounts, latestItems)
     const nb = b == null ? null : Number(b)
     return na === nb
   }
+  // Zone-aware equality (Phase 2). Comparing only qty/eaches would clear a
+  // touched id whose ZONE edit landed during the await: for a zoned item the
+  // top-level is the derived total, so two different zone maps can share one
+  // total (3 cooler + 0 storage vs 0 cooler + 3 storage), and an incomplete
+  // item's total is null on BOTH sides. Either case looks "unchanged", the id
+  // is cleared, and the zone edit is silently never persisted — the same class
+  // as the eaches-stranding race this function exists to fix.
+  const eqZones = (a, b) => {
+    const az = a?.zones, bz = b?.zones
+    const aHas = !!az && Object.keys(az).length > 0
+    const bHas = !!bz && Object.keys(bz).length > 0
+    if (!aHas && !bHas) return true
+    if (aHas !== bHas) return false
+    const keys = new Set([...Object.keys(az), ...Object.keys(bz)])
+    for (const k of keys) {
+      if (!eqNum(az[k]?.qty, bz[k]?.qty)) return false
+      if (!eqNum(az[k]?.eaches, bz[k]?.eaches)) return false
+    }
+    return true
+  }
+
   const cleared = new Set()
   touchedSnapshot.forEach(id => {
     const key = String(id)
@@ -241,7 +360,7 @@ export function touchedIdsToClear(touchedSnapshot, persistedCounts, latestItems)
     const persisted = persistedById.get(key)
     if (persisted) {
       // Persisted a count — clear only if the local value is UNCHANGED.
-      if (cur && eqNum(cur.qty, persisted.qty) && eqNum(cur.eaches, persisted.eaches)) cleared.add(key)
+      if (cur && eqNum(cur.qty, persisted.qty) && eqNum(cur.eaches, persisted.eaches) && eqZones(cur, persisted)) cleared.add(key)
     } else {
       // Persisted a delete (or the item is gone) — clear only if it's STILL not
       // a real count locally (no new count typed during the await).
@@ -577,6 +696,10 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
             ...row,
             qty: c.qty ?? null,
             eaches: c.eaches ?? 0,
+            // Per-zone detail (Phase 2). Only attached when the stored doc
+            // actually carries zones — a legacy doc must stay zone-free so
+            // hasZoneData() keeps reading it as the flat record it is.
+            ...(c.zones && Object.keys(c.zones).length ? { zones: c.zones } : {}),
             lastCountedAt: c.countedAt ?? row.lastCountedAt ?? null,
             lastCountedBy: c.countedBy ?? row.lastCountedBy ?? null,
           }
@@ -869,6 +992,16 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
   // typed before navigating away.
   const itemsRef = useRef(items)
   useEffect(() => { itemsRef.current = items }, [items])
+
+  // Zone config + swept list as refs, so the save path can read the CURRENT
+  // values without widening the big saveCounts/save dependency arrays (the
+  // same reason itemsRef and periodLockedRef exist). zonesCompleted lives on
+  // the session doc, mirroring sectionsCompleted; Phase 3 wires the UI that
+  // writes it — the write path only needs to READ it.
+  const zonesRef = useRef(zones)
+  useEffect(() => { zonesRef.current = zones }, [zones])
+  const zonesCompletedRef = useRef([])
+  useEffect(() => { zonesCompletedRef.current = session?.zonesCompleted || [] }, [session])
 
   const mergeDraft = useCallback((draftItems) => {
     if (!Array.isArray(draftItems) || draftItems.length === 0) return false
@@ -1233,8 +1366,15 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         .filter(i => touchedItemsRef.current.has(String(i.id)) && hasCount(i))
         .map(i => ({
           id: i.id,
-          qty: i.qty == null ? null : num(i.qty),
-          eaches: num(i.eaches),
+          // ZONED: the top-level is the DERIVED total, expressed purely in
+          // eaches (qty:null), and derivedTotalEaches returns null unless the
+          // item is complete — so a partially-counted item writes a null total,
+          // never a confident-but-low one. Value is preserved by construction:
+          // sum(zoneQty×packSize + zoneEaches) × eachPrice is identical to
+          // totalEaches × eachPrice, since eachPrice = packPrice ÷ packSize.
+          // LEGACY: unchanged — qty/eaches exactly as before.
+          ...zonedTopLevel(i, zonesRef.current, zonesCompletedRef.current),
+          ...(hasZoneData(i) ? { zones: i.zones } : {}),
           countedAt: i.lastCountedAt || null,
           countedBy: i.lastCountedBy || null,
           // Denormalized pricing for the Phase-2 CF valuation (price-at-count-time).
@@ -1268,11 +1408,9 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         setError('Some counts failed to save; totals were still updated.')
       }
       const closingValue = sourceItems.reduce((sum, item) => {
-        const pp = item.packPrice || ((item.qtyPerPack || 1) * (item.unitCost || 0))
-        const packVal = (item.qty || 0) * pp
-        const eachPrice = (item.qtyPerPack || 1) > 0 ? pp / (item.qtyPerPack || 1) : (item.unitCost || 0)
-        const eachVal = (item.eaches || 0) * eachPrice
-        return sum + packVal + eachVal
+        // Shared with itemsWithMeta._value — see itemValue(). Zone-aware:
+        // an incomplete zoned item contributes 0, as an uncounted item does.
+        return sum + itemValue(item, zonesRef.current, zonesCompletedRef.current)
       }, 0)
       // Refresh opening from prior week's CURRENT closingValue at write time.
       // The state var is a load-time snapshot and goes stale once the prior
@@ -1474,8 +1612,9 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         .filter(i => touchedItemsRef.current.has(String(i.id)) && hasCount(i))
         .map(i => ({
           id: i.id,
-          qty: i.qty == null ? null : num2(i.qty),
-          eaches: num2(i.eaches),
+          // Same derived-top-level + zones rule as saveCounts — see zonedTopLevel.
+          ...zonedTopLevel(i, zonesRef.current, zonesCompletedRef.current),
+          ...(hasZoneData(i) ? { zones: i.zones } : {}),
           countedAt: i.lastCountedAt || null,
           countedBy: i.lastCountedBy || null,
           // Denormalized pricing for the Phase-2 CF valuation (price-at-count-time).
@@ -1502,11 +1641,9 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       }
 
       const closingValue = items.reduce((sum, item) => {
-        const pp = item.packPrice || ((item.qtyPerPack || 1) * (item.unitCost || 0))
-        const packVal = (item.qty || 0) * pp
-        const eachPrice = (item.qtyPerPack || 1) > 0 ? pp / (item.qtyPerPack || 1) : (item.unitCost || 0)
-        const eachVal = (item.eaches || 0) * eachPrice
-        return sum + packVal + eachVal
+        // Shared with itemsWithMeta._value — see itemValue(). Zone-aware:
+        // an incomplete zoned item contributes 0, as an uncounted item does.
+        return sum + itemValue(item, zonesRef.current, zonesCompletedRef.current)
       }, 0)
 
       // See saveCounts — refresh opening from prior week's CURRENT closingValue
@@ -1667,14 +1804,10 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         _daysOnHand: daysOnHand,
         _belowPar: belowPar,
         _atReorder: atReorder,
-        _value: (() => {
-          const pp = item.packPrice || ((item.qtyPerPack || 1) * (item.unitCost || 0))
-          const ep = (item.qtyPerPack || 1) > 0 ? pp / (item.qtyPerPack || 1) : (item.unitCost || 0)
-          return ((item.qty || 0) * pp) + ((item.eaches || 0) * ep)
-        })()
+        _value: itemValue(item, zones, session?.zonesCompleted || [])
       }
     })
-  }, [items, priorItems, categories])
+  }, [items, priorItems, categories, zones, session])
 
   const catStats = useMemo(() => {
     const stats = {}
