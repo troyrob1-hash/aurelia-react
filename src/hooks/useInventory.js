@@ -1339,6 +1339,73 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
     }
   }, [session, orgId, locId, periodKey])
 
+  /**
+   * Mark a counting ZONE as swept (Phase 3) — "I walked this zone; anything I
+   * didn't enter isn't there." Mirrors markSectionComplete exactly, writing
+   * zonesCompleted[] alongside sectionsCompleted on the same session doc with
+   * {merge:true}.
+   *
+   * This is the other half of the honesty rule. Until a zone is swept, an item
+   * with no entry in it is UNKNOWN and the whole item reads "—"; once swept,
+   * absence becomes a real zero. The Phase 2 write path already reads this via
+   * zonesCompletedRef — this closes the loop.
+   *
+   * Toggleable: un-sweeping is a legitimate correction ("I hadn't actually
+   * finished the cooler"), and it must send affected items back to incomplete
+   * rather than leaving a zero standing on an assertion the counter withdrew.
+   */
+  const markZoneSwept = useCallback(async (zoneKey, swept = true) => {
+    if (!session || !zoneKey) return
+    const current = session.zonesCompleted || []
+    const next = swept
+      ? (current.includes(zoneKey) ? current : [...current, zoneKey])
+      : current.filter(k => k !== zoneKey)
+    if (next.length === current.length && swept) return   // already swept — no write
+    const updatedSession = { ...session, zonesCompleted: next }
+    setSession(updatedSession)
+    try {
+      await setDoc(
+        doc(db, 'tenants', orgId, 'inventorySessions', `${locId}_${periodKey}`),
+        updatedSession,
+        { merge: true }
+      )
+    } catch (err) {
+      console.error('Failed to update zone sweep:', err)
+    }
+  }, [session, orgId, locId, periodKey])
+
+  /**
+   * Per-zone count entry (Phase 4 inputs). Mirrors setQty/setEaches but writes
+   * into item.zones[zoneKey] instead of the top-level, because for a zoned item
+   * the top-level is the DERIVED total and must never be typed into directly.
+   *
+   * `field` is 'qty' or 'eaches'. The raw typed string is preserved per zone
+   * (_raw) for the same reason setQty keeps _qtyRaw: parseFloat would eat an
+   * in-progress '.', '0.' or '.5' while the user is still typing — the exact
+   * bug that produced the 100x eaches corruption.
+   */
+  const setZoneValue = useCallback((itemId, zoneKey, field, value) => {
+    if (!zoneKey || (field !== 'qty' && field !== 'eaches')) return
+    touchedItemsRef.current.add(String(itemId))
+    setItems(prev => prev.map(item => {
+      if (item.id !== itemId) return item
+      const parsed = value === '' ? null : Math.max(0, parseFloat(value))
+      const clean = (parsed === null || isNaN(parsed)) ? (value === '' ? null : 0) : parsed
+      const attribution = buddyMode && buddyNames.caller && buddyNames.marker
+        ? `${buddyNames.caller} + ${buddyNames.marker}`
+        : (user?.email || 'unknown')
+      const prevZone = item.zones?.[zoneKey] || {}
+      return {
+        ...item,
+        zones: { ...(item.zones || {}), [zoneKey]: { ...prevZone, [field]: clean, [`_${field}Raw`]: value } },
+        lastCountedAt: new Date().toISOString(),
+        lastCountedBy: attribution,
+        countedInBuddyMode: buddyMode,
+      }
+    }))
+    setDirty(true)
+  }, [user, buddyMode, buddyNames])
+
   // Lightweight autosave: persist counts (qty/eaches) to the per-week counts
   // doc and refresh the live PnL closingValue, WITHOUT marking the session
   // completed or closing the period. Safe to call repeatedly (debounced).
@@ -1908,6 +1975,8 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
     buddyNames,
     setBuddyNames,
     markSectionComplete,
+    markZoneSwept,        // Phase 3 — zone sweeps
+    setZoneValue,         // Phase 4 — per-zone count entry
     save,
     saveCounts,
     rollOverFromPrior,

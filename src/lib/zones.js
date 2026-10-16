@@ -160,6 +160,93 @@ export function derivedTotalEaches(item, zones, zonesCompleted) {
 }
 
 /**
+ * Does a LEGACY flat record hold a real count, for display/save purposes?
+ *
+ * Deliberately NOT isCounted. The two differ on {qty:null, eaches:0}:
+ *   - isCounted says YES (an entered 0 is a real count) — correct for
+ *     shrinkage, where a counted zero must not be confused with a missing feed.
+ *   - here it must be NO, because load() hydrates `eaches: c.eaches ?? 0` and
+ *     base catalog rows start at 0, so EVERY uncounted item carries eaches === 0.
+ *     Treating that as counted would render a confident "0" on every untouched
+ *     line instead of "—".
+ *
+ * Mirrors useInventory's hasCount(), which is the save path's rule. It is
+ * restated here rather than imported because useInventory imports this module —
+ * importing back would be a cycle. The duplication is two lines and pinned by
+ * a test that compares the two implementations.
+ */
+export function flatHasCount(item) {
+  if (!item) return false
+  if (item.qty != null) return true
+  return typeof item.eaches === 'number' && item.eaches > 0
+}
+
+/**
+ * Sweep progress for the session header: { swept, total }.
+ * Mirrors the existing "N/M sections" counter; drives "2/3 zones swept".
+ */
+export function zoneProgress(zones, zonesCompleted) {
+  const configured = resolveZones(zones)
+  const swept = new Set(Array.isArray(zonesCompleted) ? zonesCompleted : [])
+  return {
+    total: configured.length,
+    swept: configured.filter(z => z?.key && swept.has(z.key)).length,
+  }
+}
+
+/**
+ * What the count cell should DISPLAY for an item. The single resolution point
+ * for Phase 4 rendering.
+ *
+ * THE TRAP THIS EXISTS TO PREVENT: a zoned item's in-memory top-level is NOT
+ * its derived total. load() hydrates `eaches: c.eaches ?? 0`, so an INCOMPLETE
+ * item — stored with a deliberate null total — comes back as 0. Rendering
+ * item.eaches would therefore show a confident "0" for an item whose real
+ * on-hand is unknown: the exact false-low the whole feature is built to avoid,
+ * surfaced at the last possible moment. Always render from here.
+ *
+ * @returns {{zoned:boolean, incomplete:boolean, total:number|null, pending:string[]}}
+ *   incomplete → render "—" (never a number), with `pending` naming why.
+ */
+export function countDisplay(item, zones, zonesCompleted) {
+  if (!hasZoneData(item)) {
+    // Legacy flat record: unchanged — counted shows its value, uncounted "—".
+    //
+    // Uses flatHasCount, NOT isCounted. isCounted treats an entered 0 as a real
+    // count, which is right for shrinkage — but load() defaults `eaches: 0` on
+    // EVERY item, counted or not, so by that rule every uncounted item would
+    // render a confident "0" instead of "—". flatHasCount is the display/save
+    // rule (qty entered, or eaches > 0), matching useInventory's hasCount.
+    const counted = flatHasCount(item)
+    return {
+      zoned: false,
+      incomplete: !counted,
+      total: counted ? countEaches(item) : null,
+      pending: [],
+    }
+  }
+  const total = derivedTotalEaches(item, zones, zonesCompleted)
+  return {
+    zoned: true,
+    incomplete: total === null,
+    total,
+    pending: pendingZones(item, zones, zonesCompleted),
+  }
+}
+
+/**
+ * Human sentence for the "—" tooltip: names the outstanding zones by LABEL
+ * (not key), so the counter reads "Not counted yet in: BOH storage" rather
+ * than a slug. Returns '' when nothing is pending.
+ */
+export function pendingZonesLabel(pending, zones) {
+  if (!Array.isArray(pending) || pending.length === 0) return ''
+  const byKey = new Map(resolveZones(zones).map(z => [z.key, z.label || z.key]))
+  const names = pending.map(k => byKey.get(k) || k)
+  return `Not counted yet in: ${names.join(', ')}`
+}
+
+/**
  * Which configured zones are still blocking completeness — the data a "—" cell
  * needs in order to say WHY it is incomplete rather than just showing a dash.
  * Empty array means complete.
