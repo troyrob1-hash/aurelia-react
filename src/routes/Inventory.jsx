@@ -17,6 +17,7 @@ import AllLocationsGrid from '@/components/AllLocationsGrid'
 import ErrorBoundary from '@/components/ErrorBoundary'
 import ArrangeList from '@/components/inventory/ArrangeList'
 import CategoryManagerModal from '@/components/inventory/CategoryManagerModal'
+import ZoneManagerModal from '@/components/inventory/ZoneManagerModal'
 import { canEditInventoryCategories } from '@/lib/permissions'
 import { resolveCountColumns, buildCatalogIndex, matchCountRow } from '@/lib/countUpload'
 import styles from './Inventory.module.css'
@@ -451,6 +452,7 @@ export default function Inventory() {
   const [countMode, setCountMode] = useState('full')  // 'quick' | 'section' | 'full'
   const [showManage, setShowManage] = useState(false)
   const [showCatManager, setShowCatManager] = useState(false)
+  const [showZoneManager, setShowZoneManager] = useState(false)
   const canEditCats = canEditInventoryCategories(user)
   const [customDraft, setCustomDraft] = useState({
     name: '', vendor: '', packSize: '',
@@ -514,6 +516,7 @@ export default function Inventory() {
     items,
     priorFromPeriod,
     categories,
+    zones,
     catStats,
     totals,
     varianceAlerts,
@@ -546,6 +549,7 @@ export default function Inventory() {
     mergeDraft,
     patchItemFields,
     setCategoriesLocal,
+    setZonesLocal,
     periodLocked,
     markPeriodLocked,
     applyUploadedCounts,
@@ -1396,6 +1400,17 @@ export default function Inventory() {
                 style={locked ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
               >
                 ⚙ Manage categories
+              </button>
+            )}
+            {canEditCats && selectedLocation && selectedLocation !== 'all' && (
+              <button
+                className={styles.btnMode}
+                onClick={() => setShowZoneManager(true)}
+                disabled={locked}
+                title={locked ? 'Period closed — reopen to edit' : "Manage this location's counting zones"}
+                style={locked ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
+              >
+                ⚙ Manage zones
               </button>
             )}
             <button
@@ -2456,6 +2471,17 @@ export default function Inventory() {
             categories={categories}
             onSaved={(next) => setCategoriesLocal(next)}
             onClose={() => setShowCatManager(false)}
+          />
+        )}
+
+        {/* ── Manage zones (per-location) ── */}
+        {showZoneManager && canEditCats && selectedLocation && selectedLocation !== 'all' && (
+          <ZoneManagerModal
+            orgId={orgId}
+            locationId={selectedLocation}
+            zones={zones}
+            onSaved={(next) => setZonesLocal(next)}
+            onClose={() => setShowZoneManager(false)}
           />
         )}
 

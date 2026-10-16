@@ -5,6 +5,7 @@ import { getPriorKey as getPriorKeyLib, locId as locIdLib, isPeriodLocked, resol
 import { classifyVariance } from '@/lib/variance'
 import { useCountsListener } from '@/hooks/useCountsListener'
 import { useToast } from '@/components/ui/Toast'
+import { resolveZones } from '@/lib/zoneHelpers'
 
 // getPriorKey + sanitizeDocId moved to @/lib/pnl as the canonical source.
 // Re-exported here so existing call sites (Inventory.jsx imports sanitizeDocId
@@ -257,6 +258,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
   const [openingValue, setOpeningValue] = useState(0)
   const [purchases, setPurchases] = useState(0)
   const [categories, setCategories] = useState([])
+  const [zones, setZones] = useState(() => resolveZones(null)) // single default zone until a manager configures more (Phase 0)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
@@ -324,7 +326,8 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         sessionSnap,
         countsSnap,
         countsItemsSnap,
-        locCatSnap
+        locCatSnap,
+        locZonesSnap
       ] = await Promise.all([
         getDocs(collection(db, 'tenants', orgId, 'inventoryCatalog')),
         getDocs(collection(db, 'tenants', orgId, 'inventory', locId, 'items')),
@@ -345,7 +348,11 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         // Per-location category list. Absent until this location is customized
         // (Phase B writes it on first edit); until then locCats is null and the
         // resolution below falls back to the global list, then defaults.
-        getDoc(doc(db, 'tenants', orgId, 'inventory', locId, 'settings', 'categories'))
+        getDoc(doc(db, 'tenants', orgId, 'inventory', locId, 'settings', 'categories')),
+        // Per-location ZONE list. Absent until a manager configures zones; until
+        // then locZones is null and resolveZones() returns the single default
+        // zone, so the location behaves exactly as it does with no zones at all.
+        getDoc(doc(db, 'tenants', orgId, 'inventory', locId, 'settings', 'zones'))
       ])
 
       // Read master items from the per-tenant inventoryCatalog collection.
@@ -669,6 +676,11 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         setCategories(getDefaultCategories())
       }
 
+      // Per-location zone resolution (Phase 0). Absent doc → single default
+      // zone, so a never-configured location is unchanged. resolveZones is the
+      // one gate that enforces "no zones doc == one implicit zone".
+      setZones(resolveZones(locZonesSnap?.exists() ? locZonesSnap.data().zones : null))
+
       if (sessionSnap?.exists()) {
         setSession(sessionSnap.data())
       } else {
@@ -960,6 +972,12 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
   // and calls this only on success. Same pattern as patchItemFields.
   const setCategoriesLocal = useCallback((arr) => {
     if (Array.isArray(arr)) setCategories(arr)
+  }, [])
+
+  // Replace the in-memory zone list after the ZoneManagerModal writes the
+  // per-location zones doc. Same no-reload pattern as setCategoriesLocal.
+  const setZonesLocal = useCallback((arr) => {
+    if (Array.isArray(arr)) setZones(arr)
   }, [])
 
   // Hide an item from this location. For master items this sets removed: true
@@ -1729,6 +1747,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
     items: itemsWithMeta,
     priorFromPeriod,          // non-null when the Prior column walked back past the immediate prior
     categories,
+    zones,
     catStats,
     totals,
     varianceAlerts,
@@ -1762,6 +1781,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
     mergeDraft,
     patchItemFields,
     setCategoriesLocal,
+    setZonesLocal,
     periodLocked,
     markPeriodLocked,
     applyUploadedCounts,
