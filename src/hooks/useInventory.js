@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
-import { doc, getDoc, setDoc, collection, getDocs, serverTimestamp, writeBatch, deleteDoc, deleteField } from 'firebase/firestore'
+import { doc, getDoc, setDoc, collection, getDocs, serverTimestamp, writeBatch, deleteDoc, deleteField, updateDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { getPriorKey as getPriorKeyLib, locId as locIdLib, isPeriodLocked, resolveOpeningWindow } from '@/lib/pnl'
 import { classifyVariance } from '@/lib/variance'
@@ -368,6 +368,76 @@ export function touchedIdsToClear(touchedSnapshot, persistedCounts, latestItems)
     }
   })
   return cleared
+}
+
+/**
+ * Which stored per-item totals a zone sweep (or un-sweep) changes, and to what.
+ *
+ * WHY THIS EXISTS: sweeping changes an item's completeness without anyone
+ * touching the item, so before this fix the sweep only moved the on-screen
+ * calc. The stored count doc kept the total it was last saved with — null for
+ * an item saved while the zone was unswept — and the server-side valuation
+ * (functions/index.js reads the stored top-level qty/eaches, it knows nothing
+ * of zones) priced that item at $0. On a CF-authoritative location that is a
+ * false-low closing, i.e. phantom shrinkage: the exact failure the honesty rule
+ * exists to prevent, reintroduced by the persistence layer.
+ *
+ * Only items whose total CAN change are returned: a zoned item that holds a
+ * count somewhere (hasCount) but has NO entry in the swept zone. An item with
+ * an entry in that zone doesn't depend on the sweep; an item with no zone
+ * entries at all has no count doc worth updating (and reads "—" regardless).
+ *
+ * `nextZonesCompleted` is the swept list AFTER the toggle, so the same function
+ * serves both directions: sweep → totals fill; un-sweep → back to null.
+ *
+ * @returns {{id, qty:null, eaches:number|null}[]}
+ */
+export function sweepTotalUpdates(items, zoneKey, zones, nextZonesCompleted) {
+  if (!zoneKey) return []
+  const out = []
+  for (const i of items || []) {
+    if (!i || i.id == null || String(i.id) === '') continue
+    if (!hasZoneData(i) || !hasCount(i)) continue
+    if (zoneHasEntry(i.zones[zoneKey])) continue
+    out.push({ id: i.id, ...zonedTopLevel(i, zones, nextZonesCompleted) })
+  }
+  return out
+}
+
+/**
+ * Persist the derived totals computed by sweepTotalUpdates — TOP-LEVEL ONLY.
+ *
+ * Deliberately does NOT go through the full saveCounts payload: that rewrites
+ * the item's whole `zones` map from THIS device's copy, and this device's copy
+ * of zones another counter entered can be stale (the live listener patches
+ * top-level qty/eaches only, never zones). Doing that for every zoned item on
+ * every sweep would turn a sweep into a mass cross-device zone clobber. Writing
+ * only {qty, eaches} changes nothing but the total, which is all the sweep
+ * changed — and each write fires the valuation trigger, so a CF-authoritative
+ * location's closing recomputes from the corrected totals.
+ *
+ * updateDoc, not set: a doc that doesn't exist yet (an item typed but not yet
+ * autosaved) must not be created as a stub with no zones/pricing. Those fail
+ * with not-found, harmlessly — the pending autosave writes them in full, and
+ * zonesCompletedRef is already updated, so it writes the post-sweep total.
+ *
+ * @returns {Promise<{written:number, failed:number}>} failed excludes not-found.
+ */
+export async function persistSweepTotals(colRef, updates, updatedBy) {
+  const results = await Promise.allSettled((updates || []).map(u =>
+    updateDoc(doc(colRef, countDocId(u.id)), {
+      qty: u.qty ?? null,
+      eaches: u.eaches ?? null,
+      updatedAt: serverTimestamp(),
+      updatedBy: updatedBy || 'unknown',
+    })
+  ))
+  let written = 0, failed = 0
+  for (const r of results) {
+    if (r.status === 'fulfilled') written++
+    else if (r.reason?.code !== 'not-found') failed++
+  }
+  return { written, failed }
 }
 
 export function useInventory(orgId, locationId, periodKey, user, liveSync = false) {
@@ -1353,16 +1423,29 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
    * Toggleable: un-sweeping is a legitimate correction ("I hadn't actually
    * finished the cooler"), and it must send affected items back to incomplete
    * rather than leaving a zero standing on an assertion the counter withdrew.
+   *
+   * PERSISTENCE (the sweep-save gap): a sweep changes affected items' totals
+   * without touching them, so after the session write it also re-persists those
+   * stored totals (sweepTotalUpdates → persistSweepTotals). Without that the
+   * stored total stays at its pre-sweep value and the server-side valuation
+   * prices the item from it — $0 for an item saved while the zone was unswept.
+   * Then setDirty so autosave refreshes the live closingValue for
+   * client-valued locations. Both directions go through the same path.
    */
   const markZoneSwept = useCallback(async (zoneKey, swept = true) => {
     if (!session || !zoneKey) return
+    if (blockedByLock()) return   // period closed — a sweep now changes stored totals
     const current = session.zonesCompleted || []
     const next = swept
       ? (current.includes(zoneKey) ? current : [...current, zoneKey])
       : current.filter(k => k !== zoneKey)
-    if (next.length === current.length && swept) return   // already swept — no write
+    if (next.length === current.length) return   // no change — already in that state
+    const prevSession = session
     const updatedSession = { ...session, zonesCompleted: next }
     setSession(updatedSession)
+    // Synchronous, not via the [session] effect: a save fired before the next
+    // render (Save & Close straight after a sweep) must value with the NEW state.
+    zonesCompletedRef.current = next
     try {
       await setDoc(
         doc(db, 'tenants', orgId, 'inventorySessions', `${locId}_${periodKey}`),
@@ -1370,9 +1453,22 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         { merge: true }
       )
     } catch (err) {
+      // Roll back rather than persist totals for a sweep the session doc
+      // doesn't record — on reload the two would disagree.
       console.error('Failed to update zone sweep:', err)
+      setSession(prevSession)
+      zonesCompletedRef.current = current
+      toast.error('Could not save the zone sweep — please try again.')
+      return
     }
-  }, [session, orgId, locId, periodKey])
+    const updates = sweepTotalUpdates(itemsRef.current, zoneKey, zonesRef.current, next)
+    if (updates.length) {
+      const itemsCol = collection(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey, 'items')
+      const { failed } = await persistSweepTotals(itemsCol, updates, user?.email)
+      if (failed) toast.error(`${failed} item total${failed === 1 ? '' : 's'} did not update after the sweep — save again before closing.`)
+    }
+    setDirty(true)
+  }, [session, orgId, locId, periodKey, blockedByLock, user, toast])
 
   /**
    * Per-zone count entry (Phase 4 inputs). Mirrors setQty/setEaches but writes

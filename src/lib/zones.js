@@ -258,3 +258,70 @@ export function pendingZones(item, zones, zonesCompleted) {
     .filter(z => z?.key && !zoneHasEntry(item.zones[z.key]) && !swept.has(z.key))
     .map(z => z.key)
 }
+
+/**
+ * What a period close would lock in as incomplete — the data behind the
+ * Save & Close guard. Closing with gaps stays ALLOWED (a counter may genuinely
+ * be done); it just must never happen silently, because every gap below
+ * closes at $0 and an understated closing reads as shrinkage.
+ *
+ * Resolution is countDisplay's, so the guard can never disagree with what the
+ * count cells show:
+ *   - notCounted: item names with no count at all (a flat record, or an item
+ *     with no zone entries) — the "—" an un-zoned location already has.
+ *   - partial:    zoned items with a count somewhere but an unswept, unentered
+ *     zone: [{ name, pending: [zoneKey] }].
+ *   - unsweptZones: configured zone keys not yet swept — ONLY when the location
+ *     has multiple zones; a single-zone location has no sweep UI, so naming
+ *     its implicit zone would be noise (the Phase 0 gate).
+ */
+export function closeOutIssues(items, zones, zonesCompleted) {
+  const notCounted = []
+  const partial = []
+  for (const item of items || []) {
+    if (!item) continue
+    const d = countDisplay(item, zones, zonesCompleted)
+    if (!d.incomplete) continue
+    const name = item.name || String(item.id ?? '')
+    if (d.zoned) partial.push({ name, pending: d.pending })
+    else notCounted.push(name)
+  }
+  const configured = resolveZones(zones)
+  const swept = new Set(Array.isArray(zonesCompleted) ? zonesCompleted : [])
+  const unsweptZones = configured.length > 1
+    ? configured.filter(z => z?.key && !swept.has(z.key)).map(z => z.key)
+    : []
+  return {
+    notCounted,
+    partial,
+    unsweptZones,
+    any: notCounted.length > 0 || partial.length > 0 || unsweptZones.length > 0,
+  }
+}
+
+/**
+ * The warning paragraph for the close confirm, naming what is incomplete.
+ * Lists are capped at `max` names with "and N more" so a big catalog can't
+ * produce an unreadable dialog. Returns '' when there is nothing to warn about.
+ */
+export function closeOutWarningText(issues, zones, max = 8) {
+  if (!issues?.any) return ''
+  const byKey = new Map(resolveZones(zones).map(z => [z.key, z.label || z.key]))
+  const label = k => byKey.get(k) || k
+  const list = names => names.length > max
+    ? `${names.slice(0, max).join(', ')} and ${names.length - max} more`
+    : names.join(', ')
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`
+  const lines = []
+  if (issues.unsweptZones.length) {
+    lines.push(`• ${plural(issues.unsweptZones.length, 'zone', 'zones')} not swept: ${list(issues.unsweptZones.map(label))}`)
+  }
+  if (issues.partial.length) {
+    const named = issues.partial.map(p => `${p.name} (not counted in ${p.pending.map(label).join(', ')})`)
+    lines.push(`• ${plural(issues.partial.length, 'item', 'items')} only partly counted: ${list(named)}`)
+  }
+  if (issues.notCounted.length) {
+    lines.push(`• ${plural(issues.notCounted.length, 'item has', 'items have')} no count: ${list(issues.notCounted)}`)
+  }
+  return `This count is incomplete:\n\n${lines.join('\n')}\n\nIncomplete items close at $0, which shows up as shrinkage.`
+}
