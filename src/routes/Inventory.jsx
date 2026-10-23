@@ -18,6 +18,8 @@ import ErrorBoundary from '@/components/ErrorBoundary'
 import ArrangeList from '@/components/inventory/ArrangeList'
 import CategoryManagerModal from '@/components/inventory/CategoryManagerModal'
 import ZoneManagerModal from '@/components/inventory/ZoneManagerModal'
+import CountSheetPrintModal from '@/components/inventory/CountSheetPrintModal'
+import { byShelf } from '@/lib/countSheets'
 import { canEditInventoryCategories } from '@/lib/permissions'
 // Zone display layer (Phase 4). countDisplay is the ONLY correct source for
 // what a count cell shows — a zoned item's in-memory top-level is NOT its
@@ -459,6 +461,8 @@ export default function Inventory() {
   const [showManage, setShowManage] = useState(false)
   const [showCatManager, setShowCatManager] = useState(false)
   const [showZoneManager, setShowZoneManager] = useState(false)
+  // Printable count sheets: null = closed, '__all__' = every category, or a category key.
+  const [printSheet, setPrintSheet] = useState(null)
   // Zone counting (Phase 4). activeZone drives countMode==='zone'; expandedZoneRows
   // tracks which item rows have their per-zone grid open.
   const [activeZone, setActiveZone] = useState('all')
@@ -1162,18 +1166,9 @@ export default function Inventory() {
 
   const keyItemCount = useMemo(() => items.filter(i => i.isKey).length, [items])
 
-  // Shelf-to-sheet sort comparators (Stage 1). byName = current A-Z behavior.
-  // byShelf(field) = arranged items first in ascending shelf position, then
-  // un-arranged (null position) items A-Z among themselves — so toggling to
-  // shelf mode never drops an item that hasn't been placed yet.
-  const byName = (a, b) =>
-    (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' })
-  const byShelf = (field) => (a, b) => {
-    const av = a[field] ?? Infinity
-    const bv = b[field] ?? Infinity
-    if (av !== bv) return av - bv
-    return byName(a, b)
-  }
+  // Shelf-to-sheet sort comparators (byName / byShelf) are imported from
+  // countSheets.js — the printed count sheets sort with the SAME functions, so
+  // a sheet's item order can never drift from the grouped screen's.
 
   const displayGroups = useMemo(() => {
     // Shelf order is the single default sort: byShelf puts arranged items in
@@ -1397,6 +1392,16 @@ export default function Inventory() {
                 style={locked ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
               >
                 ⚙ Manage zones
+              </button>
+            )}
+            {selectedLocation && selectedLocation !== 'all' && (
+              <button
+                className={styles.btnMode}
+                onClick={() => setPrintSheet('__all__')}
+                disabled={items.length === 0}
+                title="Print blank count sheets by category for crew to fill in by hand"
+              >
+                🖨 Count sheets
               </button>
             )}
             <button
@@ -1857,6 +1862,16 @@ export default function Inventory() {
                 </span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                {selectedLocation && selectedLocation !== 'all' && (
+                  <button
+                    onClick={e => { e.stopPropagation(); setPrintSheet(cat.key) }}
+                    title={`Print the ${cat.label} count sheet`}
+                    aria-label={`Print the ${cat.label} count sheet`}
+                    style={{ border: 'none', background: 'transparent', cursor: 'pointer', fontSize: 13, padding: '2px 4px', color: cat.color }}
+                  >
+                    🖨
+                  </button>
+                )}
                 <div className={styles.catTotal} style={{ color: cat.color }}>
                   {fmt$(cat.items.reduce((s, i) => s + (i._value || 0), 0))}
                 </div>
@@ -2578,6 +2593,18 @@ export default function Inventory() {
             categories={categories}
             onSaved={(next) => setCategoriesLocal(next)}
             onClose={() => setShowCatManager(false)}
+          />
+        )}
+
+        {/* ── Printable count sheets (read-only) ── */}
+        {printSheet && selectedLocation && selectedLocation !== 'all' && (
+          <CountSheetPrintModal
+            items={items}
+            categories={categories}
+            locationLabel={cleanLocName(location)}
+            periodKey={periodKey}
+            initialCategory={printSheet === '__all__' ? null : printSheet}
+            onClose={() => setPrintSheet(null)}
           />
         )}
 
