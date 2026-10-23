@@ -23,7 +23,7 @@ import { canEditInventoryCategories } from '@/lib/permissions'
 // what a count cell shows — a zoned item's in-memory top-level is NOT its
 // derived total (load() coerces a stored null to 0), so rendering item.eaches
 // would print a confident 0 for an item whose on-hand is actually unknown.
-import { countDisplay, pendingZonesLabel, zoneProgress } from '@/lib/zones'
+import { countDisplay, pendingZonesLabel, zoneProgress, closeOutIssues, closeOutWarningText } from '@/lib/zones'
 import { hasMultipleZones } from '@/lib/zoneHelpers'
 import { resolveCountColumns, buildCatalogIndex, matchCountRow } from '@/lib/countUpload'
 import styles from './Inventory.module.css'
@@ -486,39 +486,6 @@ export default function Inventory() {
     })()
   }, [selectedLocation, periodKey])
 
-  const [tabClosed, setTabClosed] = useState(false)
-  useEffect(() => {
-    if (!selectedLocation || selectedLocation === 'all' || !periodKey) return
-    (async () => {
-      try {
-        const { getDoc, doc: fbDoc } = await import('firebase/firestore')
-        const oid = user?.tenantId
-        const ref = fbDoc(db, 'tenants', oid, 'inventoryClose', `${(selectedLocation||'').replace(/[^a-zA-Z0-9]/g,'_')}-${periodKey}`)
-        const snap = await getDoc(ref)
-        if (snap.exists()) setTabClosed(true)
-      } catch {}
-    })()
-  }, [selectedLocation, periodKey])
-
-  async function handleCloseTab() {
-    if (!selectedLocation || selectedLocation === 'all') return
-    if (!window.confirm(`Close Inventory for ${periodKey}?`)) return
-    try {
-      const { setDoc, doc: fbDoc, serverTimestamp } = await import('firebase/firestore')
-      const oid = user?.tenantId
-      await setDoc(fbDoc(db, 'tenants', oid, 'inventoryClose', `${(selectedLocation||'').replace(/[^a-zA-Z0-9]/g,'_')}-${periodKey}`), {
-        location: selectedLocation, period: periodKey,
-        closedBy: user?.name || user?.email, closedAt: serverTimestamp(),
-      })
-      const { writePnL: wp } = await import('@/lib/pnl')
-      await wp(selectedLocation, periodKey, { source_inventory: 'closed' })
-      setTabClosed(true)
-      toast.success('Inventory closed for ' + periodKey)
-    } catch (err) {
-      toast.error('Failed: ' + (err.message || ''))
-    }
-  }
-
   const location = selectedLocation === 'all' ? null : selectedLocation
 
   // ─── Use Inventory Hook ────────────────────────────────────────────────────
@@ -863,11 +830,22 @@ export default function Inventory() {
   // model (writePeriodClose + lockPeriod). Any counter can close (mgr/dir/vp/
   // admin); only a director+ can reopen. One-way from a manager's end — the
   // confirm text says so.
+  //
+  // Close-out guard: incomplete items and unswept zones are NAMED in the confirm
+  // before locking. Not a hard block — closing with blanks stays allowed — but it
+  // can no longer happen silently. Replaces the never-called closeInventoryCount
+  // warning. closeOutIssues resolves via countDisplay, so it can't disagree with
+  // what the count cells show.
   const handleSaveAndClose = useCallback(async () => {
     if (!orgId || !location) { toast.error('No organization / location.'); return }
-    const ok = window.confirm(
-      `Close Period? This locks all counts for ${periodKey} at ${cleanLocName(location)} and prevents further changes. ` +
+    const lockText =
+      `This locks all counts for ${periodKey} at ${cleanLocName(location)} and prevents further changes. ` +
       `Only a director can reopen it later.`
+    const warning = closeOutWarningText(closeOutIssues(items, zones, zonesCompleted), zones)
+    const ok = window.confirm(
+      warning
+        ? `${warning}\n\nClose anyway? ${lockText}`
+        : `Close Period? ${lockText}`
     )
     if (!ok) return
     try {
@@ -885,7 +863,7 @@ export default function Inventory() {
       console.error('Close period error:', err)
       toast.error('Failed to close period: ' + (err.message || ''))
     }
-  }, [save, toast, orgId, location, periodKey, user, periodLocked, markPeriodLocked])
+  }, [save, toast, orgId, location, periodKey, user, periodLocked, markPeriodLocked, items, zones, zonesCompleted])
 
   // Apply the previewed count upload: bulk-apply to local items (touched-scoped)
   // then reuse save() — the audited persistCountItems + closingValue/P&L/Path B
@@ -1161,34 +1139,6 @@ export default function Inventory() {
       }
     }
   }
-
-  // Close inventory count for the period
-  async function closeInventoryCount() {
-    if (!items || items.length === 0) { toast.error('No items counted'); return }
-    const uncounted = items.filter(i => !hasCount(i)).length
-    if (uncounted > 0 && !window.confirm(uncounted + ' items have no count. Close anyway?')) return
-    
-    const closingValue = items.reduce((s, i) => s + ((i.qty || 0) * (i.unitCost || 0)), 0)
-    
-    try {
-      const { writePnL, lockPeriod } = await import('@/lib/pnl')
-      await writePnL(location, periodKey, {
-        closingValue: closingValue,
-        source_inventory: 'closed',
-      })
-      await lockPeriod(location, periodKey, user)
-      
-      // Log the audit event
-      const { audit } = await import('@/lib/audit')
-      await audit.inventoryCounted(orgId, user, location, periodKey, items.length)
-      
-      toast.success('Inventory closed — $' + Math.round(closingValue).toLocaleString() + ' closing value posted to P&L')
-    } catch (err) {
-      toast.error('Close failed: ' + err.message)
-    }
-  }
-
-
 
   const handleRefresh = useCallback(() => {
     load()
