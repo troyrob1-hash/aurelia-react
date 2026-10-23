@@ -29,3 +29,9 @@ functions/.env
 # never commit one (the app's real entry point is the root index.html, not
 # anything under public/).
 public/*.html
+
+# FUSE filesystem artifacts — deleted-but-still-open files the kernel keeps
+# alive as .fuse_hiddenXXXX until the last handle closes. They appear scattered
+# under src/ and the repo root, are never source, and would be swept in by a
+# `git add .`. Ignored so they can't be staged by accident.
+.fuse_hidden*

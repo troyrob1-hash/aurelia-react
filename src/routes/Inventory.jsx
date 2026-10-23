@@ -17,7 +17,14 @@ import AllLocationsGrid from '@/components/AllLocationsGrid'
 import ErrorBoundary from '@/components/ErrorBoundary'
 import ArrangeList from '@/components/inventory/ArrangeList'
 import CategoryManagerModal from '@/components/inventory/CategoryManagerModal'
+import ZoneManagerModal from '@/components/inventory/ZoneManagerModal'
 import { canEditInventoryCategories } from '@/lib/permissions'
+// Zone display layer (Phase 4). countDisplay is the ONLY correct source for
+// what a count cell shows — a zoned item's in-memory top-level is NOT its
+// derived total (load() coerces a stored null to 0), so rendering item.eaches
+// would print a confident 0 for an item whose on-hand is actually unknown.
+import { countDisplay, pendingZonesLabel, zoneProgress } from '@/lib/zones'
+import { hasMultipleZones } from '@/lib/zoneHelpers'
 import { resolveCountColumns, buildCatalogIndex, matchCountRow } from '@/lib/countUpload'
 import styles from './Inventory.module.css'
 
@@ -451,6 +458,11 @@ export default function Inventory() {
   const [countMode, setCountMode] = useState('full')  // 'quick' | 'section' | 'full'
   const [showManage, setShowManage] = useState(false)
   const [showCatManager, setShowCatManager] = useState(false)
+  const [showZoneManager, setShowZoneManager] = useState(false)
+  // Zone counting (Phase 4). activeZone drives countMode==='zone'; expandedZoneRows
+  // tracks which item rows have their per-zone grid open.
+  const [activeZone, setActiveZone] = useState('all')
+  const [expandedZoneRows, setExpandedZoneRows] = useState(() => new Set())
   const canEditCats = canEditInventoryCategories(user)
   const [customDraft, setCustomDraft] = useState({
     name: '', vendor: '', packSize: '',
@@ -514,6 +526,7 @@ export default function Inventory() {
     items,
     priorFromPeriod,
     categories,
+    zones,
     catStats,
     totals,
     varianceAlerts,
@@ -541,16 +554,38 @@ export default function Inventory() {
     buddyNames,
     setBuddyNames,
     markSectionComplete,
+    markZoneSwept,
+    setZoneValue,
     save,
     saveCounts,
     mergeDraft,
     patchItemFields,
     setCategoriesLocal,
+    setZonesLocal,
     periodLocked,
     markPeriodLocked,
     applyUploadedCounts,
     rollOverFromPrior,
   } = useInventory(orgId, location, periodKey, user, isCurrentPeriod)
+
+  // Zone-derived UI state (Phase 4).
+  //
+  // MUST live AFTER the useInventory destructure: `zones` and `session` are
+  // both bindings from it, and `const` bindings are in the temporal dead zone
+  // until their declaration executes. This block originally sat ~65 lines
+  // higher next to canEditCats — logically related, lexically too early — and
+  // threw "Cannot access 'zones' before initialization" on every render of the
+  // Inventory page. Same class as the Phase 0 locZonesSnap crash: invisible to
+  // the test suite, fatal in the browser. Do not hoist this.
+  //
+  // Zones only 'turn on' once a SECOND zone exists — a single-default-zone
+  // location must look exactly like it did before the feature (Phase 0 gate).
+  // `zones` is never undefined: useInventory seeds it with resolveZones(null),
+  // so the all-locations path (location === null) gets the single default zone
+  // and every zone surface stays gated off.
+  const zonesOn = hasMultipleZones(zones)
+  const zonesCompleted = session?.zonesCompleted || []
+  const zoneStats = zoneProgress(zones, zonesCompleted)
 
   // Edit-panel save state — autosave-on-blur stays the data path, this tracks
   // in-flight writes so the panel's Done button can reflect "Saving…" /
@@ -1166,10 +1201,14 @@ export default function Inventory() {
     // Count mode filter — the most aggressive scope cut
     if (countMode === 'quick' && !i.isKey) return false
     if (countMode === 'section' && activeCat === 'all') return false  // section mode requires a category pick
+    // Zone mode requires a zone pick, mirroring section mode. It does NOT
+    // filter which ITEMS show (an item can live in any zone) — it scopes
+    // which zone you're entering into, so the whole list stays visible.
+    if (countMode === 'zone' && activeZone === 'all') return false
     const matchCat = activeCat === 'all' || i._cat === activeCat
     const matchSearch = !q || i.name?.toLowerCase().includes(q) || i.vendor?.toLowerCase().includes(q)
     return matchCat && matchSearch
-  }), [items, activeCat, q, countMode])
+  }), [items, activeCat, q, countMode, activeZone])
 
   const keyItemCount = useMemo(() => items.filter(i => i.isKey).length, [items])
 
@@ -1367,6 +1406,7 @@ export default function Inventory() {
               {session && (
                 <span className={styles.sessionBadge}>
                   Session active · {session.sectionsCompleted?.length || 0}/{categories.length} sections
+                  {zonesOn && ` · ${zoneStats.swept}/${zoneStats.total} zones swept`}
                 </span>
               )}
             </p>
@@ -1396,6 +1436,17 @@ export default function Inventory() {
                 style={locked ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
               >
                 ⚙ Manage categories
+              </button>
+            )}
+            {canEditCats && selectedLocation && selectedLocation !== 'all' && (
+              <button
+                className={styles.btnMode}
+                onClick={() => setShowZoneManager(true)}
+                disabled={locked}
+                title={locked ? 'Period closed — reopen to edit' : "Manage this location's counting zones"}
+                style={locked ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
+              >
+                ⚙ Manage zones
               </button>
             )}
             <button
@@ -1591,6 +1642,52 @@ export default function Inventory() {
           </div>
         )}
 
+        {/* ── Zone picker + sweep (Phase 3/4) ──────────────────────────
+            Counting is physically per zone: pick one, count the list into it,
+            then mark it swept. Sweeping is the assertion that turns "blank"
+            from UNKNOWN into a real zero for every item in that zone — so it
+            is deliberately explicit, reversible, and labelled as such. */}
+        {zonesOn && countMode === 'zone' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 0' }}>
+            <span style={{ fontSize: 12, color: '#64748b', fontWeight: 600 }}>Counting zone:</span>
+            {zones.map(z => {
+              const active = activeZone === z.key
+              const swept = zonesCompleted.includes(z.key)
+              return (
+                <button key={z.key} onClick={() => setActiveZone(z.key)}
+                  className={`${styles.chip} ${active ? styles.chipActive : ''}`}
+                  title={swept ? 'Swept — blanks in this zone count as zero' : 'Not swept — blanks are unknown'}>
+                  {swept ? '✓ ' : ''}{z.label}
+                </button>
+              )
+            })}
+            {activeZone !== 'all' && (() => {
+              const swept = zonesCompleted.includes(activeZone)
+              const label = zones.find(z => z.key === activeZone)?.label || activeZone
+              return (
+                <button
+                  onClick={() => {
+                    if (!swept && !window.confirm(
+                      `Mark "${label}" as swept?\n\nThis asserts you walked the whole zone: any item with no entry here will count as ZERO in it, instead of leaving the item incomplete. You can undo this.`
+                    )) return
+                    markZoneSwept(activeZone, !swept)
+                  }}
+                  disabled={locked || !session}
+                  title={!session ? 'Start a count session first' : swept ? 'Un-sweep — returns blanks to unknown' : 'Mark this zone swept'}
+                  style={{
+                    padding: '6px 12px', fontSize: 12, fontWeight: 600, borderRadius: 8,
+                    cursor: (locked || !session) ? 'not-allowed' : 'pointer',
+                    background: swept ? '#1D9E7518' : '#d9770618',
+                    color: swept ? '#1D9E75' : '#d97706',
+                    border: '1px solid ' + (swept ? '#1D9E7540' : '#d9770640'),
+                  }}>
+                  {swept ? `✓ ${label} swept — undo` : `Mark ${label} swept`}
+                </button>
+              )
+            })()}
+          </div>
+        )}
+
         {/* Par Level Panel */}
         {showParPanel && itemsBelowPar && itemsBelowPar.length > 0 && (
           <div className={styles.parPanel}>
@@ -1648,6 +1745,9 @@ export default function Inventory() {
             {[
               { key: 'quick',   label: 'Quick',   sub: keyItemCount > 0 ? `${keyItemCount} key items` : 'key items' },
               { key: 'section', label: 'Section', sub: 'one category' },
+              // Zone mode only appears for multi-zone locations — counting is
+              // physically per-zone (walk the cooler, count it, mark it swept).
+              ...(zonesOn ? [{ key: 'zone', label: 'Zone', sub: 'one zone' }] : []),
               { key: 'full',    label: 'Full',    sub: `${items.length} items` },
             ].map(m => {
               const active = countMode === m.key
@@ -1962,6 +2062,66 @@ export default function Inventory() {
                             />
                             <button className={styles.adjBtn} tabIndex={-1} disabled={locked} onClick={() => { const st = window.scrollY; adjustEaches(item.id, 1); requestAnimationFrame(() => window.scrollTo(0, st)) }}>+</button>
                           </div>
+                          {/* ── Per-zone grid (Phase 4) ──────────────────────
+                              Only for multi-zone locations. The top-level
+                              inputs above stay the single-zone path; when zones
+                              are on, each zone gets its own qty/eaches pair
+                              writing into item.zones[key] via setZoneValue —
+                              never into the top-level, which is the DERIVED
+                              total for a zoned item. */}
+                          {zonesOn && (() => {
+                            const open = expandedZoneRows.has(item.id)
+                            const disp = countDisplay(item, zones, zonesCompleted)
+                            return (
+                              <div style={{ marginTop: 4 }}>
+                                <button
+                                  type="button"
+                                  onClick={() => setExpandedZoneRows(prev => {
+                                    const n = new Set(prev)
+                                    n.has(item.id) ? n.delete(item.id) : n.add(item.id)
+                                    return n
+                                  })}
+                                  style={{
+                                    background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                                    fontSize: 10, fontWeight: 600,
+                                    color: disp.incomplete ? '#d97706' : '#64748b',
+                                  }}
+                                  title={disp.incomplete ? pendingZonesLabel(disp.pending, zones) : 'Per-zone breakdown'}
+                                >
+                                  {open ? '▾' : '▸'} zones{disp.incomplete ? ' · incomplete' : ''}
+                                </button>
+                                {open && (
+                                  <div style={{ marginTop: 3, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                                    {zones.map(z => {
+                                      const ze = item.zones?.[z.key] || {}
+                                      const sweptZone = zonesCompleted.includes(z.key)
+                                      return (
+                                        <div key={z.key} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                          <span title={sweptZone ? 'Zone swept — blank counts as zero' : 'Zone not swept — blank is unknown'}
+                                            style={{ fontSize: 9, width: 58, color: z.color || '#64748b', fontWeight: 600,
+                                                     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                            {sweptZone ? '✓ ' : ''}{z.label}
+                                          </span>
+                                          <input type="text" inputMode="decimal" disabled={locked}
+                                            value={ze._qtyRaw ?? (ze.qty ?? '')}
+                                            onChange={e => setZoneValue(item.id, z.key, 'qty', e.target.value)}
+                                            placeholder="cs" className={styles.countInput}
+                                            style={{ width: 42, fontSize: 11 }}
+                                            title={`Cases in ${z.label}`} />
+                                          <input type="text" inputMode="decimal" disabled={locked}
+                                            value={ze._eachesRaw ?? (ze.eaches ?? '')}
+                                            onChange={e => setZoneValue(item.id, z.key, 'eaches', e.target.value)}
+                                            placeholder="ea" className={styles.countInput}
+                                            style={{ width: 42, fontSize: 11 }}
+                                            title={`Eaches in ${z.label}`} />
+                                        </div>
+                                      )
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            )
+                          })()}
                         </td>
 
                                                 {!isMobile && <td className={styles.tdCenter}>
@@ -1972,9 +2132,21 @@ export default function Inventory() {
                             </span>
                           ) : <span style={{ color: '#ddd' }}>—</span>}
                         </td>}
-{!isMobile && <td className={styles.tdRight} style={{ fontWeight: 700, color: (item._value || 0) > 0 ? '#059669' : '#bbb' }}>
-                          {(item._value || 0) > 0 ? fmt$(item._value) : '—'}
-                        </td>}
+{!isMobile && (() => {
+                          // THE DISPLAY RULE: an incomplete zoned item renders "—"
+                          // with a tooltip naming the outstanding zone(s) — never a
+                          // number, and never item.eaches (which load() coerces from
+                          // a stored null to 0, so it would show a confident $0).
+                          const disp = countDisplay(item, zones, zonesCompleted)
+                          const dash = disp.incomplete || !((item._value || 0) > 0)
+                          return (
+                            <td className={styles.tdRight}
+                                title={disp.incomplete ? pendingZonesLabel(disp.pending, zones) : undefined}
+                                style={{ fontWeight: 700, color: disp.incomplete ? '#d97706' : ((item._value || 0) > 0 ? '#059669' : '#bbb') }}>
+                              {dash ? '—' : fmt$(item._value)}
+                            </td>
+                          )
+                        })()}
                       </tr>
                     )
                   })}
@@ -2456,6 +2628,17 @@ export default function Inventory() {
             categories={categories}
             onSaved={(next) => setCategoriesLocal(next)}
             onClose={() => setShowCatManager(false)}
+          />
+        )}
+
+        {/* ── Manage zones (per-location) ── */}
+        {showZoneManager && canEditCats && selectedLocation && selectedLocation !== 'all' && (
+          <ZoneManagerModal
+            orgId={orgId}
+            locationId={selectedLocation}
+            zones={zones}
+            onSaved={(next) => setZonesLocal(next)}
+            onClose={() => setShowZoneManager(false)}
           />
         )}
 

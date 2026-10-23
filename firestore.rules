@@ -106,6 +106,30 @@ service cloud.firestore {
         allow write: if ownsTenant(tenantId) && (isManager() || isVp());
       }
 
+      // Per-location counting ZONES at settings/zones — the inventory multi-zone
+      // feature (Phase 0).
+      //
+      // REDUNDANT BY DESIGN, and deliberately so: the settings/{doc} wildcard
+      // immediately above ALREADY matches settings/zones at exactly this tier
+      // (read: ownsTenant; write: ownsTenant && (isManager() || isVp())). This
+      // block grants nothing additional and removing it changes no access — it
+      // exists only so the write authority for a new, security-relevant doc is
+      // stated at the doc rather than inherited silently from a wildcard.
+      //
+      // (An earlier version of this comment claimed settings/glCodes, rates and
+      // laborRates each have their own named rule. They do not — the wildcard is
+      // the only rule covering them. Corrected so nobody mirrors a pattern that
+      // was never there.)
+      //
+      // If the duplication is unwanted, delete this block: the wildcard covers
+      // it. If it stays, keep the two tiers identical — a divergence here would
+      // be invisible, since Firestore ORs matching allow rules and the more
+      // permissive one silently wins.
+      match /inventory/{locationId}/settings/zones {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && (isManager() || isVp());
+      }
+
       // Per-week inventory counts (qty/eaches keyed by periodKey).
       match /inventory/{locationId}/counts/{periodKey} {
         allow read:  if ownsTenant(tenantId);
