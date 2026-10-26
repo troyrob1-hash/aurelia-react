@@ -35,6 +35,16 @@ export function calcVariancePct(actual, expected) {
 }
 
 /**
+ * The pack-denominated count to compare against par / prior. Items enriched by
+ * useInventory carry `_countQty` (zone-aware: a zoned item's top-level qty is
+ * null by construction, so reading item.qty saw it as 0). Un-enriched callers
+ * fall back to item.qty — exactly the previous behaviour.
+ */
+export function qtyOf(item) {
+  return item && item._countQty !== undefined ? item._countQty : item?.qty
+}
+
+/**
  * Identify top variance issues (for alerts)
  * 
  * @param {Array} items - Items with variance data
@@ -44,17 +54,17 @@ export function calcVariancePct(actual, expected) {
 export function getTopVarianceIssues(items, limit = 5) {
   return items
     .filter(item => {
-      const status = classifyVariance(item.qty, item._priorQty || item.priorQty)
+      const status = classifyVariance(qtyOf(item), item._priorQty || item.priorQty)
       return status === 'alert' || status === 'warn'
     })
     .sort((a, b) => {
-      const aImpact = Math.abs((a.qty || 0) - (a._priorQty || 0)) * (a.unitCost || 0)
-      const bImpact = Math.abs((b.qty || 0) - (b._priorQty || 0)) * (b.unitCost || 0)
+      const aImpact = Math.abs((qtyOf(a) || 0) - (a._priorQty || 0)) * (a.unitCost || 0)
+      const bImpact = Math.abs((qtyOf(b) || 0) - (b._priorQty || 0)) * (b.unitCost || 0)
       return bImpact - aImpact
     })
     .slice(0, limit)
     .map(item => {
-      const actual = item.qty || 0
+      const actual = qtyOf(item) || 0
       const expected = item._priorQty || item.priorQty || 0
       const variance = actual - expected
       const impact = variance * (item.unitCost || 0)
@@ -82,7 +92,7 @@ export function getTopVarianceIssues(items, limit = 5) {
  * @returns {Object} Par status analysis
  */
 export function calcParStatus(item) {
-  const qty = item.qty || 0
+  const qty = qtyOf(item) || 0
   const parLevel = item.parLevel || 0
   const reorderPoint = item.reorderPoint || 0
   const avgDailyUsage = item.avgDailyUsage || 0
@@ -125,12 +135,12 @@ export function calcParStatus(item) {
 export function generateReorderList(items) {
   return items
     .filter(item => {
-      const qty = item.qty || 0
+      const qty = qtyOf(item) || 0
       const reorderPoint = item.reorderPoint || 0
       return reorderPoint > 0 && qty <= reorderPoint
     })
     .map(item => {
-      const qty = item.qty || 0
+      const qty = qtyOf(item) || 0
       const parLevel = item.parLevel || 0
       const recommendedOrder = Math.max(0, parLevel - qty)
       const estimatedCost = recommendedOrder * (item.unitCost || 0)

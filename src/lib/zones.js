@@ -325,3 +325,104 @@ export function closeOutWarningText(issues, zones, max = 8) {
   }
   return `This count is incomplete:\n\n${lines.join('\n')}\n\nIncomplete items close at $0, which shows up as shrinkage.`
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COUNT READERS — one place that knows how much of an item is on hand
+// ─────────────────────────────────────────────────────────────────────────────
+// A zoned item's in-memory top-level qty/eaches is NOT its count (see
+// countDisplay's trap note): qty is null by construction and eaches is whatever
+// load() coerced. Every reader that used `item.qty` therefore saw a zoned item
+// as 0 / uncounted — variance, Prior, days-on-hand, par, the Why panel, exports.
+// These helpers are the replacement. LEGACY items are byte-identical to before:
+// the pack view returns item.qty exactly as those readers always read it.
+
+/**
+ * Total on hand in EACHES, or null when not (fully) counted.
+ * Zoned: the derived total (null while incomplete — the honesty rule).
+ * Legacy: countEaches when it holds a count, else null.
+ */
+export function itemTotalEaches(item, zones, zonesCompleted) {
+  if (!item) return null
+  if (hasZoneData(item)) return derivedTotalEaches(item, zones, zonesCompleted)
+  return flatHasCount(item) ? countEaches(item) : null
+}
+
+/**
+ * The PACK-denominated count that par levels, reorder points, variance and
+ * days-on-hand compare against. Legacy: item.qty, unchanged. Zoned: the derived
+ * total expressed in packs (eaches ÷ pack size), null while incomplete.
+ */
+export function itemCountQty(item, zones, zonesCompleted) {
+  if (!item) return null
+  if (!hasZoneData(item)) return item.qty ?? null
+  const total = derivedTotalEaches(item, zones, zonesCompleted)
+  return total == null ? null : toPacks(total, item)
+}
+
+/**
+ * The same pack view, read from a STORED count record (a prior period's doc,
+ * a Path B snapshot row). For a stored zoned record the persisted top-level
+ * eaches IS the authoritative total (written null while incomplete), so no
+ * zone config or sweep state is needed — or wanted: a closed period's total is
+ * what it was saved as.
+ */
+export function storedCountQty(rec) {
+  if (!rec) return null
+  if (!hasZoneData(rec)) return rec.qty ?? null
+  return rec.eaches == null ? null : toPacks(Number(rec.eaches), rec)
+}
+
+// Eaches → packs, rounded to 2 dp: it is displayed (Prior column, par) and a
+// 1/12-pack remainder shouldn't print as 2.0833333.
+function toPacks(eaches, item) {
+  return Math.round((eaches / packSizeOf(item)) * 100) / 100
+}
+
+function packSizeOf(item) {
+  const q = Number(item?.qtyPerPack)
+  return Number.isFinite(q) && q > 0 ? q : 1
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MULTI-DEVICE — merge remote zone entries without losing local edits
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Merge a remote zones map (from the live listener) into the local one.
+ * Zones THIS device has edited and not yet persisted (`dirtyKeys`) keep their
+ * local value; every other zone takes the remote value — including a remote
+ * DELETE (the key absent remotely is dropped locally). Returns undefined when
+ * the result is empty, so a legacy record stays zone-free.
+ *
+ * Why per-zone and not per-item: two counters on different sheets of the SAME
+ * item is the normal case. Skipping the whole item while it's locally touched
+ * (the pre-zones rule) meant a remote zone edit arriving then was never
+ * applied, and this device's total stayed wrong until reload.
+ */
+export function mergeRemoteZones(localZones, remoteZones, dirtyKeys) {
+  const dirty = dirtyKeys instanceof Set ? dirtyKeys : new Set(dirtyKeys || [])
+  const out = {}
+  for (const [k, v] of Object.entries(remoteZones || {})) {
+    if (!dirty.has(k)) out[k] = v
+  }
+  for (const k of dirty) {
+    if (localZones && k in localZones) out[k] = localZones[k]
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
+/**
+ * Dollar value of a STORED count record (a Path B snapshot row, a count doc) —
+ * the same valuation as useInventory's itemValue: qty × packPrice + eaches ×
+ * eachPrice, with packPrice falling back to qtyPerPack × unitCost (unitCost is
+ * the per-EACH cost). For a stored zoned record qty is null and eaches is the
+ * derived total, so this values it correctly too.
+ */
+export function storedRecordValue(rec) {
+  if (!rec) return 0
+  const qpp = packSizeOf(rec)
+  const unit = Number(rec.unitCost) || 0
+  const pp = Number(rec.packPrice) || qpp * unit
+  const eachPrice = pp / qpp
+  return (Number(rec.qty) || 0) * pp + (Number(rec.eaches) || 0) * eachPrice
+}

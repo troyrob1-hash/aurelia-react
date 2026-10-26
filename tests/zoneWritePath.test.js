@@ -23,7 +23,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'fs'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
-import { zonedTopLevel, itemValue, hasCount, touchedIdsToClear } from '../src/hooks/useInventory'
+import { zonedTopLevel, itemValue, hasCount, touchedIdsToClear, zonesWrite } from '../src/hooks/useInventory'
 import { derivedTotalEaches, rollupZones, zoneTotals } from '../src/lib/zones'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -95,7 +95,10 @@ describe('2. zoned writes merge; legacy writes do not', () => {
   })
 
   it('zones are only attached to the payload for zoned items', () => {
-    expect(SRC).toMatch(/\.\.\.\(hasZoneData\(c\) \? \{ zones: buildZonePayload\(c\.zones\) \} : \{\}\)/)
+    // Behavioural (was a source match): persistCountItems spreads zonesWrite(c).
+    expect(SRC).toMatch(/\.\.\.zonesWrite\(c\),/)
+    expect(zonesWrite({ id: 'x', qty: 2, eaches: 0 })).toEqual({})
+    expect(Object.keys(zonesWrite(zoned({ qty: 1, eaches: 0 }, null)))).toEqual(['zones'])
   })
 })
 
@@ -214,6 +217,7 @@ describe('itemValue — one shared construction, zone-aware', () => {
 
 describe('round-trip: stored zones hydrate back onto the item', () => {
   it('load attaches zones only when the stored doc carries them', () => {
-    expect(SRC).toMatch(/\.\.\.\(c\.zones && Object\.keys\(c\.zones\)\.length \? \{ zones: c\.zones \} : \{\}\)/)
+    // Conditional attach (plus the stored total, used to detect a stale total on save).
+    expect(SRC).toMatch(/\.\.\.\(c\.zones && Object\.keys\(c\.zones\)\.length \? \{ zones: c\.zones, _storedTotal: c\.eaches \?\? null \} : \{\}\)/)
   })
 })
