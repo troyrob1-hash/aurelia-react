@@ -20,7 +20,9 @@ import {
   isSplitItem, countCategoryKeys, sheetCategoryKeys, bucketsFor, catBucketKey, completedBuckets,
   derivedTotalEaches, countDisplay, itemTotalEaches, portionValue, allocateItemValue, categoryTotals,
   rebucketForMembership, closeOutIssues, closeOutWarningText, pendingBucketsLabel,
+  displayCents, toCents, largestRemainder, sheetUsage,
 } from '../src/lib/buckets'
+import { categoryDeleteMessage } from '../src/lib/categoryHelpers'
 import { itemValue, uploadRejectReason, sweepTotalUpdates } from '../src/hooks/useInventory'
 import { inventoryExportRow, uniqueItems, byCategoryRows } from '../src/lib/inventoryExport'
 import { buildCountSheets } from '../src/lib/countSheets'
@@ -205,7 +207,8 @@ describe('INVARIANT — category totals == closingValue (no double count)', () =
 
   it('EXPORT: By Category total == detail Total Closing Value, exact to the cent', () => {
     const { rows, totalCents } = byCategoryRows(items, CATS)
-    const detailCents = items.reduce((s, i) => s + Math.round(parseFloat(inventoryExportRow(i)['Closing Value']) * 100), 0)
+    const ledger = displayCents(items, CATS)
+    const detailCents = items.reduce((s, i) => s + Math.round(parseFloat(inventoryExportRow(i, ledger.item(i.id))['Closing Value']) * 100), 0)
     expect(totalCents).toBe(detailCents)
     const lineCents = rows.filter(r => r.Item).reduce((s, r) => s + Math.round(parseFloat(r['Closing Value']) * 100), 0)
     const subCents = rows.filter(r => / — subtotal$/.test(r.Category)).reduce((s, r) => s + Math.round(parseFloat(r['Closing Value']) * 100), 0)
@@ -228,7 +231,7 @@ describe('INVARIANT — category totals == closingValue (no double count)', () =
     const INV = code('src/routes/Inventory.jsx')
     expect(INV).toMatch(/const \{ rows: catRows \} = byCategoryRows\(exportItems, categories\)/)
     expect(INV).toMatch(/\{fmt\$\(catStats\[cat\.key\]\?\.value \|\| 0\)\}/)
-    expect(INV).toMatch(/const shown = onSheet \? portionValue\(item, cat\.key\) : \(item\._value \|\| 0\)/)
+    expect(INV).toMatch(/const shown = \(onSheet \? centLedger\.share\(item\.id, cat\.key\) : centLedger\.item\(item\.id\)\) \/ 100/)
   })
 })
 
@@ -299,5 +302,140 @@ describe('close-out names unfinished sheets', () => {
   it('a done sheet is not unfinished', () => {
     const it = split('milk', ['bar', 'boh'], { [B('bar')]: { qty: 1, eaches: 0 } })
     expect(closeOutIssues([it], ZONES, [B('boh')]).any).toBe(false)
+  })
+})
+
+describe('DISPLAY — shown shares add up to the shown Closing Value, EXACTLY', () => {
+  // Found live at Test Sandbox: 0range juice ($20.43 / 12), 2 cases on Beverages
+  // + 1 case 6 on Bar / Barista. Shares rounded on their own showed $40.86 +
+  // $30.64 = $71.50 under a $71.51 Closing Value.
+  const oj = enrich([split('0range juice', ['bar', 'snacks'], {
+    [B('bar')]: { qty: 2, eaches: 0 }, [B('snacks')]: { qty: 1, eaches: 6 },
+  }, { qtyPerPack: 12, packPrice: 20.43 })])
+
+  it('REGRESSION: the live case reconciles — $40.86 + $30.65 = $71.51', () => {
+    const L = displayCents(oj, CATS)
+    expect(L.closingCents).toBe(7151)
+    expect([L.share('0range juice', 'bar'), L.share('0range juice', 'snacks')]).toEqual([4086, 3065])
+    expect(L.share('0range juice', 'bar') + L.share('0range juice', 'snacks')).toBe(L.closingCents)
+    // …and rounding each share on its own is what broke it: the 18-each share
+    // is 30.6449999… in floating point, which displayed as $30.64.
+    expect(Math.round(portionValue(oj[0], 'snacks') * 100)).toBe(3064)
+    expect(Math.round(portionValue(oj[0], 'bar') * 100) + Math.round(portionValue(oj[0], 'snacks') * 100)).toBe(7150)
+  })
+
+  it('PROPERTY: across 600 random locations, every displayed level sums exactly', () => {
+    // Deterministic PRNG so a failure reproduces.
+    let seed = 0x5eed
+    const rnd = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 2 ** 32)
+    const pick = a => a[Math.floor(rnd() * a.length)]
+    const keys = CATS.map(c => c.key).concat(['gone'])   // 'gone' = a deleted category
+    let naiveMismatches = 0
+    for (let run = 0; run < 600; run++) {
+      const n = 1 + Math.floor(rnd() * 12)
+      const raw = []
+      for (let k = 0; k < n; k++) {
+        const qpp = pick([1, 6, 12, 24, 36])
+        const packPrice = Math.round(rnd() * 9000) / 100 + 0.01
+        if (rnd() < 0.5) {
+          const sheets = [...new Set([pick(keys), pick(keys), pick(keys)])]
+          if (sheets.length < 2) sheets.push(sheets[0] === 'bar' ? 'boh' : 'bar')
+          const zones = {}
+          for (const s of sheets) if (rnd() < 0.9) zones[B(s)] = { qty: Math.floor(rnd() * 5), eaches: Math.floor(rnd() * 13) }
+          raw.push(split(`s${run}-${k}`, sheets, zones, { qtyPerPack: qpp, packPrice, _cat: pick(keys) }))
+        } else {
+          raw.push(flat(`f${run}-${k}`, pick(keys.concat(['orphan'])), Math.floor(rnd() * 9), Math.floor(rnd() * 13), { qtyPerPack: qpp, packPrice }))
+        }
+      }
+      const items = enrich(raw)
+      const L = displayCents(items, CATS)
+      const closingShown = toCents(closingOf(items))
+      expect(L.closingCents).toBe(closingShown)                                          // KPI
+      const catSum = Object.values(L.byCat).reduce((s, c) => s + c, 0) + L.uncategorizedCents
+      expect(catSum).toBe(closingShown)                                                  // sheet totals → KPI
+      expect(items.reduce((s, i) => s + L.item(i.id), 0)).toBe(closingShown)            // rows → KPI
+      for (const i of items) {
+        const alloc = allocateItemValue(i, CATS.map(c => c.key))
+        const keysOf = [...new Set(alloc.map(a => a.catKey ?? null))]
+        expect(keysOf.reduce((s, k) => s + L.share(i.id, k), 0)).toBe(L.item(i.id))     // shares → item
+        expect(Math.abs(L.item(i.id) - (Number(i._value) || 0) * 100)).toBeLessThan(1.000001)   // never off by more than a cent
+        for (const k of keysOf) expect(L.share(i.id, k)).toBeGreaterThanOrEqual(0)
+      }
+      // The bug this guards: rounding every displayed share on its own.
+      const naive = items.reduce((s, i) => s + allocateItemValue(i, CATS.map(c => c.key)).reduce((t, a) => t + toCents(a.value), 0), 0)
+      if (naive !== closingShown) naiveMismatches++
+    }
+    expect(naiveMismatches).toBeGreaterThan(0)   // proves the property test can see the bug
+  })
+
+  it('largestRemainder: integer parts, exact sum, deterministic ties', () => {
+    expect(largestRemainder([1, 1, 1], 1000)).toEqual([334, 333, 333])
+    expect(largestRemainder([2, 1], 1)).toEqual([1, 0])
+    expect(largestRemainder([0, 0], 0)).toEqual([0, 0])
+    expect(largestRemainder([], 5)).toEqual([])
+  })
+
+  it('toCents rounds the float that should have been a half-cent UP', () => {
+    expect(toCents(18 * (20.43 / 12))).toBe(3065)
+    expect(toCents(40.86 + 30.645)).toBe(7151)
+    expect(toCents(0)).toBe(0)
+    // Values that land a hair BELOW the half-cent in floating point — the
+    // epsilon is what makes them round as the decimal amount intends.
+    expect(1.005 * 100).toBeLessThan(100.5)
+    expect(toCents(1.005)).toBe(101)
+    expect(toCents(3 * (12.06 / 12))).toBe(302)                         // 3 eaches at $12.06/12
+  })
+
+  it('EXPORT: detail rows, By Category and TOTAL come from the same ledger', () => {
+    const { rows, totalCents } = byCategoryRows(oj, CATS)
+    const L = displayCents(oj, CATS)
+    expect(totalCents).toBe(L.closingCents)
+    expect(Math.round(parseFloat(inventoryExportRow(oj[0], L.item(oj[0].id))['Closing Value']) * 100)).toBe(7151)
+    expect(rows.filter(r => r.Item).map(r => r['Closing Value'])).toEqual(['40.86', '30.65'])
+  })
+
+  it('the screen reads every displayed money number from the ledger', () => {
+    const INV = code('src/routes/Inventory.jsx')
+    expect(INV).toMatch(/<div className=\{styles\.kpiValue\}>\{fmt\$\(centLedger\.closingCents \/ 100\)\}<\/div>/)
+    expect(INV).toMatch(/− \{fmt\$\(centLedger\.closingCents \/ 100\)\}/)
+    expect(INV).toMatch(/const value = flatItems\.reduce\(\(s, i\) => s \+ centLedger\.item\(i\.id\), 0\) \/ 100/)
+    expect(INV).toMatch(/This sheet's share of \$\{fmt\$\(centLedger\.item\(item\.id\) \/ 100\)\}/)
+    expect(INV).toMatch(/const exportLedger = displayCents\(exportItems, categories\)/)
+    expect(INV).not.toMatch(/fmt\$\(totals\.closingValue\)/)
+    const SRC = code('src/hooks/useInventory.js')
+    expect(SRC).toMatch(/value: \(centLedger\.byCat\[cat\.key\] \|\| 0\) \/ 100/)
+  })
+})
+
+describe('category-delete prompt names counts on the sheet', () => {
+  it('sheetUsage counts split items on a sheet and those holding a count there', () => {
+    const items = [
+      split('a', ['bar', 'zz'], { [B('zz')]: { qty: 1, eaches: 0 } }),
+      split('b', ['bar', 'zz']),
+      flat('c', 'zz', 1),                                  // home label 'zz' — not split, not "on the sheet"
+    ]
+    expect(sheetUsage(items, 'zz')).toEqual({ onSheet: 2, withCounts: 1 })
+    expect(sheetUsage(items, 'boh')).toEqual({ onSheet: 0, withCounts: 0 })
+  })
+
+  it('REGRESSION: an item with a count on the sheet is never "no items" — it says the count merges into home', () => {
+    const msg = categoryDeleteMessage({ homeCount: 0, sheet: { onSheet: 1, withCounts: 1 }, locationId: 'Test_Sandbox' }).join(' ')
+    expect(msg).not.toMatch(/No items/)
+    expect(msg).toMatch(/1 item is also counted on this sheet — 1 with a count here, which will merge into its home sheet\. Nothing is lost\./)
+  })
+
+  it('home-label moves and sheet merges are both named; "just removed" only when neither applies', () => {
+    expect(categoryDeleteMessage({ homeCount: 3, sheet: { onSheet: 2, withCounts: 0 }, locationId: 'L' }))
+      .toEqual(['3 items move to General at L.', '2 items are also counted on this sheet (no counts on it yet) — they will stay on their other sheets.', 'This can’t be undone in bulk.'])
+    expect(categoryDeleteMessage({ homeCount: 0, sheet: { onSheet: 0, withCounts: 0 }, locationId: 'L' }))
+      .toEqual(['No items use this category here — it will just be removed.'])
+  })
+
+  it('the manager is given live sheet usage, and the prompt uses it', () => {
+    const INV = code('src/routes/Inventory.jsx')
+    expect(INV).toMatch(/sheetUsage=\{\(catKey\) => sheetUsage\(items, catKey\)\}/)
+    const M = code('src/components/inventory/CategoryManagerModal.jsx')
+    expect(M).toMatch(/sheet: sheetUsage \? sheetUsage\(migration\.cat\.key\)/)
+    expect(M).not.toMatch(/No items carry this label here — the category will just be removed/)
   })
 })

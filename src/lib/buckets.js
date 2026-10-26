@@ -719,3 +719,101 @@ export function rebucketForMembership(item, nextKeys, homeKey) {
 
   return { countCategories: stored, patch: { countCategories: stored }, dirtyKeys: [], changedCounts: false }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DISPLAY CENTS — one cent ledger for everything shown, so it always adds up
+// ─────────────────────────────────────────────────────────────────────────────
+// Rounding each displayed number on its own cannot reconcile: the closing
+// value rounds the SUM, each row/sheet share rounds ITS part, and two
+// independently rounded numbers drift a cent (found live: shares $40.86 +
+// $30.64 = $71.50 under a $71.51 closing — the 18-each share was 30.6449999…
+// in floating point). Instead the closing value is rounded to whole cents
+// ONCE and those cents are distributed — across items, then across each
+// item's sheets — by largest remainder. Every displayed number is a slice of
+// the same integer total, so the screen and the export add up exactly.
+
+const CENT_EPS = 1e-6   // in cents: absorbs float error so 30.645 rounds as 30.645, not 30.6449999…
+
+/** Dollars → whole cents, half away from zero, robust to float error. */
+export function toCents(dollars) {
+  const n = Number(dollars) || 0
+  return Math.round(n * 100 + (n >= 0 ? CENT_EPS : -CENT_EPS))
+}
+
+/**
+ * Split the integer `target` across non-negative `weights` in proportion,
+ * by largest remainder: the parts are integers and sum to exactly `target`.
+ * Ties go to the earlier weight, so the result is deterministic.
+ */
+export function largestRemainder(weights, target) {
+  const w = (weights || []).map(x => Math.max(0, Number(x) || 0))
+  if (!w.length) return []
+  const sum = w.reduce((s, x) => s + x, 0)
+  if (sum <= 0) return w.map((_, k) => (k === 0 ? target : 0))
+  const raw = w.map(x => (x / sum) * target)
+  const out = raw.map(Math.floor)
+  let left = target - out.reduce((s, x) => s + x, 0)
+  const order = raw.map((r, k) => [r - out[k], k]).sort((a, b) => b[0] - a[0] || a[1] - b[1])
+  for (let j = 0; left > 0; j = (j + 1) % order.length) { out[order[j][1]] += 1; left -= 1 }
+  return out
+}
+
+/**
+ * The cent ledger for a set of items (itemsWithMeta: needs _value, _cat,
+ * countCategories, zones, _totalEaches).
+ *
+ *   closingCents          = toCents(Σ item._value)          — the closing value shown
+ *   item(id)              — that item's cents; Σ over items === closingCents
+ *   share(id, catKey)     — its cents on one sheet; Σ over its sheets === item(id)
+ *   byCat[k], uncategorizedCents — Σ of shares per category; together === closingCents
+ *
+ * Shares follow allocateItemValue (a split item divided across its sheets,
+ * never multiplied), so this is the same allocation as categoryTotals — just
+ * in exact integer cents.
+ */
+export function displayCents(items, categories) {
+  const keys = (Array.isArray(categories) ? categories : []).map(c => c?.key).filter(Boolean)
+  const known = new Set(keys)
+  const list = (items || []).filter(Boolean)
+  const values = list.map(i => Math.max(0, Number(i._value) || 0))
+  const closingCents = toCents(values.reduce((s, v) => s + v, 0))
+  const perItem = largestRemainder(values, closingCents)
+  const itemCents = new Map()
+  const shareCents = new Map()
+  const byCat = Object.fromEntries(keys.map(k => [k, 0]))
+  let uncategorizedCents = 0
+  list.forEach((item, k) => {
+    const id = String(item.id)
+    itemCents.set(id, perItem[k])
+    const alloc = allocateItemValue(item, known)
+    const parts = largestRemainder(alloc.map(a => a.value), perItem[k])
+    alloc.forEach((a, j) => {
+      const sk = id + '|' + (a.catKey ?? '')
+      shareCents.set(sk, (shareCents.get(sk) || 0) + parts[j])
+      if (a.catKey == null) uncategorizedCents += parts[j]
+      else byCat[a.catKey] += parts[j]
+    })
+  })
+  return {
+    closingCents,
+    byCat,
+    uncategorizedCents,
+    item: (id) => itemCents.get(String(id)) ?? 0,
+    share: (id, catKey) => shareCents.get(String(id) + '|' + (catKey ?? '')) ?? 0,
+  }
+}
+
+/**
+ * Split items counted on one category SHEET: how many, and how many hold a
+ * count there. Feeds the category-delete prompt — a sheet can hold counts
+ * even when no item carries the category as its home label.
+ */
+export function sheetUsage(items, catKey) {
+  let onSheet = 0, withCounts = 0
+  for (const i of items || []) {
+    if (!i || !isSplitItem(i) || !countCategoryKeys(i).includes(catKey)) continue
+    onSheet += 1
+    if (bucketHasEntry(i.zones?.[catBucketKey(catKey)])) withCounts += 1
+  }
+  return { onSheet, withCounts }
+}

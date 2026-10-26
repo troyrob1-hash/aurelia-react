@@ -12,6 +12,7 @@ import { useAutosave } from '@/hooks/useAutosave'
 import SaveStatusBar from '@/components/SaveStatusBar'
 import { getTopVarianceIssues, calcParStatus, qtyOf } from '@/lib/variance'
 import { inventoryExportRow, uniqueItems, byCategoryRows } from '@/lib/inventoryExport'
+import { displayCents } from '@/lib/buckets'
 import { Search, Download, RefreshCw, Eye, EyeOff, TrendingUp, TrendingDown, Minus, AlertTriangle , Upload } from 'lucide-react'
 import { useToast } from '@/components/ui/Toast'
 import AllLocationsGrid from '@/components/AllLocationsGrid'
@@ -27,7 +28,7 @@ import { canEditInventoryCategories } from '@/lib/permissions'
 // what a count cell shows — a zoned item's in-memory top-level is NOT its
 // derived total (load() coerces a stored null to 0), so rendering item.eaches
 // would print a confident 0 for an item whose on-hand is actually unknown.
-import { countDisplay, pendingBucketsLabel, bucketProgress, closeOutIssues, closeOutWarningText, completedBuckets, isSplitItem, sheetCategoryKeys, catBucketKey, portionValue, countCategoryKeys, bucketHasEntry } from '@/lib/buckets'
+import { countDisplay, pendingBucketsLabel, bucketProgress, closeOutIssues, closeOutWarningText, completedBuckets, isSplitItem, sheetCategoryKeys, catBucketKey, countCategoryKeys, bucketHasEntry, sheetUsage } from '@/lib/buckets'
 import { hasMultipleZones } from '@/lib/zoneHelpers'
 import { resolveCountColumns, buildCatalogIndex, matchCountRow } from '@/lib/countUpload'
 import styles from './Inventory.module.css'
@@ -504,6 +505,7 @@ export default function Inventory() {
     zones,
     catStats,
     categoryBreakdown,
+    centLedger,
     totals,
     varianceAlerts,
     itemsBelowPar,
@@ -1037,7 +1039,11 @@ export default function Inventory() {
     // on; exporting straight from it would repeat the item and count its value
     // once per sheet in Total Closing Value. uniqueItems dedupes by id.
     const exportItems = uniqueItems(displayGroups)
-    const rows = exportItems.map(toRow)
+    // One cent ledger for the export (same rule as the screen): each detail
+    // row's Closing Value is the item's slice, so rows, Total Closing Value and
+    // the By Category sheet all add up to the cent.
+    const exportLedger = displayCents(exportItems, categories)
+    const rows = exportItems.map(i => toRow(i, exportLedger.item(i.id)))
     if (rows.length === 0) { toast.error('Nothing to export in the current view'); return }
 
     // Summary
@@ -1190,9 +1196,10 @@ export default function Inventory() {
   // Summary for the flat view (replaces per-category subtotals).
   const flatSummary = useMemo(() => {
     const counted = flatItems.filter(hasCount).length
-    const value = flatItems.reduce((s, i) => s + (i._value || 0), 0)
+    // Σ of the shown rows' ledger cents — matches the rows exactly.
+    const value = flatItems.reduce((s, i) => s + centLedger.item(i.id), 0) / 100
     return { counted, total: flatItems.length, value }
-  }, [flatItems])
+  }, [flatItems, centLedger])
 
   // ─── Top Variance Alerts ───────────────────────────────────────────────────
   const topVariance = useMemo(() => getTopVarianceIssues(items, 3), [items])
@@ -1524,12 +1531,13 @@ export default function Inventory() {
             <div className={styles.kpiLabel}>Live COGS</div>
             <div className={styles.kpiValue} style={{ color: '#6ee7b7' }}>{fmt$(totals.liveCOGS)}</div>
             <div className={styles.cogsFormula}>
-              {fmt$(totals.openingValue)} + {fmt$(totals.purchases)} − {fmt$(totals.closingValue)}
+              {fmt$(totals.openingValue)} + {fmt$(totals.purchases)} − {fmt$(centLedger.closingCents / 100)}
             </div>
           </div>
           <div className={styles.kpi}>
             <div className={styles.kpiLabel}>Closing Value</div>
-            <div className={styles.kpiValue}>{fmt$(totals.closingValue)}</div>
+            {/* The ledger's closing (displayCents) — the exact sum of every row and sheet total shown. */}
+            <div className={styles.kpiValue}>{fmt$(centLedger.closingCents / 100)}</div>
             <div className={styles.kpiSub}>Current count</div>
           </div>
           <div className={styles.kpi}>
@@ -2133,15 +2141,17 @@ export default function Inventory() {
                           // a stored null to 0, so it would show a confident $0).
                           const disp = countDisplay(item, zones, bucketsDone)
                           // On a category sheet a split item shows only ITS share of the
-                          // item's value (portionValue), so the column sums to the sheet
-                          // total and the sheets sum to closing. Flat view: the full value.
+                          // item's value; flat view shows the full value. Both are slices
+                          // of the cent ledger (displayCents), not independently rounded
+                          // floats, so the column sums EXACTLY to the sheet total and the
+                          // sheets to the Closing Value KPI.
                           const onSheet = !cat.isFlat && isSplitItem(item)
-                          const shown = onSheet ? portionValue(item, cat.key) : (item._value || 0)
+                          const shown = (onSheet ? centLedger.share(item.id, cat.key) : centLedger.item(item.id)) / 100
                           const dash = disp.incomplete || !(shown > 0)
                           return (
                             <td className={styles.tdRight}
                                 title={disp.incomplete ? pendingBucketsLabel(disp.pending, zones, categories)
-                                  : onSheet ? `This sheet's share of ${fmt$(item._value || 0)}` : undefined}
+                                  : onSheet ? `This sheet's share of ${fmt$(centLedger.item(item.id) / 100)}` : undefined}
                                 style={{ fontWeight: 700, color: disp.incomplete ? '#d97706' : (shown > 0 ? '#059669' : '#bbb') }}>
                               {dash ? '—' : fmt$(shown)}
                             </td>
@@ -2159,7 +2169,7 @@ export default function Inventory() {
                     </td>
                     <td style={{ padding: '8px 12px' }}></td>
                     {!isMobile && <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 600, fontSize: 12 }}>
-                      {fmt$(cat.isFlat ? cat.items.reduce((s, i) => s + (i._value || 0), 0) : (catStats[cat.key]?.value || 0))}
+                      {fmt$(cat.isFlat ? flatSummary.value : (catStats[cat.key]?.value || 0))}
                     </td>}
                   </tr>
                 </tfoot>
@@ -2698,6 +2708,7 @@ export default function Inventory() {
             orgId={orgId}
             locationId={selectedLocation}
             categories={categories}
+            sheetUsage={(catKey) => sheetUsage(items, catKey)}
             onSaved={(next) => {
               // A deleted category that still holds counts on split items: merge
               // those counts into each item's home sheet — never block, never drop.

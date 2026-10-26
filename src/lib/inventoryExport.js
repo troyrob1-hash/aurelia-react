@@ -17,12 +17,15 @@
 // always −Closing, Usage Value meaningless. Dropped rather than shipped empty.
 
 import { qtyOf } from '@/lib/variance'
-import { allocateItemValue } from '@/lib/buckets'
+import { allocateItemValue, displayCents } from '@/lib/buckets'
 
-export function inventoryExportRow(item) {
+// `cents` — the item's slice of the cent ledger (displayCents). When given,
+// Closing Value is exactly what the screen shows and the rows sum exactly to
+// the export's total; without it, the item's own value rounded (legacy callers).
+export function inventoryExportRow(item, cents) {
   const closing = qtyOf(item) || 0
   const unitCost = item.unitCost || 0
-  const totalValue = item._value || 0
+  const totalValue = cents != null ? cents / 100 : (item._value || 0)
   const parLevel = item.parLevel || item.minStock || ''
   const needsReorder = parLevel && closing <= parLevel ? 'Yes' : ''
   return {
@@ -60,43 +63,39 @@ export function uniqueItems(groups) {
 }
 
 /**
- * The "By Category" sheet: one row per item-CATEGORY, carrying that
- * category's share of the item's closing value (allocateItemValue — the same
- * rule as the on-screen totals), then a subtotal per category and a grand
- * total.
+ * The "By Category" sheet: one row per item-CATEGORY carrying that category's
+ * share of the item's closing value, a subtotal per category, and a TOTAL.
  *
- * EXACT TO THE CENT: each item's value is rounded to cents ONCE (as on the
- * detail sheet) and its cents are distributed across its categories by
- * largest remainder, so the item's 2-dp shares sum to its 2-dp value exactly.
- * The grand total therefore equals the detail sheet's Total Closing Value —
- * a split item contributes its value once, divided, never multiplied.
+ * Built on the SAME cent ledger as the screen (displayCents): the closing
+ * value is rounded to whole cents once and distributed — to items, then to
+ * each item's sheets — by largest remainder. So every share is a slice of one
+ * integer total: the rows sum to the subtotals, the subtotals to TOTAL, and
+ * TOTAL equals the detail sheet's Total Closing Value and the Closing Value
+ * KPI, to the cent. A split item counts once, divided, never multiplied.
  *
- * @returns {{ rows: object[], totalCents: number }}
+ * @returns {{ rows: object[], totalCents: number, ledger }}
  */
 export function byCategoryRows(items, categories) {
   const cats = (Array.isArray(categories) ? categories : []).filter(c => c?.key)
   const known = new Set(cats.map(c => c.key))
+  const ledger = displayCents(items, cats)
   const UNCAT = '__none__'
   const lines = new Map([...cats.map(c => [c.key, []]), [UNCAT, []]])
-  let totalCents = 0
   for (const item of items || []) {
-    const cents = Math.round((Number(item?._value) || 0) * 100)
-    totalCents += cents
+    if (!item) continue
     const alloc = allocateItemValue(item, known)
     const sum = alloc.reduce((s, a) => s + a.value, 0)
-    // Largest-remainder split of the item's cents across its allocations.
-    const raw = alloc.map(a => (sum ? (a.value / sum) * cents : (alloc.length === 1 ? cents : 0)))
-    const floors = raw.map(Math.floor)
-    let left = cents - floors.reduce((s, x) => s + x, 0)
-    raw.map((r, k) => [r - floors[k], k]).sort((a, b) => b[0] - a[0])
-      .forEach(([, k]) => { if (left > 0) { floors[k] += 1; left -= 1 } })
-    alloc.forEach((a, k) => {
-      lines.get(a.catKey ?? UNCAT).push({
+    const seen = new Set()
+    for (const a of alloc) {
+      const key = a.catKey ?? UNCAT
+      if (seen.has(key)) continue   // one row per item-category (stray value already pooled)
+      seen.add(key)
+      lines.get(key).push({
         item: item?.name || '',
         share: sum ? Math.round((a.value / sum) * 100) : 100,
-        cents: floors[k],
+        cents: ledger.share(item.id, a.catKey ?? null),
       })
-    })
+    }
   }
   const money = c => (c / 100).toFixed(2)
   const rows = []
@@ -110,6 +109,6 @@ export function byCategoryRows(items, categories) {
     }
     rows.push({ 'Category': `${label} — subtotal`, 'Item': '', 'Share of Item': '', 'Closing Value': money(sub) })
   }
-  rows.push({ 'Category': 'TOTAL', 'Item': '', 'Share of Item': '', 'Closing Value': money(totalCents) })
-  return { rows, totalCents }
+  rows.push({ 'Category': 'TOTAL', 'Item': '', 'Share of Item': '', 'Closing Value': money(ledger.closingCents) })
+  return { rows, totalCents: ledger.closingCents, ledger }
 }

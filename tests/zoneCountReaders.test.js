@@ -149,7 +149,7 @@ describe('Excel export — closing value matches the app', () => {
     expect(INV).toMatch(/const toRow = inventoryExportRow/)
     // Deduped: a split item appears in several groups but gets ONE row.
     expect(INV).toMatch(/const exportItems = uniqueItems\(displayGroups\)/)
-    expect(INV).toMatch(/const rows = exportItems\.map\(toRow\)/)
+    expect(INV).toMatch(/const rows = exportItems\.map\(i => toRow\(i, exportLedger\.item\(i\.id\)\)\)/)
     expect(INV).not.toMatch(/displayGroups\.flatMap\(g => g\.items\.map\(toRow\)\)/)
     expect(INV).toMatch(/exportItems\s*\.filter\(i => !countDisplay\(i, zones, bucketsDone\)\.incomplete\)\.length/)
   })

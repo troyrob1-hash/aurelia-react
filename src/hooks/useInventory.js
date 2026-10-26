@@ -8,7 +8,7 @@ import { useToast } from '@/components/ui/Toast'
 import { resolveZones } from '@/lib/zoneHelpers'
 // Phase 1 model layer — the single source of the zone arithmetic and the
 // honesty rule. The write path CALLS these; it never restates them.
-import { hasBucketData, bucketHasEntry, derivedTotalEaches, mergeRemoteBuckets, itemCountQty, itemTotalEaches, storedCountQty, isBucketed, isSplitItem, countCategoryKeys, bucketsFor, catBucketKey, completedBuckets, categoryTotals, rebucketForMembership } from '@/lib/buckets'
+import { hasBucketData, bucketHasEntry, derivedTotalEaches, mergeRemoteBuckets, itemCountQty, itemTotalEaches, storedCountQty, isBucketed, isSplitItem, countCategoryKeys, bucketsFor, catBucketKey, completedBuckets, categoryTotals, rebucketForMembership, displayCents } from '@/lib/buckets'
 
 // getPriorKey + sanitizeDocId moved to @/lib/pnl as the canonical source.
 // Re-exported here so existing call sites (Inventory.jsx imports sanitizeDocId
@@ -2269,14 +2269,19 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
   const categoryBreakdown = useMemo(
     () => categoryTotals(itemsWithMeta, categories, zones, completedBuckets(session)),
     [itemsWithMeta, categories, zones, session])
+  // The cent ledger for everything DISPLAYED (displayCents): closing rounded to
+  // whole cents once, distributed to items then sheets by largest remainder —
+  // so rows, sheet totals and the Closing Value KPI add up exactly on screen.
+  const centLedger = useMemo(() => displayCents(itemsWithMeta, categories), [itemsWithMeta, categories])
   const catStats = useMemo(() => {
     const stats = {}
     categories.forEach(cat => {
       const b = categoryBreakdown.byCat[cat.key] || { items: 0, counted: 0, value: 0 }
-      stats[cat.key] = { total: b.items, counted: b.counted, value: b.value }
+      // value: this sheet's cents from the ledger (exact), not a float sum.
+      stats[cat.key] = { total: b.items, counted: b.counted, value: (centLedger.byCat[cat.key] || 0) / 100 }
     })
     return stats
-  }, [categoryBreakdown, categories])
+  }, [categoryBreakdown, categories, centLedger])
 
   // DISPLAY-ONLY opening value for the KPI card, walked back to match the Prior column: when
   // the immediately-prior period was skipped (priorFromPeriod set), openingValue (the pnl-based
@@ -2339,6 +2344,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
     zones,
     catStats,
     categoryBreakdown,    // portions + uncategorized; sums to closingValue
+    centLedger,           // exact display cents: closing, per item, per sheet
     totals,
     varianceAlerts,
     itemsBelowPar,

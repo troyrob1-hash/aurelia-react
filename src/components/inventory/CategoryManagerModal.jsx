@@ -4,7 +4,7 @@ import { db } from '@/lib/firebase'
 import { doc, setDoc } from 'firebase/firestore'
 import { sanitizeDocId, getDefaultCategories } from '@/hooks/useInventory'
 import { useDragReorder } from '@/hooks/useDragReorder'
-import { PALETTE, slugify, uniqueKey, collidesWithKeyMap } from '@/lib/categoryHelpers'
+import { PALETTE, slugify, uniqueKey, collidesWithKeyMap, categoryDeleteMessage } from '@/lib/categoryHelpers'
 import { scanCategoryUsageInLocation, renameCategoryInLocation } from '@/lib/inventoryCategories'
 
 // Lean, LOCATION-SCOPED inventory category editor. Handles add / reorder /
@@ -23,7 +23,9 @@ import { scanCategoryUsageInLocation, renameCategoryInLocation } from '@/lib/inv
 //   onSaved(nextArray)— called after each successful write so the parent can
 //                       refresh in-memory categories WITHOUT a reload
 //   onClose           — dismiss
-export default function CategoryManagerModal({ orgId, locationId, categories, onSaved, onClose }) {
+// sheetUsage (optional): catKey → { onSheet, withCounts } — split items counted on
+// that sheet, so the delete prompt can say their counts merge into home.
+export default function CategoryManagerModal({ orgId, locationId, categories, onSaved, onClose, sheetUsage }) {
   const [cats, setCats] = useState(() => (Array.isArray(categories) ? categories : []))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
@@ -365,18 +367,18 @@ export default function CategoryManagerModal({ orgId, locationId, categories, on
             {migration.phase === 'confirm' && (
               <>
                 <div style={{ fontSize: 13, color: '#475569', marginBottom: 18, lineHeight: 1.5 }}>
-                  {migration.count > 0 ? (
-                    isDelete ? (
-                      <><strong>{migration.count}</strong> item{migration.count === 1 ? '' : 's'} move to <strong>General</strong> at <strong>{locationId}</strong>. This can’t be undone in bulk.</>
-                    ) : (
-                      <>This re-tags <strong>{migration.count}</strong> item{migration.count === 1 ? '' : 's'} at <strong>{locationId}</strong>. This can’t be undone in bulk.</>
-                    )
+                  {isDelete ? (
+                    // Names BOTH effects: home-label items moving to General, and
+                    // split items whose counts on this sheet merge into home.
+                    categoryDeleteMessage({
+                      homeCount: migration.count || 0,
+                      sheet: sheetUsage ? sheetUsage(migration.cat.key) : { onSheet: 0, withCounts: 0 },
+                      locationId,
+                    }).map((line, k) => <div key={k} style={{ marginBottom: 4 }}>{line}</div>)
+                  ) : migration.count > 0 ? (
+                    <>This re-tags <strong>{migration.count}</strong> item{migration.count === 1 ? '' : 's'} at <strong>{locationId}</strong>. This can’t be undone in bulk.</>
                   ) : (
-                    isDelete ? (
-                      <>No items carry this label here — the category will just be removed.</>
-                    ) : (
-                      <>No items carry this label here — this is a <strong>name-only</strong> change.</>
-                    )
+                    <>No items carry this label here — this is a <strong>name-only</strong> change.</>
                   )}
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>

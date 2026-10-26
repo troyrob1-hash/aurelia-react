@@ -38,3 +38,28 @@ export function uniqueKey(base, existingKeys) {
 export function collidesWithKeyMap(str) {
   return KEYMAP_KEYS.includes((str || '').toLowerCase())
 }
+
+/**
+ * The category-DELETE confirmation, as plain parts (the modal bolds numbers).
+ * Two independent effects, both named when present:
+ *   - homeCount: items whose home category this is → they move to General.
+ *   - sheet: split items also counted on this sheet → their counts on it
+ *     MERGE into each item's home sheet (nothing is lost).
+ * Only when neither applies is it "just removed". The old text said "No items
+ * carry this label" even while an item held a count on the sheet.
+ *
+ * @returns {string[]} sentences, in order
+ */
+export function categoryDeleteMessage({ homeCount = 0, sheet = { onSheet: 0, withCounts: 0 }, locationId = '' }) {
+  const s = n => (n === 1 ? '' : 's')
+  const out = []
+  if (homeCount > 0) out.push(`${homeCount} item${s(homeCount)} move to General at ${locationId}.`)
+  if (sheet.onSheet > 0) {
+    out.push(sheet.withCounts > 0
+      ? `${sheet.onSheet} item${s(sheet.onSheet)} ${sheet.onSheet === 1 ? 'is' : 'are'} also counted on this sheet — ${sheet.withCounts} with a count here, which will merge into ${sheet.withCounts === 1 ? 'its' : 'their'} home sheet. Nothing is lost.`
+      : `${sheet.onSheet} item${s(sheet.onSheet)} ${sheet.onSheet === 1 ? 'is' : 'are'} also counted on this sheet (no counts on it yet) — ${sheet.onSheet === 1 ? 'it' : 'they'} will stay on ${sheet.onSheet === 1 ? 'its' : 'their'} other sheets.`)
+  }
+  if (!out.length) out.push('No items use this category here — it will just be removed.')
+  else if (homeCount > 0) out.push('This can’t be undone in bulk.')
+  return out
+}
