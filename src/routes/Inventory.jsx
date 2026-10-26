@@ -10,7 +10,8 @@ import { db } from '@/lib/firebase'
 import { useInventory, fmt$, sanitizeDocId, hasCount } from '@/hooks/useInventory'
 import { useAutosave } from '@/hooks/useAutosave'
 import SaveStatusBar from '@/components/SaveStatusBar'
-import { getTopVarianceIssues, calcParStatus } from '@/lib/variance'
+import { getTopVarianceIssues, calcParStatus, qtyOf } from '@/lib/variance'
+import { inventoryExportRow } from '@/lib/inventoryExport'
 import { Search, Download, RefreshCw, Eye, EyeOff, TrendingUp, TrendingDown, Minus, AlertTriangle , Upload } from 'lucide-react'
 import { useToast } from '@/components/ui/Toast'
 import AllLocationsGrid from '@/components/AllLocationsGrid'
@@ -62,7 +63,9 @@ function formatLastCounted(iso) {
 // Confidence score for an item — surfaces in a per-row badge so directors
 // scanning the count sheet know what to trust. Combines staleness + variance.
 function calcConfidence(item) {
-  if (item.qty == null || item.qty === 0) return null
+  // _countQty, not item.qty: a zoned item's top-level qty is null by construction.
+  const q = qtyOf(item)
+  if (q == null || q === 0) return null
   const lc = formatLastCounted(item.lastCountedAt)
   const stale = lc?.tone === 'stale'
   const warn  = lc?.tone === 'warn'
@@ -897,7 +900,7 @@ export default function Inventory() {
 
   // Low stock detection
   const lowStockItems = items.filter(item => {
-    const qty = item.qty || 0
+    const qty = qtyOf(item) || 0
     const minStock = item.minStock || item.parLevel || 0
     return minStock > 0 && qty > 0 && qty <= minStock * 1.2
   })
@@ -1011,33 +1014,8 @@ export default function Inventory() {
     const fileName = 'inventory-' + locName + '-' + periodKey
 
     // Map one item -> export row.
-    const toRow = (item) => {
-      const opening = item.openingQty || 0
-      const closing = item.qty || 0
-      const purchased = item.purchased || 0
-      const usage = opening + purchased - closing
-      const unitCost = item.unitCost || 0
-      const totalValue = closing * unitCost
-      const usageValue = usage * unitCost
-      const parLevel = item.parLevel || item.minStock || ''
-      const needsReorder = parLevel && closing <= parLevel ? 'Yes' : ''
-      return {
-        'Item': item.name || '',
-        'Category': item.category || item.vendor || '',
-        'GL Code': item.glCode || '',
-        'SKU': item.sku || '',
-        'Unit': item.unit || 'ea',
-        'Opening': opening,
-        'Purchased': purchased,
-        'Closing': closing,
-        'Usage': usage,
-        'Unit Cost': unitCost.toFixed(2),
-        'Closing Value': totalValue.toFixed(2),
-        'Usage Value': usageValue.toFixed(2),
-        'Par Level': parLevel,
-        'Reorder': needsReorder,
-      }
-    }
+    // One detail row per item — see inventoryExportRow (Closing Value = itemValue).
+    const toRow = inventoryExportRow
 
     // Build rows by walking displayGroups -- the SAME structure the screen
     // renders -- so the export order and grouping ALWAYS match the screen.
@@ -1048,9 +1026,11 @@ export default function Inventory() {
 
     // Summary
     const totalClosingValue = rows.reduce((s, r) => s + parseFloat(r['Closing Value']), 0)
-    const totalUsageValue = rows.reduce((s, r) => s + parseFloat(r['Usage Value']), 0)
     const totalItems = rows.length
-    const itemsCounted = rows.filter(r => r['Closing'] > 0).length
+    // Counted = what the count cells show as counted (countDisplay), so a real
+    // counted zero counts and a partly-counted zoned item doesn't.
+    const itemsCounted = displayGroups.flatMap(g => g.items)
+      .filter(i => !countDisplay(i, zones, zonesCompleted).incomplete).length
     const needsReorder = rows.filter(r => r['Reorder'] === 'Yes').length
 
     if (format === 'csv') {
@@ -1065,7 +1045,6 @@ export default function Inventory() {
         ['Total Items,' + totalItems],
         ['Items Counted,' + itemsCounted],
         ['Total Closing Value,$' + totalClosingValue.toFixed(2)],
-        ['Total Usage Value,$' + totalUsageValue.toFixed(2)],
         ['Items Needing Reorder,' + needsReorder],
         [''],
         headers,
@@ -1074,7 +1053,10 @@ export default function Inventory() {
           return v.includes(',') ? '"' + v + '"' : v
         })),
         [''],
-        ['','','','','','','Total:','','',(totalClosingValue).toFixed(2),(totalUsageValue).toFixed(2)],
+        // Totals row placed by header NAME — the old fixed positions had drifted
+        // a column (the closing total sat under Unit Cost).
+        headers.map((h, k) => h === 'Closing Value' ? totalClosingValue.toFixed(2)
+          : headers[k + 1] === 'Closing Value' ? 'Total:' : ''),
       ]
       const csv = csvRows.map(r => Array.isArray(r) ? r.join(',') : r).join('\n')
       const blob = new Blob([csv], { type: 'text/csv' })
@@ -1101,7 +1083,6 @@ export default function Inventory() {
           ['Total Items', totalItems],
           ['Items Counted', itemsCounted],
           ['Total Closing Value', totalClosingValue],
-          ['Total Usage Value', totalUsageValue],
           ['Items Needing Reorder', needsReorder],
         ]
         const summarySheet = XLSX.utils.aoa_to_sheet(summaryData)
@@ -1110,10 +1091,10 @@ export default function Inventory() {
         // Detail sheet
         const detailSheet = XLSX.utils.json_to_sheet(rows)
         // Set column widths
+        // Item, Category, GL Code, SKU, Unit, Closing, Unit Cost, Closing Value, Par Level, Reorder
         detailSheet['!cols'] = [
-          { wch: 30 }, { wch: 15 }, { wch: 12 }, { wch: 8 },
-          { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 },
-          { wch: 10 }, { wch: 14 }, { wch: 14 }, { wch: 10 }, { wch: 8 },
+          { wch: 30 }, { wch: 15 }, { wch: 12 }, { wch: 8 }, { wch: 8 },
+          { wch: 10 }, { wch: 10 }, { wch: 14 }, { wch: 10 }, { wch: 8 },
         ]
         XLSX.utils.book_append_sheet(wb, detailSheet, 'Inventory Count')
 
@@ -1121,19 +1102,17 @@ export default function Inventory() {
         const categories = {}
         rows.forEach(r => {
           const cat = r['Category'] || 'Uncategorized'
-          if (!categories[cat]) categories[cat] = { items: 0, closingValue: 0, usageValue: 0 }
+          if (!categories[cat]) categories[cat] = { items: 0, closingValue: 0 }
           categories[cat].items++
           categories[cat].closingValue += parseFloat(r['Closing Value'])
-          categories[cat].usageValue += parseFloat(r['Usage Value'])
         })
         const catRows = Object.entries(categories).map(([cat, data]) => ({
           'Category': cat,
           'Items': data.items,
           'Closing Value': data.closingValue.toFixed(2),
-          'Usage Value': data.usageValue.toFixed(2),
         }))
         const catSheet = XLSX.utils.json_to_sheet(catRows)
-        catSheet['!cols'] = [{ wch: 20 }, { wch: 10 }, { wch: 14 }, { wch: 14 }]
+        catSheet['!cols'] = [{ wch: 20 }, { wch: 10 }, { wch: 14 }]
         XLSX.utils.book_append_sheet(wb, catSheet, 'By Category')
 
         XLSX.writeFile(wb, fileName + '.xlsx')
@@ -1658,7 +1637,7 @@ export default function Inventory() {
                         <p className={styles.parItemVendor}>{item.vendor}</p>
                       </div>
                       <div className={styles.parItemStats}>
-                        <span className={styles.parQty}>{item.qty || 0}</span>
+                        <span className={styles.parQty}>{qtyOf(item) || 0}</span>
                         <span className={styles.parOf}>/ {item.parLevel} par</span>
                         {par?.daysOnHand && (
                           <span className={`${styles.parDays} ${par.status === 'critical' ? styles.parDaysCrit : ''}`}>
@@ -2162,7 +2141,8 @@ export default function Inventory() {
           // from the moment the panel opened. Falls back to the snapshot if the
           // id is no longer present (e.g. the item was removed while open).
           const item = items.find(i => i.id === whyItem.id) || whyItem
-          const cur = item.qty
+          // Zone-aware count (null while a zoned item is still incomplete).
+          const cur = qtyOf(item)
           const prior = item._priorQty || 0
           const variance = item._variance || 0
           const varClass = item._varClass || 'neutral'
@@ -2172,7 +2152,11 @@ export default function Inventory() {
           // Headline
           let headline
           if (cur == null) {
-            headline = `${item.name} hasn't been counted yet for this period.`
+            // A zoned item with some zones counted isn't "uncounted" — say what's missing.
+            const zd = countDisplay(item, zones, zonesCompleted)
+            headline = zd.zoned && zd.pending.length && Object.keys(item.zones || {}).length
+              ? `${item.name} isn't fully counted yet. ${pendingZonesLabel(zd.pending, zones)}.`
+              : `${item.name} hasn't been counted yet for this period.`
           } else if (prior === 0) {
             headline = `${item.name} is at ${cur} this period (no prior count to compare against).`
           } else if (Math.abs(variance) < 0.5) {

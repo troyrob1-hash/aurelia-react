@@ -10,7 +10,7 @@
  * location that is a false-low closing → phantom shrinkage, with the screen
  * showing the right number the whole time.
  *
- * The headline test below runs the real sweepTotalUpdates + persistSweepTotals
+ * The headline test below runs the real sweepTotalUpdates + persistDerivedTotals
  * against a fake count store and values it with the CF's own expression (pinned
  * to functions/index.js so the emulation can't drift).
  */
@@ -32,7 +32,7 @@ vi.mock('firebase/firestore', async (importOriginal) => {
 
 import { updateDoc } from 'firebase/firestore'
 import {
-  sweepTotalUpdates, persistSweepTotals, zonedTopLevel, itemValue, countDocId,
+  sweepTotalUpdates, persistDerivedTotals, zonedTopLevel, itemValue, countDocId,
 } from '../src/hooks/useInventory'
 import { closeOutIssues, closeOutWarningText } from '../src/lib/zones'
 
@@ -96,7 +96,7 @@ describe('HEADLINE — a sweep reaches the server-side valuation', () => {
     // while the screen moves to include Coke's $54.
     expect(clientClosing(ITEMS, next) - cfClosing(store)).toBe(54)
 
-    await persistSweepTotals({}, sweepTotalUpdates(ITEMS, 'storage', ZONES, next), 'me')
+    await persistDerivedTotals({}, sweepTotalUpdates(ITEMS, 'storage', ZONES, next), 'me')
     applyUpdates(store)
     expect(cfClosing(store)).toBe(clientClosing(ITEMS, next))
     expect(store[countDocId('coke')].eaches).toBe(27)
@@ -106,7 +106,7 @@ describe('HEADLINE — a sweep reaches the server-side valuation', () => {
     const store = storeSavedWith(ITEMS, ['storage'])
     expect(cfClosing(store)).toBe(clientClosing(ITEMS, ['storage']))
 
-    await persistSweepTotals({}, sweepTotalUpdates(ITEMS, 'storage', ZONES, []), 'me')
+    await persistDerivedTotals({}, sweepTotalUpdates(ITEMS, 'storage', ZONES, []), 'me')
     applyUpdates(store)
     expect(store[countDocId('coke')].eaches).toBeNull()
     expect(cfClosing(store)).toBe(clientClosing(ITEMS, []))
@@ -153,9 +153,9 @@ describe('sweepTotalUpdates — only the totals the sweep can change', () => {
   })
 })
 
-describe('persistSweepTotals — top-level only, tolerant of unsaved items', () => {
+describe('persistDerivedTotals — top-level only, tolerant of unsaved items', () => {
   it('writes exactly qty/eaches + attribution via updateDoc, keyed by countDocId', async () => {
-    await persistSweepTotals({}, [{ id: 'a/b', qty: null, eaches: 5 }], 'me@x')
+    await persistDerivedTotals({}, [{ id: 'a/b', qty: null, eaches: 5 }], 'me@x')
     expect(updateDoc).toHaveBeenCalledTimes(1)
     const [ref, data] = updateDoc.mock.calls[0]
     expect(ref.id).toBe(countDocId('a/b'))
@@ -166,8 +166,8 @@ describe('persistSweepTotals — top-level only, tolerant of unsaved items', () 
     updateDoc
       .mockRejectedValueOnce(Object.assign(new Error('x'), { code: 'not-found' }))
       .mockRejectedValueOnce(Object.assign(new Error('y'), { code: 'permission-denied' }))
-    const r = await persistSweepTotals({}, [{ id: 1, eaches: 1 }, { id: 2, eaches: 2 }, { id: 3, eaches: 3 }], 'me')
-    expect(r).toEqual({ written: 1, failed: 1 })
+    const r = await persistDerivedTotals({}, [{ id: 1, eaches: 1 }, { id: 2, eaches: 2 }, { id: 3, eaches: 3 }], 'me')
+    expect(r).toEqual({ written: 1, failed: 1, writtenIds: ['3'] })
   })
 })
 
@@ -177,7 +177,7 @@ describe('markZoneSwept wiring', () => {
 
   it('re-persists totals computed with the POST-toggle swept list', () => {
     expect(fn).toMatch(/sweepTotalUpdates\(itemsRef\.current, zoneKey, zonesRef\.current, next\)/)
-    expect(fn).toMatch(/persistSweepTotals\(/)
+    expect(fn).toMatch(/persistDerivedTotals\(/)
   })
 
   it('updates zonesCompletedRef synchronously, before any await', () => {
@@ -187,7 +187,7 @@ describe('markZoneSwept wiring', () => {
   })
 
   it('persists totals only AFTER the session write succeeds, and rolls back on failure', () => {
-    expect(fn.indexOf('persistSweepTotals(')).toBeGreaterThan(fn.indexOf('inventorySessions'))
+    expect(fn.indexOf('persistDerivedTotals(')).toBeGreaterThan(fn.indexOf('inventorySessions'))
     expect(fn).toMatch(/catch[\s\S]*setSession\(prevSession\)[\s\S]*zonesCompletedRef\.current = current[\s\S]*return/)
   })
 

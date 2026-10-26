@@ -24,6 +24,7 @@
 import { db } from './firebase'
 import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore'
 import { getPriorKey, computeRevenue, computeOnsiteLabor, computeFoodCogs } from './pnl'
+import { storedRecordValue, storedCountQty } from './zones'
 
 // ============================================================================
 // Entry point
@@ -654,7 +655,9 @@ async function loadInventoryForLocation(orgId, locationName, periodKey) {
 
 function inventoryValue(invDoc) {
   if (!invDoc || !Array.isArray(invDoc.items)) return 0
-  return invDoc.items.reduce((s, i) => s + ((i.qty || 0) * (i.unitCost || 0)), 0)
+  // Same valuation as the app's closing (see storedRecordValue) — qty × unitCost
+  // priced packs at the per-each cost, ignored loose eaches, and zeroed zoned rows.
+  return invDoc.items.reduce((s, i) => s + storedRecordValue(i), 0)
 }
 
 async function explainInventory(ctx) {
@@ -706,13 +709,16 @@ async function explainInventory(ctx) {
   const itemDeltas = curItems.map(i => {
     const key = i.id || i.name
     const pr = priorById[key]
-    const curValue = (i.qty || 0) * (i.unitCost || 0)
-    const priorValue = pr ? (pr.qty || 0) * (pr.unitCost || 0) : 0
+    // Same valuation as the app's closing value (storedRecordValue). The old
+    // qty × unitCost ignored loose eaches, priced packs at the per-EACH cost,
+    // and valued a zoned row (qty null, total in eaches) at $0.
+    const curValue = storedRecordValue(i)
+    const priorValue = pr ? storedRecordValue(pr) : 0
     return {
       name: i.name || key,
       category: i.category,
-      curQty: i.qty,
-      priorQty: pr?.qty,
+      curQty: storedCountQty(i),
+      priorQty: storedCountQty(pr),
       curValue,
       priorValue,
       delta: curValue - priorValue,

@@ -62,6 +62,12 @@ export function useCountsListener({ orgId, locId, periodKey, enabled, onRemote }
                 eaches: data.eaches ?? 0,
                 lastCountedAt: data.countedAt ?? null,
                 lastCountedBy: data.countedBy ?? null,
+                // Per-zone counts + the stored (derived) total. Without these a
+                // zone edit on another device never reached this one — only
+                // the top-level total did, and for a zoned item the top-level
+                // isn't what the screen reads. null zones = a legacy record.
+                zones: remoteZones(data.zones),
+                storedTotal: data.eaches ?? null,
               }
             }
           }
@@ -82,4 +88,16 @@ export function useCountsListener({ orgId, locId, periodKey, enabled, onRemote }
     // onRemote intentionally excluded (accessed via ref) so it never re-subscribes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, orgId, locId, periodKey])
+}
+
+// A doc's zones map as plain {qty, eaches} entries, or null when the doc
+// carries none (a legacy flat record). Defensive: a malformed value is
+// treated as "no zones" rather than thrown on.
+export function remoteZones(z) {
+  if (!z || typeof z !== 'object' || Array.isArray(z)) return null
+  const out = {}
+  for (const [k, v] of Object.entries(z)) {
+    if (v && typeof v === 'object') out[k] = { qty: v.qty ?? null, eaches: v.eaches ?? null }
+  }
+  return Object.keys(out).length ? out : null
 }
