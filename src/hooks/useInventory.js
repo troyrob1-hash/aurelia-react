@@ -8,7 +8,7 @@ import { useToast } from '@/components/ui/Toast'
 import { resolveZones } from '@/lib/zoneHelpers'
 // Phase 1 model layer — the single source of the zone arithmetic and the
 // honesty rule. The write path CALLS these; it never restates them.
-import { hasZoneData, zoneHasEntry, derivedTotalEaches, mergeRemoteZones, itemCountQty, itemTotalEaches, storedCountQty } from '@/lib/zones'
+import { hasBucketData, bucketHasEntry, derivedTotalEaches, mergeRemoteBuckets, itemCountQty, itemTotalEaches, storedCountQty, isBucketed, isSplitItem, countCategoryKeys, bucketsFor, catBucketKey, completedBuckets, categoryTotals, rebucketForMembership } from '@/lib/buckets'
 
 // getPriorKey + sanitizeDocId moved to @/lib/pnl as the canonical source.
 // Re-exported here so existing call sites (Inventory.jsx imports sanitizeDocId
@@ -75,7 +75,7 @@ export function hasCount(item) {
   //   2. An INCOMPLETE item writes a null top-level on purpose; it still has
   //      zone entries worth persisting and must not be deleted.
   // Legacy items (no zones map) fall through to the original logic unchanged.
-  if (hasZoneData(item)) return Object.values(item.zones).some(zoneHasEntry)
+  if (hasBucketData(item)) return Object.values(item.zones).some(bucketHasEntry)
   if (item.qty != null) return true
   if (typeof item.eaches === 'number' && item.eaches > 0) return true
   return false
@@ -181,7 +181,7 @@ export function applyItemPatches(items, patches) {
 
 /** The `zones` part of a count write; omitted (not {}) when no zone is written. */
 export function zonesWrite(c) {
-  if (!hasZoneData(c)) return {}
+  if (!hasBucketData(c)) return {}
   const payload = buildZonePayload(c.zones, c.zoneKeys)
   return Object.keys(payload).length ? { zones: payload } : {}
 }
@@ -204,7 +204,11 @@ export function buildCountWrite(i, zones, zonesCompleted, zoneKeys) {
   return {
     id: i.id,
     ...zonedTopLevel(i, zones, zonesCompleted),
-    ...(hasZoneData(i) ? { zones: i.zones, zoneKeys: [...(zoneKeys || [])] } : {}),
+    ...(hasBucketData(i) ? { zones: i.zones, zoneKeys: [...(zoneKeys || [])] } : {}),
+    // The membership this count was taken under (split items) — read back for
+    // past periods (see load's _bucketCats). null for a non-split item.
+    // Only on bucketed rows, so a legacy row is byte-identical to before.
+    ...(isBucketed(i) ? { countCategories: isSplitItem(i) ? countCategoryKeys(i) : null } : {}),
     countedAt: i.lastCountedAt || null,
     countedBy: i.lastCountedBy || null,
     // Denormalized pricing for the Phase-2 CF valuation (price-at-count-time).
@@ -225,7 +229,7 @@ export function buildCountWrite(i, zones, zonesCompleted, zoneKeys) {
  * WasteLog and the Why panel read.
  */
 export function pathBCount(i, zones, zonesCompleted) {
-  if (!hasZoneData(i)) return { qty: i.qty, eaches: i.eaches || 0 }
+  if (!hasBucketData(i)) return { qty: i.qty, eaches: i.eaches || 0 }
   const top = zonedTopLevel(i, zones, zonesCompleted)
   return { qty: null, eaches: top.eaches ?? 0 }
 }
@@ -257,7 +261,7 @@ export function buildZonePayload(zones, onlyKeys) {
   const out = {}
   for (const [key, entry] of Object.entries(zones || {})) {
     if (keys && !keys.has(key)) continue
-    out[key] = zoneHasEntry(entry)
+    out[key] = bucketHasEntry(entry)
       ? { qty: entry.qty ?? null, eaches: Number(entry.eaches) || 0 }
       : deleteField()
   }
@@ -284,7 +288,7 @@ export function buildZonePayload(zones, onlyKeys) {
  */
 export function zonedTopLevel(item, zones, zonesCompleted) {
   const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0 }
-  if (!hasZoneData(item)) {
+  if (!hasBucketData(item)) {
     return { qty: item?.qty == null ? null : num(item.qty), eaches: num(item?.eaches) }
   }
   return { qty: null, eaches: derivedTotalEaches(item, zones, zonesCompleted) }
@@ -310,7 +314,7 @@ export function zonedTopLevel(item, zones, zonesCompleted) {
 export function itemValue(item, zones, zonesCompleted) {
   const pp = item?.packPrice || ((item?.qtyPerPack || 1) * (item?.unitCost || 0))
   const eachPrice = (item?.qtyPerPack || 1) > 0 ? pp / (item?.qtyPerPack || 1) : (item?.unitCost || 0)
-  if (hasZoneData(item)) {
+  if (isBucketed(item)) {
     return (derivedTotalEaches(item, zones, zonesCompleted) || 0) * eachPrice
   }
   return ((item?.qty || 0) * pp) + ((item?.eaches || 0) * eachPrice)
@@ -327,13 +331,17 @@ export async function persistCountItems(colRef, newCounts, deletions, updatedBy,
         // never saw — the exact cross-device loss zones must not introduce.
         // With merge:true Firestore merges nested maps key-by-key, so
         // zones.cooler and zones.storage written by two devices BOTH survive.
-        merge: hasZoneData(c),
+        merge: hasBucketData(c),
         data: {
           // Omit `zones` entirely when no zone is being written: with
           // merge:true an EMPTY map is itself a value and would replace the
           // stored map with {} — wiping every zone.
           ...zonesWrite(c),
           itemId: String(c.id),   // RAW id — read matches on this (encoding-independent)
+          // Split membership snapshot. On a merge write (bucketed doc) a no-longer
+          // split item must DELETE the stale list rather than leave it behind.
+          ...(c.countCategories ? { countCategories: c.countCategories }
+            : hasBucketData(c) ? { countCategories: deleteField() } : {}),
           qty: c.qty, eaches: c.eaches,
           countedAt: c.countedAt ?? null, countedBy: c.countedBy ?? null,
           packPrice: c.packPrice ?? null, qtyPerPack: c.qtyPerPack ?? null, unitCost: c.unitCost ?? null,
@@ -460,8 +468,12 @@ export function sweepTotalUpdates(items, zoneKey, zones, nextZonesCompleted) {
   const out = []
   for (const i of items || []) {
     if (!i || i.id == null || String(i.id) === '') continue
-    if (!hasZoneData(i) || !hasCount(i)) continue
-    if (zoneHasEntry(i.zones[zoneKey])) continue
+    if (!hasBucketData(i) || !hasCount(i)) continue
+    if (bucketHasEntry(i.zones[zoneKey])) continue
+    // Only items actually counted in this bucket: a zone sweep can't change a
+    // split item (its buckets are category sheets), and a sheet can't change
+    // an item that isn't on it.
+    if (!bucketsFor(i, zones).some(b => b.key === zoneKey)) continue
     out.push({ id: i.id, ...zonedTopLevel(i, zones, nextZonesCompleted) })
   }
   return out
@@ -482,7 +494,7 @@ export function sweepTotalUpdates(items, zoneKey, zones, nextZonesCompleted) {
  * updateDoc, not set: a doc that doesn't exist yet (an item typed but not yet
  * autosaved) must not be created as a stub with no zones/pricing. Those fail
  * with not-found, harmlessly — the pending autosave writes them in full, and
- * zonesCompletedRef is already updated, so it writes the post-sweep total.
+ * bucketsDoneRef is already updated, so it writes the post-sweep total.
  *
  * @returns {Promise<{written:number, failed:number}>} failed excludes not-found.
  */
@@ -525,7 +537,7 @@ export function staleDerivedTotals(items, zones, zonesCompleted, skipIds) {
   const skip = skipIds instanceof Set ? skipIds : new Set(skipIds || [])
   const out = []
   for (const i of items || []) {
-    if (!i || i.id == null || !hasZoneData(i) || !hasCount(i)) continue
+    if (!i || i.id == null || !hasBucketData(i) || !hasCount(i)) continue
     if (skip.has(String(i.id)) || !('_storedTotal' in i)) continue
     const top = zonedTopLevel(i, zones, zonesCompleted)
     const stored = i._storedTotal == null ? null : Number(i._storedTotal)
@@ -547,7 +559,7 @@ export function staleDerivedTotals(items, zones, zonesCompleted, skipIds) {
  * LEGACY items keep the original rule: a touched item is skipped (local edit
  * wins), an untouched one takes the remote qty/eaches.
  *
- * ZONED items merge PER ZONE (mergeRemoteZones): remote values win for every
+ * ZONED items merge PER ZONE (mergeRemoteBuckets): remote values win for every
  * zone except the ones this device has dirty. The old whole-item skip meant a
  * remote zone edit arriving while this device had touched ANY zone of the item
  * was dropped for good — and with category sheets, two counters on different
@@ -556,9 +568,9 @@ export function staleDerivedTotals(items, zones, zonesCompleted, skipIds) {
  */
 export function applyRemoteCountPatch(item, patch, touched, dirtyZoneKeys) {
   const remoteZoned = !!(patch && patch.zones)
-  if (hasZoneData(item) || remoteZoned) {
+  if (hasBucketData(item) || remoteZoned) {
     const dirty = dirtyZoneKeys || new Set()
-    const zones = mergeRemoteZones(item.zones, patch ? patch.zones : null, dirty)
+    const zones = mergeRemoteBuckets(item.zones, patch ? patch.zones : null, dirty)
     const { zones: _drop, ...rest } = item
     const next = {
       ...rest,
@@ -589,6 +601,17 @@ export function applyRemoteCountPatch(item, patch, touched, dirtyZoneKeys) {
     ...('qty' in patch ? { _qtyRaw: null } : {}),
     ...('eaches' in patch ? { _eachesRaw: null } : {}),
   }
+}
+
+/**
+ * Why a count upload can't set this item's total, or '' if it can. An item
+ * counted per bucket — split across category sheets, or holding zone entries —
+ * has no single place an uploaded total could honestly go.
+ */
+export function uploadRejectReason(item) {
+  if (isSplitItem(item)) return 'counted on more than one category sheet — enter it on each sheet'
+  if (hasBucketData(item)) return 'counted per zone — enter it in each zone'
+  return ''
 }
 
 export function useInventory(orgId, locationId, periodKey, user, liveSync = false) {
@@ -762,6 +785,9 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
                   ? item.category
                   : inferCategory(item.glCode, item.itemType, item.name),
               categoryExplicit: item.categoryExplicit === true,
+              // Multi-category: the category KEYS this item is counted under
+              // (home included). 0/1 → a normal item; 2+ → a split item.
+              countCategories: Array.isArray(item.countCategories) ? item.countCategories : [],
               // Shelf-to-sheet ordering (Stage 1). Location-own catalog doc IS
               // the per-location record, so read directly off item.X (no
               // override layer here).
@@ -806,6 +832,8 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
             // inferred one. The read above already honored any non-empty
             // override; this is what stops assignCategory re-inferring over it.
             categoryExplicit: override.categoryExplicit === true,
+            // Multi-category membership is per-location → the override layer.
+            countCategories: Array.isArray(override.countCategories) ? override.countCategories : [],
             // Shelf-to-sheet ordering (Stage 1) — per-location physical order.
             // catShelfOrder sorts within the category group; flatShelfOrder
             // sorts all items in the location. Same override.X ?? item.X ?? null
@@ -833,6 +861,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
             glCode: data.glCode || null,
             category: data.category || inferCategory(data.glCode, null, data.name),
             categoryExplicit: data.categoryExplicit === true,
+            countCategories: Array.isArray(data.countCategories) ? data.countCategories : [],
             qty: data.qty ?? null,
             parLevel: data.parLevel || null,
             reorderPoint: data.reorderPoint || null,
@@ -919,8 +948,14 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
             eaches: c.eaches ?? 0,
             // Per-zone detail (Phase 2). Only attached when the stored doc
             // actually carries zones — a legacy doc must stay zone-free so
-            // hasZoneData() keeps reading it as the flat record it is.
+            // hasBucketData() keeps reading it as the flat record it is.
             ...(c.zones && Object.keys(c.zones).length ? { zones: c.zones, _storedTotal: c.eaches ?? null } : {}),
+            // A PAST period is read with the membership it was counted with
+            // (stored on the doc), so a category added since can't turn last
+            // week's split item incomplete. The current period uses the live
+            // item.countCategories (adding a category mid-period → incomplete
+            // until that sheet is counted, by design).
+            ...(liveSync ? {} : { _bucketCats: Array.isArray(c.countCategories) ? c.countCategories : [] }),
             lastCountedAt: c.countedAt ?? row.lastCountedAt ?? null,
             lastCountedBy: c.countedBy ?? row.lastCountedBy ?? null,
           }
@@ -1065,7 +1100,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
     } finally {
       setLoading(false)
     }
-  }, [orgId, locationId, locId, periodKey, priorKey])
+  }, [orgId, locationId, locId, periodKey, priorKey, liveSync])   // liveSync: past periods read frozen membership
 
   useEffect(() => {
     load()
@@ -1083,7 +1118,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
   // Per-item ZONE keys this device has edited and not yet persisted:
   // Map<itemId, Set<zoneKey>>. touchedItemsRef says WHICH items to write; this
   // says which of a zoned item's zones to write (buildZonePayload) and which
-  // zones a remote snapshot must not overwrite (mergeRemoteZones). Cleared in
+  // zones a remote snapshot must not overwrite (mergeRemoteBuckets). Cleared in
   // step with touchedItemsRef, once the persisted value is confirmed unchanged.
   const touchedZonesRef = useRef(new Map())
 
@@ -1235,8 +1270,10 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
   // writes it — the write path only needs to READ it.
   const zonesRef = useRef(zones)
   useEffect(() => { zonesRef.current = zones }, [zones])
-  const zonesCompletedRef = useRef([])
-  useEffect(() => { zonesCompletedRef.current = session?.zonesCompleted || [] }, [session])
+  // Every bucket marked done this session — swept zones AND completed category
+  // sheets ('cat:' keys). The one list completeness reads (completedBuckets).
+  const bucketsDoneRef = useRef([])
+  useEffect(() => { bucketsDoneRef.current = completedBuckets(session) }, [session])
 
   const mergeDraft = useCallback((draftItems) => {
     if (!Array.isArray(draftItems) || draftItems.length === 0) return false
@@ -1315,9 +1352,16 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
     if (!countsById || !Object.keys(countsById).length) return
     const at = new Date().toISOString()
     const by = uploaderEmail || user?.email || 'unknown'
+    const applied = new Set()
     setItems(prev => prev.map(item => {
       const c = countsById[String(item.id)]
       if (!c) return item
+      // Never write an uploaded single total onto an item counted per bucket
+      // (split across category sheets, or holding zone entries): there is no
+      // honest way to say which sheet the number belongs to. The preview
+      // rejects these with a message (uploadRejectReason); this is the backstop.
+      if (uploadRejectReason(item)) return item
+      applied.add(String(item.id))
       return {
         ...item,
         qty: c.qty ?? null,
@@ -1329,7 +1373,10 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         _eachesRaw: null,
       }
     }))
-    Object.keys(countsById).forEach(id => touchedItemsRef.current.add(String(id)))
+    Object.keys(countsById).forEach(id => {
+      const it = itemsRef.current.find(i => String(i.id) === String(id))
+      if (it && !uploadRejectReason(it)) touchedItemsRef.current.add(String(id))
+    })
     setDirty(true)
   }, [user])
 
@@ -1347,6 +1394,76 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
   const setZonesLocal = useCallback((arr) => {
     if (Array.isArray(arr)) setZones(arr)
   }, [])
+
+  // Apply a membership change to ONE local item: re-shape its in-progress
+  // counts (rebucketForMembership — never drops a count) and mark what the
+  // save must write. Returns the countCategories to store.
+  const applyMembership = (item, nextKeys, homeKey) => {
+    const r = rebucketForMembership(item, nextKeys, homeKey)
+    setItems(prev => prev.map(i => {
+      if (String(i.id) !== String(item.id)) return i
+      const merged = { ...i, ...r.patch }
+      if ('zones' in r.patch && r.patch.zones === undefined) delete merged.zones
+      return merged
+    }))
+    if (r.changedCounts) {
+      const id = String(item.id)
+      touchedItemsRef.current.add(id)
+      if (r.dirtyKeys.length) {
+        const zk = touchedZonesRef.current.get(id) || new Set()
+        r.dirtyKeys.forEach(k => zk.add(k))
+        touchedZonesRef.current.set(id, zk)
+      }
+      setDirty(true)
+    }
+    return r.countCategories
+  }
+
+  /**
+   * Set which category sheets an item is counted on (edit-panel multi-select).
+   * Stores category KEYS on the per-location item doc; 0/1 → a normal item.
+   * Its in-progress counts are re-shaped by rebucketForMembership: a flat count
+   * moves into the home sheet; a removed sheet merges into home; going back to
+   * one category folds the sheets into one count.
+   */
+  const setItemCountCategories = useCallback(async (itemId, nextKeys) => {
+    if (blockedByLock()) return
+    const item = itemsRef.current.find(i => String(i.id) === String(itemId))
+    if (!item) return
+    const homeKey = assignCategory(item, categories)
+    const stored = applyMembership(item, nextKeys, homeKey)
+    await setDoc(doc(db, 'tenants', orgId, 'inventory', locId, 'items', String(itemId)),
+      { countCategories: stored }, { merge: true })
+  }, [categories, orgId, locId, blockedByLock])
+
+  /**
+   * Categories were deleted at this location: drop them from every item's
+   * membership, MERGING any count on a deleted sheet into the item's home
+   * sheet (never blocking, never dropping). `fallbackHomeKey` is the home for
+   * items whose home category was itself deleted (the manager re-tags those
+   * to General). Item docs are updated in batches.
+   */
+  const removeCategoriesFromItems = useCallback(async (removedKeys, fallbackHomeKey = 'general') => {
+    const removed = new Set(removedKeys || [])
+    if (!removed.size) return 0
+    const affected = itemsRef.current.filter(i => Array.isArray(i.countCategories) && i.countCategories.some(k => removed.has(k)))
+    const writes = []
+    for (const item of affected) {
+      let homeKey = assignCategory(item, categories)
+      if (removed.has(homeKey) || !categories.some(c => c.key === homeKey)) homeKey = fallbackHomeKey
+      const next = item.countCategories.filter(k => !removed.has(k))
+      const stored = applyMembership(item, next.includes(homeKey) ? next : [homeKey, ...next], homeKey)
+      writes.push([String(item.id), stored])
+    }
+    for (let k = 0; k < writes.length; k += 450) {
+      const batch = writeBatch(db)
+      for (const [id, stored] of writes.slice(k, k + 450)) {
+        batch.set(doc(db, 'tenants', orgId, 'inventory', locId, 'items', id), { countCategories: stored }, { merge: true })
+      }
+      await batch.commit()
+    }
+    return affected.length
+  }, [categories, orgId, locId])
 
   // Hide an item from this location. For master items this sets removed: true
   // on the override doc. For custom items it also sets removed: true (we don't
@@ -1398,7 +1515,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         // counter's attribution.
         .filter(i => touchedItemsRef.current.has(String(i.id)) && hasCount(i))
         // The shared row builder — a hand-built row here wiped zoned docs.
-        .map(i => buildCountWrite(i, zonesRef.current, zonesCompletedRef.current, touchedZonesRef.current.get(String(i.id))))
+        .map(i => buildCountWrite(i, zonesRef.current, bucketsDoneRef.current, touchedZonesRef.current.get(String(i.id))))
       if (preserveCounts.length) {
         const itemsCol = collection(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey, 'items')
         await persistCountItems(itemsCol, preserveCounts, [], user?.email, locationId)
@@ -1456,7 +1573,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
           // remote/already-saved items survive the reload from the subcollection.
           .filter(i => touchedItemsRef.current.has(String(i.id)) && hasCount(i))
           // The shared row builder — a hand-built row here wiped zoned docs.
-          .map(i => buildCountWrite(i, zonesRef.current, zonesCompletedRef.current, touchedZonesRef.current.get(String(i.id))))
+          .map(i => buildCountWrite(i, zonesRef.current, bucketsDoneRef.current, touchedZonesRef.current.get(String(i.id))))
         if (preserveCounts.length) {
           const itemsCol = collection(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey, 'items')
           await persistCountItems(itemsCol, preserveCounts, [], user?.email, locationId)
@@ -1542,95 +1659,80 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
     }
   }, [orgId, locId])
 
-  const markSectionComplete = useCallback(async (sectionKey) => {
-    if (!session) return
-    
-    const updatedSections = session.sectionsCompleted.includes(sectionKey)
-      ? session.sectionsCompleted
-      : [...session.sectionsCompleted, sectionKey]
-    
-    const updatedSession = { ...session, sectionsCompleted: updatedSections }
-    setSession(updatedSession)
-
-    try {
-      // Atomic union of ONE key (see markZoneSwept) — writing the whole local
-      // session could drop a section/zone another device completed meanwhile.
-      await setDoc(
-        doc(db, 'tenants', orgId, 'inventorySessions', `${locId}_${periodKey}`),
-        { sectionsCompleted: arrayUnion(sectionKey) },
-        { merge: true }
-      )
-    } catch (err) {
-      console.error('Failed to update session:', err)
-    }
-  }, [session, orgId, locId, periodKey])
-
   /**
-   * Mark a counting ZONE as swept (Phase 3) — "I walked this zone; anything I
-   * didn't enter isn't there." Mirrors markSectionComplete exactly, writing
-   * zonesCompleted[] alongside sectionsCompleted on the same session doc with
-   * {merge:true}.
+   * Mark a BUCKET done, or undo it — the one path behind both "zone swept"
+   * (markZoneSwept) and "category sheet complete" (markSectionComplete).
+   * Done means "I covered this bucket; anything I didn't enter isn't there":
+   * a blank in a done bucket counts as a real 0 instead of leaving the item
+   * incomplete. Undo is a legitimate correction and sends affected items back
+   * to incomplete.
    *
-   * This is the other half of the honesty rule. Until a zone is swept, an item
-   * with no entry in it is UNKNOWN and the whole item reads "—"; once swept,
-   * absence becomes a real zero. The Phase 2 write path already reads this via
-   * zonesCompletedRef — this closes the loop.
+   * Session write: an atomic arrayUnion/arrayRemove of ONE key on `field`
+   * (zonesCompleted | sectionsCompleted) — never the whole local session, which
+   * would un-mark a bucket another device marked meanwhile.
    *
-   * Toggleable: un-sweeping is a legitimate correction ("I hadn't actually
-   * finished the cooler"), and it must send affected items back to incomplete
-   * rather than leaving a zero standing on an assertion the counter withdrew.
-   *
-   * PERSISTENCE (the sweep-save gap): a sweep changes affected items' totals
-   * without touching them, so after the session write it also re-persists those
-   * stored totals (sweepTotalUpdates → persistDerivedTotals). Without that the
-   * stored total stays at its pre-sweep value and the server-side valuation
-   * prices the item from it — $0 for an item saved while the zone was unswept.
-   * Then setDirty so autosave refreshes the live closingValue for
-   * client-valued locations. Both directions go through the same path.
+   * Persistence: marking changes affected items' totals without touching
+   * them, so after the session write the stored totals are re-persisted
+   * (sweepTotalUpdates → persistDerivedTotals; top-level only). Without that the
+   * server-side valuation keeps pricing them from the stale total. Then
+   * setDirty so autosave refreshes the live closingValue.
    */
-  const markZoneSwept = useCallback(async (zoneKey, swept = true) => {
-    if (!session || !zoneKey) return
-    if (blockedByLock()) return   // period closed — a sweep now changes stored totals
-    const current = session.zonesCompleted || []
-    const next = swept
-      ? (current.includes(zoneKey) ? current : [...current, zoneKey])
-      : current.filter(k => k !== zoneKey)
+  const markBucketDone = useCallback(async ({ field, key, bucketKey, done }) => {
+    if (!session || !key) return
+    if (blockedByLock()) return   // period closed — this changes stored totals
+    const current = session[field] || []
+    const next = done
+      ? (current.includes(key) ? current : [...current, key])
+      : current.filter(k => k !== key)
     if (next.length === current.length) return   // no change — already in that state
     const prevSession = session
-    const updatedSession = { ...session, zonesCompleted: next }
+    const updatedSession = { ...session, [field]: next }
     setSession(updatedSession)
     // Synchronous, not via the [session] effect: a save fired before the next
-    // render (Save & Close straight after a sweep) must value with the NEW state.
-    zonesCompletedRef.current = next
+    // render (Save & Close straight after) must value with the NEW state.
+    const prevDone = bucketsDoneRef.current
+    const nextDone = completedBuckets(updatedSession)
+    bucketsDoneRef.current = nextDone
     try {
-      // Atomic add/remove of ONE key — never the whole local session. Writing
-      // `updatedSession` re-sent this device's copy of every session field, so
-      // a device that loaded before a colleague swept another zone would
-      // silently un-sweep it here. arrayUnion/arrayRemove touch only zoneKey.
       await setDoc(
         doc(db, 'tenants', orgId, 'inventorySessions', `${locId}_${periodKey}`),
-        { zonesCompleted: swept ? arrayUnion(zoneKey) : arrayRemove(zoneKey) },
+        { [field]: done ? arrayUnion(key) : arrayRemove(key) },
         { merge: true }
       )
     } catch (err) {
-      // Roll back rather than persist totals for a sweep the session doc
+      // Roll back rather than persist totals for a mark the session doc
       // doesn't record — on reload the two would disagree.
-      console.error('Failed to update zone sweep:', err)
+      console.error('Failed to update ' + field + ':', err)
       setSession(prevSession)
-      zonesCompletedRef.current = current
-      toast.error('Could not save the zone sweep — please try again.')
+      bucketsDoneRef.current = prevDone
+      toast.error('Could not save that — please try again.')
       return
     }
-    const updates = sweepTotalUpdates(itemsRef.current, zoneKey, zonesRef.current, next)
+    const updates = sweepTotalUpdates(itemsRef.current, bucketKey, zonesRef.current, nextDone)
     if (updates.length) {
       const itemsCol = collection(db, 'tenants', orgId, 'inventory', locId, 'counts', periodKey, 'items')
       const { failed, writtenIds } = await persistDerivedTotals(itemsCol, updates, user?.email)
-      if (failed) toast.error(`${failed} item total${failed === 1 ? '' : 's'} did not update after the sweep — save again before closing.`)
+      if (failed) toast.error(`${failed} item total${failed === 1 ? '' : 's'} did not update — save again before closing.`)
       const landed = new Map(updates.filter(u => writtenIds.includes(String(u.id))).map(u => [String(u.id), u.eaches ?? null]))
       if (landed.size) setItems(prev => prev.map(i => landed.has(String(i.id)) ? { ...i, _storedTotal: landed.get(String(i.id)) } : i))
     }
     setDirty(true)
   }, [session, orgId, locId, periodKey, blockedByLock, user, toast])
+
+  /**
+   * Category SHEET complete (or undo). The bucket is 'cat:<key>': a blank on a
+   * completed sheet counts as 0 for split items on that sheet. Unsplit items
+   * are unaffected — their count is their single flat entry. (sectionsCompleted
+   * also drives the "N/M sections" session counter, as before.)
+   */
+  const markSectionComplete = useCallback((sectionKey, done = true) =>
+    markBucketDone({ field: 'sectionsCompleted', key: sectionKey, bucketKey: catBucketKey(sectionKey), done }),
+  [markBucketDone])
+
+  /** Storage zone swept (or undo) — see markBucketDone. */
+  const markZoneSwept = useCallback((zoneKey, swept = true) =>
+    markBucketDone({ field: 'zonesCompleted', key: zoneKey, bucketKey: zoneKey, done: swept }),
+  [markBucketDone])
 
   /**
    * Per-zone count entry (Phase 4 inputs). Mirrors setQty/setEaches but writes
@@ -1681,12 +1783,12 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
   const reconcileStoredTotals = async (colRef, sourceItems, writtenRows) => {
     try {
       const written = new Set((writtenRows || []).map(c => String(c.id)))
-      const stale = staleDerivedTotals(sourceItems, zonesRef.current, zonesCompletedRef.current, written)
+      const stale = staleDerivedTotals(sourceItems, zonesRef.current, bucketsDoneRef.current, written)
       const { writtenIds } = stale.length
         ? await persistDerivedTotals(colRef, stale, user?.email)
         : { writtenIds: [] }
       const nowStored = new Map()
-      for (const c of writtenRows || []) if (hasZoneData(c)) nowStored.set(String(c.id), c.eaches ?? null)
+      for (const c of writtenRows || []) if (hasBucketData(c)) nowStored.set(String(c.id), c.eaches ?? null)
       const landed = new Set(writtenIds)
       for (const u of stale) if (landed.has(String(u.id))) nowStored.set(String(u.id), u.eaches ?? null)
       if (nowStored.size) {
@@ -1721,7 +1823,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         .filter(i => touchedItemsRef.current.has(String(i.id)) && hasCount(i))
         // ZONED rows write the derived total + only this device's edited zones —
         // see buildCountWrite. LEGACY rows are unchanged.
-        .map(i => buildCountWrite(i, zonesRef.current, zonesCompletedRef.current, touchedZonesRef.current.get(String(i.id))))
+        .map(i => buildCountWrite(i, zonesRef.current, bucketsDoneRef.current, touchedZonesRef.current.get(String(i.id))))
       // Deletions: items the user explicitly cleared (no qty, no eaches) AND
       // touched in this session. Excluding hasCount items here is critical —
       // an item with qty=null and eaches=1.08 must NOT be deleted just
@@ -1753,7 +1855,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       const closingValue = sourceItems.reduce((sum, item) => {
         // Shared with itemsWithMeta._value — see itemValue(). Zone-aware:
         // an incomplete zoned item contributes 0, as an uncounted item does.
-        return sum + itemValue(item, zonesRef.current, zonesCompletedRef.current)
+        return sum + itemValue(item, zonesRef.current, bucketsDoneRef.current)
       }, 0)
       // Refresh opening from prior week's CURRENT closingValue at write time.
       // The state var is a load-time snapshot and goes stale once the prior
@@ -1832,7 +1934,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
           name: i.name,
           // Zone-aware top-level (the derived total for a zoned item — its
           // in-memory qty/eaches is not its count); legacy unchanged.
-          ...pathBCount(i, zonesRef.current, zonesCompletedRef.current),
+          ...pathBCount(i, zonesRef.current, bucketsDoneRef.current),
           qtyPerPack: i.qtyPerPack || 1,
           packPrice: i.packPrice || null,
           unitCost: i.unitCost || 0,
@@ -1957,7 +2059,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         // closingValue + the Path B snapshot below stay FULL-set.
         .filter(i => touchedItemsRef.current.has(String(i.id)) && hasCount(i))
         // Same row builder as saveCounts — see buildCountWrite.
-        .map(i => buildCountWrite(i, zonesRef.current, zonesCompletedRef.current, touchedZonesRef.current.get(String(i.id))))
+        .map(i => buildCountWrite(i, zonesRef.current, bucketsDoneRef.current, touchedZonesRef.current.get(String(i.id))))
       // Deletions: only items with NEITHER qty NOR eaches that the user
       // touched. Same rationale as saveCounts.
       const touchedSnapshot2 = new Set(touchedItemsRef.current)
@@ -1979,7 +2081,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       const closingValue = items.reduce((sum, item) => {
         // Shared with itemsWithMeta._value — see itemValue(). Zone-aware:
         // an incomplete zoned item contributes 0, as an uncounted item does.
-        return sum + itemValue(item, zonesRef.current, zonesCompletedRef.current)
+        return sum + itemValue(item, zonesRef.current, bucketsDoneRef.current)
       }, 0)
 
       // See saveCounts — refresh opening from prior week's CURRENT closingValue
@@ -2057,7 +2159,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
           name: i.name,
           // Zone-aware top-level (the derived total for a zoned item — its
           // in-memory qty/eaches is not its count); legacy unchanged.
-          ...pathBCount(i, zonesRef.current, zonesCompletedRef.current),
+          ...pathBCount(i, zonesRef.current, bucketsDoneRef.current),
           qtyPerPack: i.qtyPerPack || 1,
           packPrice: i.packPrice || null,
           unitCost: i.unitCost || 0,
@@ -2128,12 +2230,12 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       // item's top-level qty is null by construction, so every reader below
       // used to see it as 0 / uncounted. LEGACY items read exactly as before
       // (itemCountQty / storedCountQty return item.qty for a flat record).
-      const zonesSwept = session?.zonesCompleted || []
+      const zonesSwept = completedBuckets(session)   // swept zones + completed sheets
       const countQty = itemCountQty(item, zones, zonesSwept)
       const priorQty = storedCountQty(prior) || 0
       // A zoned prior's stored total is ALL in eaches and already in priorQty
       // (as packs) — showing it again as loose eaches would double it.
-      const priorEaches = hasZoneData(prior) ? 0 : (prior?.eaches || 0)
+      const priorEaches = hasBucketData(prior) ? 0 : (prior?.eaches || 0)
       const variance = (countQty || 0) - priorQty
       const varClass = getVarianceClass(countQty, priorQty)
       const cat = assignCategory(item, categories)
@@ -2151,7 +2253,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         _daysOnHand: daysOnHand,
         _belowPar: belowPar,
         _atReorder: atReorder,
-        _value: itemValue(item, zones, session?.zonesCompleted || []),
+        _value: itemValue(item, zones, zonesSwept),
         // Pack-denominated count (par/variance/Prior units) and total on hand in
         // eaches — the fields every reader outside this hook uses instead of
         // item.qty. null = not (fully) counted.
@@ -2161,18 +2263,20 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
     })
   }, [items, priorItems, categories, zones, session])
 
+  // Per-category totals from PORTIONS (categoryTotals): a split item contributes
+  // its share to each of its sheets — never its full value to each — so the
+  // category values always sum (with `uncategorized`) to closingValue.
+  const categoryBreakdown = useMemo(
+    () => categoryTotals(itemsWithMeta, categories, zones, completedBuckets(session)),
+    [itemsWithMeta, categories, zones, session])
   const catStats = useMemo(() => {
     const stats = {}
     categories.forEach(cat => {
-      const catItems = itemsWithMeta.filter(i => i._cat === cat.key)
-      stats[cat.key] = {
-        total: catItems.length,
-        counted: catItems.filter(hasCount).length,
-        value: catItems.reduce((sum, i) => sum + i._value, 0)
-      }
+      const b = categoryBreakdown.byCat[cat.key] || { items: 0, counted: 0, value: 0 }
+      stats[cat.key] = { total: b.items, counted: b.counted, value: b.value }
     })
     return stats
-  }, [itemsWithMeta, categories])
+  }, [categoryBreakdown, categories])
 
   // DISPLAY-ONLY opening value for the KPI card, walked back to match the Prior column: when
   // the immediately-prior period was skipped (priorFromPeriod set), openingValue (the pnl-based
@@ -2234,6 +2338,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
     categories,
     zones,
     catStats,
+    categoryBreakdown,    // portions + uncategorized; sums to closingValue
     totals,
     varianceAlerts,
     itemsBelowPar,
@@ -2261,6 +2366,8 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
     setBuddyNames,
     markSectionComplete,
     markZoneSwept,        // Phase 3 — zone sweeps
+    setItemCountCategories,     // multi-category membership (edit panel)
+    removeCategoriesFromItems,  // category deleted → merge its counts into home
     setZoneValue,         // Phase 4 — per-zone count entry
     save,
     saveCounts,

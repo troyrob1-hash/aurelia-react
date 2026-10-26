@@ -24,7 +24,7 @@ import { readFileSync } from 'fs'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { zonedTopLevel, itemValue, hasCount, touchedIdsToClear, zonesWrite } from '../src/hooks/useInventory'
-import { derivedTotalEaches, rollupZones, zoneTotals } from '../src/lib/zones'
+import { derivedTotalEaches, rollupBuckets, bucketTotals } from '../src/lib/buckets'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const code = p => readFileSync(resolve(ROOT, p), 'utf8')
@@ -50,7 +50,7 @@ describe('1. the derived top-level never carries a partial', () => {
   it('complete item writes the full rollup, in eaches, with qty null', () => {
     const item = zoned({ qty: 2, eaches: 3 }, { qty: 1, eaches: 5 })
     expect(zonedTopLevel(item, ZONES, [])).toEqual({ qty: null, eaches: 44 })
-    expect(zonedTopLevel(item, ZONES, []).eaches).toBe(rollupZones(zoneTotals(item)))
+    expect(zonedTopLevel(item, ZONES, []).eaches).toBe(rollupBuckets(bucketTotals(item)))
   })
 
   it('a swept-but-empty zone completes the item and writes a real total', () => {
@@ -66,8 +66,8 @@ describe('1. the derived top-level never carries a partial', () => {
 })
 
 describe('2. zoned writes merge; legacy writes do not', () => {
-  it('persistCountItems chooses merge per item via hasZoneData', () => {
-    expect(SRC).toMatch(/merge:\s*hasZoneData\(c\)/)
+  it('persistCountItems chooses merge per item via hasBucketData', () => {
+    expect(SRC).toMatch(/merge:\s*hasBucketData\(c\)/)
   })
 
   it('the merge flag actually reaches batch.set as { merge: true }', () => {
@@ -81,7 +81,9 @@ describe('2. zoned writes merge; legacy writes do not', () => {
   it('there is no unconditional whole-record set left for zoned items', () => {
     // Guards the regression: someone "simplifying" back to a single
     // batch.set(ref, op.data) would silently destroy concurrent zone writes.
-    const sets = SRC.match(/batch\.set\([^)]*\)/g) || []
+    // Scoped to the COUNT writer (other batch.set calls write item definitions).
+    const persist = SRC.slice(SRC.indexOf('export async function persistCountItems'), SRC.indexOf('export function touchedIdsToClear'))
+    const sets = persist.match(/batch\.set\([^)]*\)/g) || []
     expect(sets).toHaveLength(2)                     // exactly the merge + legacy branch
     expect(sets.some(x => x.includes('merge: true'))).toBe(true)
   })
@@ -90,7 +92,7 @@ describe('2. zoned writes merge; legacy writes do not', () => {
     // merge:true cannot remove by omission, and {qty:null} is NOT the same
     // state: an absent key means "not counted here" (completeness then depends
     // on the sweep), a stored null would read as an entry.
-    expect(SRC).toMatch(/zoneHasEntry\(entry\)[\s\S]{0,120}deleteField\(\)/)
+    expect(SRC).toMatch(/bucketHasEntry\(entry\)[\s\S]{0,120}deleteField\(\)/)
     expect(SRC).toMatch(/import \{[^}]*deleteField[^}]*\} from 'firebase\/firestore'/)
   })
 

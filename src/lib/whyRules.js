@@ -24,7 +24,7 @@
 import { db } from './firebase'
 import { collection, query, where, getDocs, doc, getDoc } from 'firebase/firestore'
 import { getPriorKey, computeRevenue, computeOnsiteLabor, computeFoodCogs } from './pnl'
-import { storedRecordValue, storedCountQty } from './zones'
+import { storedRecordValue, storedCountQty } from './buckets'
 
 // ============================================================================
 // Entry point

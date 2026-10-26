@@ -64,7 +64,7 @@ import {
   applyRemoteCountPatch, staleDerivedTotals, persistDerivedTotals, itemValue,
 } from '../src/hooks/useInventory'
 import { remoteZones } from '../src/hooks/useCountsListener'
-import { mergeRemoteZones } from '../src/lib/zones'
+import { mergeRemoteBuckets } from '../src/lib/buckets'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const code = p => readFileSync(resolve(ROOT, p), 'utf8')
@@ -137,6 +137,28 @@ describe('HEADLINE — two devices, two sheets, one item', () => {
   })
 })
 
+describe('CATEGORY SHEETS ride the same rails — two counters, two sheets, one split item', () => {
+  // Barista counts the Coffee Bar sheet while the BOH lead counts BOH, at once.
+  const sheet = k => 'cat:' + k
+  const loaded = { ...base, countCategories: ['bar', 'boh'],
+    zones: { [sheet('bar')]: { qty: 1, eaches: 0 }, [sheet('boh')]: { qty: 1, eaches: 0 } } }
+  const barista = { ...loaded, zones: { ...loaded.zones, [sheet('bar')]: { qty: 2, eaches: 0 } } }
+  const lead = { ...loaded, zones: { ...loaded.zones, [sheet('boh')]: { qty: 3, eaches: 0 } } }
+
+  it('both sheet counts survive, and the stored total converges to both', async () => {
+    store[ID] = { itemId: 'milk', qty: null, eaches: 24, qtyPerPack: 12, packPrice: 24, zones: { ...loaded.zones } }
+    await persistCountItems({}, [buildCountWrite(barista, ZONES, [], [sheet('bar')])], [], 'barista')
+    await persistCountItems({}, [buildCountWrite(lead, ZONES, [], [sheet('boh')])], [], 'lead')
+    expect(store[ID].zones).toEqual({ [sheet('bar')]: { qty: 2, eaches: 0 }, [sheet('boh')]: { qty: 3, eaches: 0 } })
+    expect(store[ID].countCategories).toEqual(['bar', 'boh'])           // membership snapshot rides along
+    const b = applyRemoteCountPatch(barista, listenerPatch(store[ID]), false, undefined)
+    const stale = staleDerivedTotals([b], ZONES, [], new Set())
+    await persistDerivedTotals({}, stale, 'barista')
+    expect(store[ID].eaches).toBe(60)
+    expect(cfValue(store[ID])).toBe(itemValue(b, ZONES, []))
+  })
+})
+
 describe('writes cover only the zones this device edited', () => {
   const item = { ...base, zones: { cooler: { qty: 2, eaches: 0 }, storage: { qty: null, eaches: null } } }
 
@@ -151,7 +173,7 @@ describe('writes cover only the zones this device edited', () => {
   })
 
   it('every count writer uses the shared row builder (4 sites), passing the dirty keys', () => {
-    const calls = SRC.match(/\.map\(i => buildCountWrite\(i, zonesRef\.current, zonesCompletedRef\.current, touchedZonesRef\.current\.get\(String\(i\.id\)\)\)\)/g) || []
+    const calls = SRC.match(/\.map\(i => buildCountWrite\(i, zonesRef\.current, bucketsDoneRef\.current, touchedZonesRef\.current\.get\(String\(i\.id\)\)\)\)/g) || []
     expect(calls.length).toBe(4)
     // The hand-built rows that wiped zoned docs (restoreItem / addCustomItem) are gone.
     expect(SRC).not.toMatch(/qty: i\.qty \?\? null, eaches: i\.eaches \|\| 0/)
@@ -188,12 +210,12 @@ describe('applyRemoteCountPatch — the per-item remote rule', () => {
   })
 
   it('a zone this device removed (dirty, absent locally) is NOT resurrected by a remote value', () => {
-    expect(mergeRemoteZones({ a: 1 }, { a: 9, b: 7 }, ['b'])).toEqual({ a: 9 })
+    expect(mergeRemoteBuckets({ a: 1 }, { a: 9, b: 7 }, ['b'])).toEqual({ a: 9 })
   })
 
-  it('mergeRemoteZones: dirty keys local, everything else remote', () => {
-    expect(mergeRemoteZones({ a: 1, b: 2 }, { a: 9, c: 3 }, ['b'])).toEqual({ a: 9, c: 3, b: 2 })
-    expect(mergeRemoteZones({}, null, [])).toBeUndefined()
+  it('mergeRemoteBuckets: dirty keys local, everything else remote', () => {
+    expect(mergeRemoteBuckets({ a: 1, b: 2 }, { a: 9, c: 3 }, ['b'])).toEqual({ a: 9, c: 3, b: 2 })
+    expect(mergeRemoteBuckets({}, null, [])).toBeUndefined()
   })
 })
 
@@ -238,16 +260,17 @@ describe('the listener carries zones', () => {
 })
 
 describe('session: sweeps and sections survive two devices', () => {
-  const sweep = SRC.slice(SRC.indexOf('const markZoneSwept'), SRC.indexOf('const setZoneValue'))
+  // Both go through markBucketDone (one write path for zones and category sheets).
+  const sweep = SRC.slice(SRC.indexOf('const markBucketDone'), SRC.indexOf('const markSectionComplete'))
   const section = SRC.slice(SRC.indexOf('const markSectionComplete'), SRC.indexOf('const markZoneSwept'))
 
   it('sweeps write ONE key atomically, never the whole local session', () => {
-    expect(sweep).toMatch(/\{ zonesCompleted: swept \? arrayUnion\(zoneKey\) : arrayRemove\(zoneKey\) \}/)
+    expect(sweep).toMatch(/\{ \[field\]: done \? arrayUnion\(key\) : arrayRemove\(key\) \}/)
     expect(sweep).not.toMatch(/\n\s*updatedSession,\n\s*\{ merge: true \}/)
   })
 
   it('section completion is an atomic union', () => {
-    expect(section).toMatch(/\{ sectionsCompleted: arrayUnion\(sectionKey\) \}/)
+    expect(section).toMatch(/markBucketDone\(\{ field: 'sectionsCompleted', key: sectionKey, bucketKey: catBucketKey\(sectionKey\), done \}\)/)
   })
 
   it('Save & Close writes status fields only — no `...session` re-send', () => {

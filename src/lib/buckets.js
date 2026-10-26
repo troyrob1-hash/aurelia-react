@@ -1,3 +1,25 @@
+// COUNT-IN-MULTIPLE-BUCKETS model layer — pure functions only.
+//
+// One item counted separately in several BUCKETS that roll up into one total.
+// Two kinds of bucket share this one module (no parallel system):
+//
+//   • STORAGE ZONES — location-wide ("FOH cooler", "BOH storage"). Every item
+//     at a multi-zone location is expected in every zone. Done = "swept"
+//     (session.zonesCompleted).
+//   • CATEGORY SHEETS — per item. A SPLIT item (2+ countCategories) is counted
+//     once per category sheet it belongs to. Done = "sheet complete"
+//     (session.sectionsCompleted). Bucket key = 'cat:' + category key, so a
+//     category bucket can never collide with a zone key (zone keys are
+//     slugified [a-z0-9_] and cannot contain ':').
+//
+// An item's buckets are its category sheets if it is split, else the
+// location's zones (bucketsFor). Both kinds live in the count doc's `zones`
+// map — the field name predates categories and is kept so existing zoned docs
+// need no migration. Everything below (the honesty rule, the derived total,
+// the multi-device merge in useInventory) is bucket-agnostic.
+//
+// (Original Phase 1 notes, still accurate with "zone" read as "bucket":)
+//
 // Multi-zone inventory MODEL LAYER (Phase 1) — pure functions only.
 //
 // One item counted separately in several named zones ("FOH cooler", "BOH
@@ -55,10 +77,71 @@ import { resolveZones } from '@/lib/zoneHelpers'
  * top-level qty/eaches. Not a configurable zone and never written as one —
  * it exists so a pre-zones record can flow through the same rollup.
  */
-export const UNZONED_KEY = '__unzoned'
+export const UNBUCKETED_KEY = '__unzoned'
+
+// ── Category buckets ────────────────────────────────────────────────────────
+export const CAT_BUCKET_PREFIX = 'cat:'
+/** Bucket key for a category sheet. */
+export const catBucketKey = (catKey) => CAT_BUCKET_PREFIX + catKey
+export const isCatBucketKey = (k) => typeof k === 'string' && k.startsWith(CAT_BUCKET_PREFIX)
+/** Category key from a category bucket key; null for a zone key. */
+export const catKeyOfBucket = (k) => (isCatBucketKey(k) ? k.slice(CAT_BUCKET_PREFIX.length) : null)
+
+/**
+ * The item's count categories (KEYS), de-duplicated, home first when present.
+ * `_bucketCats` — the membership stored on the count doc — wins when set: a
+ * past period is read with the membership it was COUNTED with, so adding a
+ * category today can't turn last week's split item incomplete. In the current
+ * period it is unset and the live item.countCategories applies (so adding a
+ * category mid-period makes the item incomplete until that sheet is counted —
+ * intended, and named at close).
+ */
+export function countCategoryKeys(item) {
+  const src = Array.isArray(item?._bucketCats) ? item._bucketCats : item?.countCategories
+  if (!Array.isArray(src)) return []
+  const keys = [...new Set(src.filter(k => typeof k === 'string' && k !== ''))]
+  const home = item?._cat
+  return home && keys.includes(home) ? [home, ...keys.filter(k => k !== home)] : keys
+}
+
+/** A SPLIT item is counted per category sheet: 2+ count categories. 0 or 1 → exactly as before. */
+export function isSplitItem(item) {
+  return countCategoryKeys(item).length >= 2
+}
+
+/**
+ * Which category SHEETS an item appears on (screen groups, printed sheets).
+ * Split: one per count category (= its buckets). Otherwise: its home (_cat).
+ */
+export function sheetCategoryKeys(item) {
+  if (isSplitItem(item)) return countCategoryKeys(item)
+  return typeof item?._cat === 'string' && item._cat !== '' ? [item._cat] : []
+}
+
+/** The buckets an item is counted in: its category sheets if split, else the location's zones. */
+export function bucketsFor(item, zones) {
+  return isSplitItem(item)
+    ? countCategoryKeys(item).map(k => ({ key: catBucketKey(k) }))
+    : resolveZones(zones)
+}
+
+/** Counted per bucket (split, or holding bucket entries) rather than as one flat record. */
+export function isBucketed(item) {
+  return isSplitItem(item) || hasBucketData(item)
+}
+
+/**
+ * Every bucket key marked done this session: swept zones + completed category
+ * sheets (as 'cat:' keys). The one list completeness reads.
+ */
+export function completedBuckets(session) {
+  const z = Array.isArray(session?.zonesCompleted) ? session.zonesCompleted : []
+  const c = Array.isArray(session?.sectionsCompleted) ? session.sectionsCompleted : []
+  return [...z, ...c.map(catBucketKey)]
+}
 
 /** True when an item actually carries per-zone data (vs. a legacy flat record). */
-export function hasZoneData(item) {
+export function hasBucketData(item) {
   const z = item?.zones
   return !!z && typeof z === 'object' && !Array.isArray(z) && Object.keys(z).length > 0
 }
@@ -66,27 +149,30 @@ export function hasZoneData(item) {
 /** True when a single zone entry holds a real count. Reuses shrinkage's rule so
  *  "counted" means the same thing at zone grain as at item grain — notably,
  *  an entered 0 IS counted, while null/''/absent is not. */
-export function zoneHasEntry(entry) {
+export function bucketHasEntry(entry) {
   return isCounted(entry)
 }
 
 /**
  * Per-zone totals in EACHES: { [zoneKey]: eaches }.
  *
- * Pure arithmetic — carries no completeness opinion (that is isZoneComplete).
+ * Pure arithmetic — carries no completeness opinion (that is isBucketComplete).
  * Each zone = qty × qtyPerPack + eaches, with qtyPerPack taken from the ITEM:
  * pack size is a property of the product, not of the shelf it sits on.
  *
  * A legacy flat record (no zones map) yields a single { __unzoned } entry, so
- * zoned and unzoned records both compose with rollupZones.
+ * zoned and unzoned records both compose with rollupBuckets.
  *
  * Zone keys present on the item but NO LONGER in the location's configured list
  * (a deleted zone) are still included — their counts are real and must never be
  * silently dropped by a config change.
  */
-export function zoneTotals(item) {
-  if (!hasZoneData(item)) {
-    return { [UNZONED_KEY]: countEaches(item) }
+export function bucketTotals(item) {
+  if (!hasBucketData(item)) {
+    // A split item with no entries yet has nothing counted — never fall back to
+    // its in-memory top-level (load() coerces that; it is not a count).
+    if (isSplitItem(item)) return {}
+    return { [UNBUCKETED_KEY]: countEaches(item) }
   }
   const qtyPerPack = item?.qtyPerPack
   const out = {}
@@ -100,11 +186,11 @@ export function zoneTotals(item) {
 /**
  * Sum a per-zone totals map into one number.
  *
- * Takes the output of zoneTotals, so the __unzoned fallback is already folded
+ * Takes the output of bucketTotals, so the __unzoned fallback is already folded
  * in for legacy records and there is no path that adds a zoned item's
  * denormalised top-level on top of its own zones.
  */
-export function rollupZones(totals) {
+export function rollupBuckets(totals) {
   if (!totals || typeof totals !== 'object') return 0
   return Object.values(totals).reduce((sum, v) => sum + (Number(v) || 0), 0)
 }
@@ -124,18 +210,18 @@ export function rollupZones(totals) {
  * @param {string[]} zonesCompleted zone keys the counter has swept
  * @returns {boolean}
  */
-export function isZoneComplete(item, zones, zonesCompleted) {
+export function isBucketComplete(item, zones, zonesCompleted) {
   // Legacy flat record: predates zoning, so its top-level value is the whole
   // truth. Counted-ness is the only question, exactly as today.
-  if (!hasZoneData(item)) return isCounted(item)
+  if (!isBucketed(item)) return isCounted(item)
 
   const swept = new Set(Array.isArray(zonesCompleted) ? zonesCompleted : [])
-  const configured = resolveZones(zones)
+  const configured = bucketsFor(item, zones)
 
   for (const z of configured) {
     const key = z?.key
     if (!key) continue
-    if (zoneHasEntry(item.zones[key])) continue  // known value
+    if (bucketHasEntry(item.zones?.[key])) continue  // known value
     if (swept.has(key)) continue                 // swept and empty → a real 0
     return false                                 // unswept and empty → UNKNOWN
   }
@@ -154,9 +240,9 @@ export function isZoneComplete(item, zones, zonesCompleted) {
  * @returns {number|null}
  */
 export function derivedTotalEaches(item, zones, zonesCompleted) {
-  if (!isZoneComplete(item, zones, zonesCompleted)) return null
-  if (!hasZoneData(item)) return isCounted(item) ? countEaches(item) : null
-  return rollupZones(zoneTotals(item))
+  if (!isBucketComplete(item, zones, zonesCompleted)) return null
+  if (!isBucketed(item)) return isCounted(item) ? countEaches(item) : null
+  return rollupBuckets(bucketTotals(item))
 }
 
 /**
@@ -185,7 +271,7 @@ export function flatHasCount(item) {
  * Sweep progress for the session header: { swept, total }.
  * Mirrors the existing "N/M sections" counter; drives "2/3 zones swept".
  */
-export function zoneProgress(zones, zonesCompleted) {
+export function bucketProgress(zones, zonesCompleted) {
   const configured = resolveZones(zones)
   const swept = new Set(Array.isArray(zonesCompleted) ? zonesCompleted : [])
   return {
@@ -209,7 +295,7 @@ export function zoneProgress(zones, zonesCompleted) {
  *   incomplete → render "—" (never a number), with `pending` naming why.
  */
 export function countDisplay(item, zones, zonesCompleted) {
-  if (!hasZoneData(item)) {
+  if (!isBucketed(item)) {
     // Legacy flat record: unchanged — counted shows its value, uncounted "—".
     //
     // Uses flatHasCount, NOT isCounted. isCounted treats an entered 0 as a real
@@ -220,6 +306,7 @@ export function countDisplay(item, zones, zonesCompleted) {
     const counted = flatHasCount(item)
     return {
       zoned: false,
+      split: false,
       incomplete: !counted,
       total: counted ? countEaches(item) : null,
       pending: [],
@@ -227,10 +314,11 @@ export function countDisplay(item, zones, zonesCompleted) {
   }
   const total = derivedTotalEaches(item, zones, zonesCompleted)
   return {
-    zoned: true,
+    zoned: true,          // counted per bucket (zones or category sheets)
+    split: isSplitItem(item),
     incomplete: total === null,
     total,
-    pending: pendingZones(item, zones, zonesCompleted),
+    pending: pendingBuckets(item, zones, zonesCompleted),
   }
 }
 
@@ -239,11 +327,23 @@ export function countDisplay(item, zones, zonesCompleted) {
  * (not key), so the counter reads "Not counted yet in: BOH storage" rather
  * than a slug. Returns '' when nothing is pending.
  */
-export function pendingZonesLabel(pending, zones) {
+export function pendingBucketsLabel(pending, zones, categories) {
   if (!Array.isArray(pending) || pending.length === 0) return ''
+  const label = bucketLabeler(zones, categories)
+  return `Not counted yet in: ${pending.map(label).join(', ')}`
+}
+
+/**
+ * key → human label for both bucket kinds: a zone by its label, a category
+ * bucket as "<Category> sheet". Unknown keys fall back to the key (a deleted
+ * zone) or the bare category key (a deleted category).
+ */
+export function bucketLabeler(zones, categories) {
   const byKey = new Map(resolveZones(zones).map(z => [z.key, z.label || z.key]))
-  const names = pending.map(k => byKey.get(k) || k)
-  return `Not counted yet in: ${names.join(', ')}`
+  for (const c of Array.isArray(categories) ? categories : []) {
+    if (c?.key) byKey.set(catBucketKey(c.key), `${c.label || c.key} sheet`)
+  }
+  return k => byKey.get(k) || catKeyOfBucket(k) || k
 }
 
 /**
@@ -251,11 +351,11 @@ export function pendingZonesLabel(pending, zones) {
  * needs in order to say WHY it is incomplete rather than just showing a dash.
  * Empty array means complete.
  */
-export function pendingZones(item, zones, zonesCompleted) {
-  if (!hasZoneData(item)) return isCounted(item) ? [] : resolveZones(zones).map(z => z.key)
+export function pendingBuckets(item, zones, zonesCompleted) {
+  if (!isBucketed(item)) return isCounted(item) ? [] : resolveZones(zones).map(z => z.key)
   const swept = new Set(Array.isArray(zonesCompleted) ? zonesCompleted : [])
-  return resolveZones(zones)
-    .filter(z => z?.key && !zoneHasEntry(item.zones[z.key]) && !swept.has(z.key))
+  return bucketsFor(item, zones)
+    .filter(z => z?.key && !bucketHasEntry(item.zones?.[z.key]) && !swept.has(z.key))
     .map(z => z.key)
 }
 
@@ -278,13 +378,22 @@ export function pendingZones(item, zones, zonesCompleted) {
 export function closeOutIssues(items, zones, zonesCompleted) {
   const notCounted = []
   const partial = []
+  const sheets = []   // unfinished category sheets (category keys), first-seen order
   for (const item of items || []) {
     if (!item) continue
     const d = countDisplay(item, zones, zonesCompleted)
     if (!d.incomplete) continue
     const name = item.name || String(item.id ?? '')
-    if (d.zoned) partial.push({ name, pending: d.pending })
+    // Partly counted = a bucketed item with at least one real entry; a split
+    // item with nothing entered yet is simply not counted.
+    const anyEntry = hasBucketData(item) && Object.values(item.zones).some(bucketHasEntry)
+    if (d.zoned && anyEntry) partial.push({ name, pending: d.pending })
     else notCounted.push(name)
+    // A category sheet is unfinished while any split item on it is pending there.
+    for (const k of d.pending) {
+      const cat = catKeyOfBucket(k)
+      if (cat && !sheets.includes(cat)) sheets.push(cat)
+    }
   }
   const configured = resolveZones(zones)
   const swept = new Set(Array.isArray(zonesCompleted) ? zonesCompleted : [])
@@ -295,7 +404,8 @@ export function closeOutIssues(items, zones, zonesCompleted) {
     notCounted,
     partial,
     unsweptZones,
-    any: notCounted.length > 0 || partial.length > 0 || unsweptZones.length > 0,
+    unfinishedSheets: sheets,
+    any: notCounted.length > 0 || partial.length > 0 || unsweptZones.length > 0 || sheets.length > 0,
   }
 }
 
@@ -304,10 +414,10 @@ export function closeOutIssues(items, zones, zonesCompleted) {
  * Lists are capped at `max` names with "and N more" so a big catalog can't
  * produce an unreadable dialog. Returns '' when there is nothing to warn about.
  */
-export function closeOutWarningText(issues, zones, max = 8) {
+export function closeOutWarningText(issues, zones, max = 8, categories = []) {
   if (!issues?.any) return ''
-  const byKey = new Map(resolveZones(zones).map(z => [z.key, z.label || z.key]))
-  const label = k => byKey.get(k) || k
+  const label = bucketLabeler(zones, categories)
+  const catLabel = k => (Array.isArray(categories) && categories.find(c => c?.key === k)?.label) || k
   const list = names => names.length > max
     ? `${names.slice(0, max).join(', ')} and ${names.length - max} more`
     : names.join(', ')
@@ -315,6 +425,9 @@ export function closeOutWarningText(issues, zones, max = 8) {
   const lines = []
   if (issues.unsweptZones.length) {
     lines.push(`• ${plural(issues.unsweptZones.length, 'zone', 'zones')} not swept: ${list(issues.unsweptZones.map(label))}`)
+  }
+  if (issues.unfinishedSheets?.length) {
+    lines.push(`• ${plural(issues.unfinishedSheets.length, 'category sheet', 'category sheets')} not finished: ${list(issues.unfinishedSheets.map(catLabel))}`)
   }
   if (issues.partial.length) {
     const named = issues.partial.map(p => `${p.name} (not counted in ${p.pending.map(label).join(', ')})`)
@@ -343,7 +456,7 @@ export function closeOutWarningText(issues, zones, max = 8) {
  */
 export function itemTotalEaches(item, zones, zonesCompleted) {
   if (!item) return null
-  if (hasZoneData(item)) return derivedTotalEaches(item, zones, zonesCompleted)
+  if (isBucketed(item)) return derivedTotalEaches(item, zones, zonesCompleted)
   return flatHasCount(item) ? countEaches(item) : null
 }
 
@@ -354,7 +467,7 @@ export function itemTotalEaches(item, zones, zonesCompleted) {
  */
 export function itemCountQty(item, zones, zonesCompleted) {
   if (!item) return null
-  if (!hasZoneData(item)) return item.qty ?? null
+  if (!isBucketed(item)) return item.qty ?? null
   const total = derivedTotalEaches(item, zones, zonesCompleted)
   return total == null ? null : toPacks(total, item)
 }
@@ -368,7 +481,7 @@ export function itemCountQty(item, zones, zonesCompleted) {
  */
 export function storedCountQty(rec) {
   if (!rec) return null
-  if (!hasZoneData(rec)) return rec.qty ?? null
+  if (!hasBucketData(rec)) return rec.qty ?? null
   return rec.eaches == null ? null : toPacks(Number(rec.eaches), rec)
 }
 
@@ -399,7 +512,7 @@ function packSizeOf(item) {
  * (the pre-zones rule) meant a remote zone edit arriving then was never
  * applied, and this device's total stayed wrong until reload.
  */
-export function mergeRemoteZones(localZones, remoteZones, dirtyKeys) {
+export function mergeRemoteBuckets(localZones, remoteZones, dirtyKeys) {
   const dirty = dirtyKeys instanceof Set ? dirtyKeys : new Set(dirtyKeys || [])
   const out = {}
   for (const [k, v] of Object.entries(remoteZones || {})) {
@@ -425,4 +538,184 @@ export function storedRecordValue(rec) {
   const pp = Number(rec.packPrice) || qpp * unit
   const eachPrice = pp / qpp
   return (Number(rec.qty) || 0) * pp + (Number(rec.eaches) || 0) * eachPrice
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CATEGORY PORTIONS — category totals that always sum to the closing value
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The share of a SPLIT item's value that belongs to one category sheet:
+ * value × (that sheet's eaches ÷ the item's total eaches). Because one
+ * each-price applies to every bucket, that is exactly sheetEaches × eachPrice,
+ * and an item's portions sum to its value by construction.
+ *
+ * An INCOMPLETE item has value 0 (it contributes nothing to closing), so all
+ * its portions are 0 — that is what keeps category totals reconciling to
+ * closing while a sheet is still out. A complete item totalling 0 eaches has
+ * nothing to share.
+ *
+ * Works on itemsWithMeta (needs _value and _totalEaches, both zone/sheet-aware).
+ */
+export function portionValue(item, catKey) {
+  const value = Number(item?._value) || 0
+  const total = Number(item?._totalEaches)
+  if (!value || !Number.isFinite(total) || total <= 0) return 0
+  const sheet = bucketTotals(item)[catBucketKey(catKey)] || 0
+  return value * (sheet / total)
+}
+
+/**
+ * Where ONE item's value goes, category by category — the single allocation
+ * rule behind both the on-screen category totals (categoryTotals) and the
+ * export's "By Category" sheet, so the two can never disagree.
+ *
+ * The item's value is allocated ONCE, never multiplied:
+ *   - SPLIT item → its portion on each of its sheets (portionValue); a sheet
+ *     for a category no longer in `knownKeys`, and value held in stray
+ *     buckets (a zone entry, a deleted category), goes to null =
+ *     "not in any category".
+ *   - otherwise → its whole value to its home category (_cat), or null when
+ *     the home isn't in the list.
+ * Σ allocation values === item._value, always (up to float rounding).
+ *
+ * @returns {{ catKey: string|null, value: number }[]}
+ */
+export function allocateItemValue(item, knownKeys) {
+  const known = knownKeys instanceof Set ? knownKeys : new Set(knownKeys || [])
+  const value = Number(item?._value) || 0
+  if (!isSplitItem(item)) {
+    return [{ catKey: known.has(item?._cat) ? item._cat : null, value }]
+  }
+  const out = []
+  let placed = 0
+  for (const k of countCategoryKeys(item)) {
+    if (!known.has(k)) continue
+    const share = portionValue(item, k)
+    out.push({ catKey: k, value: share })
+    placed += share
+  }
+  const rest = value - placed
+  if (Math.abs(rest) > 1e-9) out.push({ catKey: null, value: rest })
+  return out
+}
+
+/**
+ * Category totals for the screen headers and catStats, built from
+ * allocateItemValue so that
+ *
+ *     Σ byCat[k].value + uncategorized.value  ===  Σ item._value  (closingValue)
+ *
+ * A SPLIT item contributes its portion to each of its sheets — never its full
+ * value to each (the double-count risk). Per category also: `items` (rows on
+ * that sheet) and `counted` (rows whose count on THAT sheet is known — an
+ * entry, or the sheet is complete).
+ *
+ * @returns {{ byCat: Record<string,{value,items,counted}>, uncategorized: {value,items}, total }}
+ */
+export function categoryTotals(items, categories, zones, done) {
+  const keys = (Array.isArray(categories) ? categories : []).map(c => c?.key).filter(Boolean)
+  const known = new Set(keys)
+  const doneSet = new Set(Array.isArray(done) ? done : [])
+  const byCat = Object.fromEntries(keys.map(k => [k, { value: 0, items: 0, counted: 0 }]))
+  const uncategorized = { value: 0, items: 0 }
+  let total = 0
+  for (const item of items || []) {
+    if (!item) continue
+    total += Number(item._value) || 0
+    for (const a of allocateItemValue(item, known)) {
+      if (a.catKey == null) { uncategorized.value += a.value; uncategorized.items += 1; continue }
+      byCat[a.catKey].value += a.value
+    }
+    // Row counts per sheet the item appears on (membership, not value).
+    if (isSplitItem(item)) {
+      for (const k of countCategoryKeys(item)) {
+        if (!known.has(k)) continue
+        byCat[k].items += 1
+        const b = catBucketKey(k)
+        if (bucketHasEntry(item.zones?.[b]) || doneSet.has(b)) byCat[k].counted += 1
+      }
+    } else if (known.has(item._cat)) {
+      byCat[item._cat].items += 1
+      if (!countDisplay(item, zones, done).incomplete) byCat[item._cat].counted += 1
+    }
+  }
+  return { byCat, uncategorized, total }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MEMBERSHIP CHANGES — re-shape an item's counts, never drop one
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Sum two bucket entries field-wise; null stays null only when both are. */
+function sumEntries(a, b) {
+  const add = f => (a?.[f] == null && b?.[f] == null) ? null : (Number(a?.[f]) || 0) + (Number(b?.[f]) || 0)
+  return { qty: add('qty'), eaches: add('eaches') }
+}
+
+/**
+ * Re-shape an item's in-progress counts when its category membership changes
+ * (edit-panel multi-select, or a category deleted). Pure.
+ *
+ *   flat → split   An existing flat count moves into the HOME sheet's bucket.
+ *                  The other sheets start blank, so the item reads incomplete
+ *                  until they are counted (intended; named at close).
+ *   split → split  A removed sheet's count MERGES into the home sheet (the
+ *                  category-delete rule); the removed bucket is cleared.
+ *   split → flat   Every bucket entry folds into one flat count (qty and
+ *                  eaches summed separately, which preserves total eaches).
+ *
+ * @param item      the local item (raw, with its current zones/countCategories)
+ * @param nextKeys  the new count categories (keys); ≤1 means "not split"
+ * @param homeKey   the item's home category key — the merge target
+ * @returns {{ countCategories: string[], patch: object, dirtyKeys: string[], changedCounts: boolean }}
+ *   countCategories — what to store on the item doc ([] when not split; home
+ *   always included when split). patch — fields to set on the local item
+ *   (`zones: undefined` means remove the map). dirtyKeys — bucket keys the
+ *   save must write. changedCounts — the item's counts moved (mark it touched).
+ */
+export function rebucketForMembership(item, nextKeys, homeKey) {
+  const valid = k => typeof k === 'string' && k !== ''
+  const next = [...new Set((nextKeys || []).filter(valid))]
+  const willSplit = next.length >= 2
+  const stored = willSplit ? (next.includes(homeKey) ? next : [homeKey, ...next]).filter(valid) : []
+  const wasSplit = isSplitItem({ countCategories: item?.countCategories })
+  const zones = { ...(item?.zones || {}) }
+  const home = catBucketKey(homeKey)
+
+  if (!wasSplit && willSplit) {
+    if (!flatHasCount(item)) return { countCategories: stored, patch: { countCategories: stored }, dirtyKeys: [], changedCounts: false }
+    zones[home] = sumEntries(zones[home], { qty: item.qty ?? null, eaches: Number(item.eaches) || 0 })
+    return {
+      countCategories: stored,
+      patch: { countCategories: stored, zones, qty: null, eaches: 0, _qtyRaw: null, _eachesRaw: null },
+      dirtyKeys: [home],
+      changedCounts: true,
+    }
+  }
+
+  if (wasSplit && willSplit) {
+    const keep = new Set(stored.map(catBucketKey))
+    const dirty = []
+    for (const k of Object.keys(zones)) {
+      if (!isCatBucketKey(k) || keep.has(k)) continue
+      if (bucketHasEntry(zones[k])) { zones[home] = sumEntries(zones[home], zones[k]); if (!dirty.includes(home)) dirty.push(home) }
+      zones[k] = { qty: null, eaches: null }   // cleared → written as deleteField
+      dirty.push(k)
+    }
+    return { countCategories: stored, patch: { countCategories: stored, zones }, dirtyKeys: dirty, changedCounts: dirty.length > 0 }
+  }
+
+  if (wasSplit && !willSplit) {
+    let flat = { qty: null, eaches: null }
+    for (const v of Object.values(zones)) if (bucketHasEntry(v)) flat = sumEntries(flat, v)
+    return {
+      countCategories: [],
+      patch: { countCategories: [], zones: undefined, qty: flat.qty, eaches: flat.eaches ?? 0, _qtyRaw: null, _eachesRaw: null },
+      dirtyKeys: [],
+      changedCounts: Object.keys(zones).length > 0,
+    }
+  }
+
+  return { countCategories: stored, patch: { countCategories: stored }, dirtyKeys: [], changedCounts: false }
 }
