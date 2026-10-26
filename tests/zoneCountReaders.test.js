@@ -13,7 +13,7 @@ import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import {
   itemTotalEaches, itemCountQty, storedCountQty, storedRecordValue,
-} from '../src/lib/zones'
+} from '../src/lib/buckets'
 import { qtyOf, calcParStatus, getTopVarianceIssues } from '../src/lib/variance'
 import { itemValue, pathBCount } from '../src/hooks/useInventory'
 import { inventoryExportRow } from '../src/lib/inventoryExport'
@@ -99,7 +99,7 @@ describe('itemsWithMeta enrichment routes through the helpers', () => {
     expect(block).not.toMatch(/prior\?\.qty/)
   })
   it('a zoned prior never double-shows its total as loose eaches', () => {
-    expect(block).toMatch(/const priorEaches = hasZoneData\(prior\) \? 0 : \(prior\?\.eaches \|\| 0\)/)
+    expect(block).toMatch(/const priorEaches = hasBucketData\(prior\) \? 0 : \(prior\?\.eaches \|\| 0\)/)
   })
   it('exposes _countQty and _totalEaches', () => {
     expect(SRC).toMatch(/_countQty: countQty,/)
@@ -115,7 +115,7 @@ describe('Path B snapshot rows', () => {
   })
   it('both Path B writes use it', () => {
     const SRC = code('src/hooks/useInventory.js')
-    expect((SRC.match(/\.\.\.pathBCount\(i, zonesRef\.current, zonesCompletedRef\.current\),/g) || []).length).toBe(2)
+    expect((SRC.match(/\.\.\.pathBCount\(i, zonesRef\.current, bucketsDoneRef\.current\),/g) || []).length).toBe(2)
   })
 })
 
@@ -147,8 +147,11 @@ describe('Excel export — closing value matches the app', () => {
   it('one row per item, built by the shared function; "Items Counted" uses the count-cell rule', () => {
     const INV = code('src/routes/Inventory.jsx')
     expect(INV).toMatch(/const toRow = inventoryExportRow/)
-    expect(INV).toMatch(/const rows = displayGroups\.flatMap\(g => g\.items\.map\(toRow\)\)/)
-    expect(INV).toMatch(/filter\(i => !countDisplay\(i, zones, zonesCompleted\)\.incomplete\)\.length/)
+    // Deduped: a split item appears in several groups but gets ONE row.
+    expect(INV).toMatch(/const exportItems = uniqueItems\(displayGroups\)/)
+    expect(INV).toMatch(/const rows = exportItems\.map\(i => toRow\(i, exportLedger\.item\(i\.id\)\)\)/)
+    expect(INV).not.toMatch(/displayGroups\.flatMap\(g => g\.items\.map\(toRow\)\)/)
+    expect(INV).toMatch(/exportItems\s*\.filter\(i => !countDisplay\(i, zones, bucketsDone\)\.incomplete\)\.length/)
   })
 })
 

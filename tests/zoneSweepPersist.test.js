@@ -34,7 +34,7 @@ import { updateDoc } from 'firebase/firestore'
 import {
   sweepTotalUpdates, persistDerivedTotals, zonedTopLevel, itemValue, countDocId,
 } from '../src/hooks/useInventory'
-import { closeOutIssues, closeOutWarningText } from '../src/lib/zones'
+import { closeOutIssues, closeOutWarningText } from '../src/lib/buckets'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const code = p => readFileSync(resolve(ROOT, p), 'utf8')
@@ -171,24 +171,24 @@ describe('persistDerivedTotals — top-level only, tolerant of unsaved items', (
   })
 })
 
-describe('markZoneSwept wiring', () => {
+describe('markZoneSwept / markSectionComplete wiring (shared markBucketDone)', () => {
   const SRC = code('src/hooks/useInventory.js')
-  const fn = SRC.slice(SRC.indexOf('const markZoneSwept'), SRC.indexOf('const setZoneValue'))
+  const fn = SRC.slice(SRC.indexOf('const markBucketDone'), SRC.indexOf('const markSectionComplete'))
 
   it('re-persists totals computed with the POST-toggle swept list', () => {
-    expect(fn).toMatch(/sweepTotalUpdates\(itemsRef\.current, zoneKey, zonesRef\.current, next\)/)
+    expect(fn).toMatch(/sweepTotalUpdates\(itemsRef\.current, bucketKey, zonesRef\.current, nextDone\)/)
     expect(fn).toMatch(/persistDerivedTotals\(/)
   })
 
-  it('updates zonesCompletedRef synchronously, before any await', () => {
-    const sync = fn.indexOf('zonesCompletedRef.current = next')
+  it('updates the done list synchronously, before any await', () => {
+    const sync = fn.indexOf('bucketsDoneRef.current = nextDone')
     expect(sync).toBeGreaterThan(-1)
     expect(sync).toBeLessThan(fn.indexOf('await'))
   })
 
   it('persists totals only AFTER the session write succeeds, and rolls back on failure', () => {
     expect(fn.indexOf('persistDerivedTotals(')).toBeGreaterThan(fn.indexOf('inventorySessions'))
-    expect(fn).toMatch(/catch[\s\S]*setSession\(prevSession\)[\s\S]*zonesCompletedRef\.current = current[\s\S]*return/)
+    expect(fn).toMatch(/catch[\s\S]*setSession\(prevSession\)[\s\S]*bucketsDoneRef\.current = prevDone[\s\S]*return/)
   })
 
   it('marks dirty so autosave refreshes the client closing, and respects the period lock', () => {
@@ -251,7 +251,7 @@ describe('Save & Close guard wiring + dead code removed', () => {
   const fn = INV.slice(INV.indexOf('const handleSaveAndClose'), INV.indexOf('const handleApplyUpload'))
 
   it('builds the warning before saving or locking, and puts it in the confirm', () => {
-    const warn = fn.indexOf('closeOutWarningText(closeOutIssues(items, zones, zonesCompleted), zones)')
+    const warn = fn.indexOf('closeOutWarningText(closeOutIssues(items, zones, bucketsDone), zones, 8, categories)')
     expect(warn).toBeGreaterThan(-1)
     expect(warn).toBeLessThan(fn.indexOf('window.confirm('))
     expect(fn.indexOf('window.confirm(')).toBeLessThan(fn.indexOf('await save()'))

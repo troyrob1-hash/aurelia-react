@@ -7,11 +7,12 @@ import { useLocations, cleanLocName } from '@/store/LocationContext'
 import { usePeriod, isShortWeek } from '@/store/PeriodContext'
 import { readPeriodClose, getPriorKey, writePeriodClose, lockPeriod } from '@/lib/pnl'
 import { db } from '@/lib/firebase'
-import { useInventory, fmt$, sanitizeDocId, hasCount } from '@/hooks/useInventory'
+import { useInventory, fmt$, sanitizeDocId, hasCount, uploadRejectReason } from '@/hooks/useInventory'
 import { useAutosave } from '@/hooks/useAutosave'
 import SaveStatusBar from '@/components/SaveStatusBar'
 import { getTopVarianceIssues, calcParStatus, qtyOf } from '@/lib/variance'
-import { inventoryExportRow } from '@/lib/inventoryExport'
+import { inventoryExportRow, uniqueItems, byCategoryRows } from '@/lib/inventoryExport'
+import { displayCents } from '@/lib/buckets'
 import { Search, Download, RefreshCw, Eye, EyeOff, TrendingUp, TrendingDown, Minus, AlertTriangle , Upload } from 'lucide-react'
 import { useToast } from '@/components/ui/Toast'
 import AllLocationsGrid from '@/components/AllLocationsGrid'
@@ -20,13 +21,14 @@ import ArrangeList from '@/components/inventory/ArrangeList'
 import CategoryManagerModal from '@/components/inventory/CategoryManagerModal'
 import ZoneManagerModal from '@/components/inventory/ZoneManagerModal'
 import CountSheetPrintModal from '@/components/inventory/CountSheetPrintModal'
+import SplitCountCell from '@/components/inventory/SplitCountCell'
 import { byShelf } from '@/lib/countSheets'
 import { canEditInventoryCategories } from '@/lib/permissions'
 // Zone display layer (Phase 4). countDisplay is the ONLY correct source for
 // what a count cell shows — a zoned item's in-memory top-level is NOT its
 // derived total (load() coerces a stored null to 0), so rendering item.eaches
 // would print a confident 0 for an item whose on-hand is actually unknown.
-import { countDisplay, pendingZonesLabel, zoneProgress, closeOutIssues, closeOutWarningText } from '@/lib/zones'
+import { countDisplay, pendingBucketsLabel, bucketProgress, closeOutIssues, closeOutWarningText, completedBuckets, isSplitItem, sheetCategoryKeys, catBucketKey, countCategoryKeys, bucketHasEntry, sheetUsage } from '@/lib/buckets'
 import { hasMultipleZones } from '@/lib/zoneHelpers'
 import { resolveCountColumns, buildCatalogIndex, matchCountRow } from '@/lib/countUpload'
 import styles from './Inventory.module.css'
@@ -502,6 +504,8 @@ export default function Inventory() {
     categories,
     zones,
     catStats,
+    categoryBreakdown,
+    centLedger,
     totals,
     varianceAlerts,
     itemsBelowPar,
@@ -529,6 +533,8 @@ export default function Inventory() {
     setBuddyNames,
     markSectionComplete,
     markZoneSwept,
+    setItemCountCategories,
+    removeCategoriesFromItems,
     setZoneValue,
     save,
     saveCounts,
@@ -558,8 +564,12 @@ export default function Inventory() {
   // so the all-locations path (location === null) gets the single default zone
   // and every zone surface stays gated off.
   const zonesOn = hasMultipleZones(zones)
-  const zonesCompleted = session?.zonesCompleted || []
-  const zoneStats = zoneProgress(zones, zonesCompleted)
+  const zonesCompleted = session?.zonesCompleted || []   // zone-chip UI only
+  const zoneStats = bucketProgress(zones, zonesCompleted)
+  // Every bucket marked done — swept zones + completed category sheets. This
+  // (not zonesCompleted) is what completeness, values and the close guard read.
+  const bucketsDone = completedBuckets(session)
+  const sectionsDone = session?.sectionsCompleted || []
 
   // Edit-panel save state — autosave-on-blur stays the data path, this tracks
   // in-flight writes so the panel's Done button can reflect "Saving…" /
@@ -848,7 +858,7 @@ export default function Inventory() {
     const lockText =
       `This locks all counts for ${periodKey} at ${cleanLocName(location)} and prevents further changes. ` +
       `Only a director can reopen it later.`
-    const warning = closeOutWarningText(closeOutIssues(items, zones, zonesCompleted), zones)
+    const warning = closeOutWarningText(closeOutIssues(items, zones, bucketsDone), zones, 8, categories)
     const ok = window.confirm(
       warning
         ? `${warning}\n\nClose anyway? ${lockText}`
@@ -870,7 +880,7 @@ export default function Inventory() {
       console.error('Close period error:', err)
       toast.error('Failed to close period: ' + (err.message || ''))
     }
-  }, [save, toast, orgId, location, periodKey, user, periodLocked, markPeriodLocked, items, zones, zonesCompleted])
+  }, [save, toast, orgId, location, periodKey, user, periodLocked, markPeriodLocked, items, zones, bucketsDone, categories])
 
   // Apply the previewed count upload: bulk-apply to local items (touched-scoped)
   // then reuse save() — the audited persistCountItems + closingValue/P&L/Path B
@@ -962,7 +972,7 @@ export default function Inventory() {
         return (qty || 0) * pp + (eaches || 0) * ep
       }
 
-      const toCount = [], unmatched = [], noCount = [], duplicates = []
+      const toCount = [], unmatched = [], noCount = [], duplicates = [], rejected = []
       const countsById = {}
       const seen = new Set()
       for (const row of rows) {
@@ -976,6 +986,10 @@ export default function Inventory() {
         const ea = eaches == null ? 0 : eaches
         const wouldCount = (qty != null) || (ea > 0)   // same rule as hasCount
         if (!wouldCount) { noCount.push({ name: rawName, itemName: item.name }); continue }
+        // A split item (counted on several sheets) has no single place an
+        // uploaded total can go — reject rather than guess which sheet.
+        const why = uploadRejectReason(item)
+        if (why) { rejected.push({ name: rawName, itemName: item.name, why }); continue }
         const id = String(item.id)
         if (seen.has(id)) duplicates.push({ name: rawName, itemName: item.name })
         seen.add(id)
@@ -997,7 +1011,7 @@ export default function Inventory() {
         sheetName,
         toCount,
         overwrites: toCount.filter(e => e.isOverwrite),
-        unmatched, noCount, duplicates,
+        unmatched, noCount, duplicates, rejected,
         countsById,
       })
     } catch (e) {
@@ -1021,7 +1035,15 @@ export default function Inventory() {
     // renders -- so the export order and grouping ALWAYS match the screen.
     // Flat view: one group, items A-Z. Grouped view: category order.
     // Search filter is already applied (displayGroups derives from displayItems).
-    const rows = displayGroups.flatMap(g => g.items.map(toRow))
+    // ONE row per item. displayGroups lists a split item once per sheet it is
+    // on; exporting straight from it would repeat the item and count its value
+    // once per sheet in Total Closing Value. uniqueItems dedupes by id.
+    const exportItems = uniqueItems(displayGroups)
+    // One cent ledger for the export (same rule as the screen): each detail
+    // row's Closing Value is the item's slice, so rows, Total Closing Value and
+    // the By Category sheet all add up to the cent.
+    const exportLedger = displayCents(exportItems, categories)
+    const rows = exportItems.map(i => toRow(i, exportLedger.item(i.id)))
     if (rows.length === 0) { toast.error('Nothing to export in the current view'); return }
 
     // Summary
@@ -1029,8 +1051,8 @@ export default function Inventory() {
     const totalItems = rows.length
     // Counted = what the count cells show as counted (countDisplay), so a real
     // counted zero counts and a partly-counted zoned item doesn't.
-    const itemsCounted = displayGroups.flatMap(g => g.items)
-      .filter(i => !countDisplay(i, zones, zonesCompleted).incomplete).length
+    const itemsCounted = exportItems
+      .filter(i => !countDisplay(i, zones, bucketsDone).incomplete).length
     const needsReorder = rows.filter(r => r['Reorder'] === 'Yes').length
 
     if (format === 'csv') {
@@ -1098,21 +1120,13 @@ export default function Inventory() {
         ]
         XLSX.utils.book_append_sheet(wb, detailSheet, 'Inventory Count')
 
-        // Category summary sheet
-        const categories = {}
-        rows.forEach(r => {
-          const cat = r['Category'] || 'Uncategorized'
-          if (!categories[cat]) categories[cat] = { items: 0, closingValue: 0 }
-          categories[cat].items++
-          categories[cat].closingValue += parseFloat(r['Closing Value'])
-        })
-        const catRows = Object.entries(categories).map(([cat, data]) => ({
-          'Category': cat,
-          'Items': data.items,
-          'Closing Value': data.closingValue.toFixed(2),
-        }))
+        // By Category: one row per item-CATEGORY with that category's share of
+        // the item's value (byCategoryRows → allocateItemValue, the same rule
+        // as the on-screen totals). Cent-exact: its TOTAL equals Total Closing
+        // Value above — a split item counts once, divided across its sheets.
+        const { rows: catRows } = byCategoryRows(exportItems, categories)
         const catSheet = XLSX.utils.json_to_sheet(catRows)
-        catSheet['!cols'] = [{ wch: 20 }, { wch: 10 }, { wch: 14 }]
+        catSheet['!cols'] = [{ wch: 26 }, { wch: 30 }, { wch: 12 }, { wch: 14 }]
         XLSX.utils.book_append_sheet(wb, catSheet, 'By Category')
 
         XLSX.writeFile(wb, fileName + '.xlsx')
@@ -1138,7 +1152,8 @@ export default function Inventory() {
     // filter which ITEMS show (an item can live in any zone) — it scopes
     // which zone you're entering into, so the whole list stays visible.
     if (countMode === 'zone' && activeZone === 'all') return false
-    const matchCat = activeCat === 'all' || i._cat === activeCat
+    // Membership, not just home: a split item belongs to each of its sheets.
+    const matchCat = activeCat === 'all' || sheetCategoryKeys(i).includes(activeCat)
     const matchSearch = !q || i.name?.toLowerCase().includes(q) || i.vendor?.toLowerCase().includes(q)
     return matchCat && matchSearch
   }), [items, activeCat, q, countMode, activeZone])
@@ -1166,7 +1181,7 @@ export default function Inventory() {
     return cats.map(cat => ({
       ...cat,
       items: displayItems
-        .filter(i => i._cat === cat.key)
+        .filter(i => sheetCategoryKeys(i).includes(cat.key))   // split items appear on each sheet
         .sort(byShelf('catShelfOrder')),
     })).filter(g => g.items.length > 0)
   }, [displayItems, activeCat, categories, viewMode])
@@ -1181,9 +1196,10 @@ export default function Inventory() {
   // Summary for the flat view (replaces per-category subtotals).
   const flatSummary = useMemo(() => {
     const counted = flatItems.filter(hasCount).length
-    const value = flatItems.reduce((s, i) => s + (i._value || 0), 0)
+    // Σ of the shown rows' ledger cents — matches the rows exactly.
+    const value = flatItems.reduce((s, i) => s + centLedger.item(i.id), 0) / 100
     return { counted, total: flatItems.length, value }
-  }, [flatItems])
+  }, [flatItems, centLedger])
 
   // ─── Top Variance Alerts ───────────────────────────────────────────────────
   const topVariance = useMemo(() => getTopVarianceIssues(items, 3), [items])
@@ -1515,12 +1531,13 @@ export default function Inventory() {
             <div className={styles.kpiLabel}>Live COGS</div>
             <div className={styles.kpiValue} style={{ color: '#6ee7b7' }}>{fmt$(totals.liveCOGS)}</div>
             <div className={styles.cogsFormula}>
-              {fmt$(totals.openingValue)} + {fmt$(totals.purchases)} − {fmt$(totals.closingValue)}
+              {fmt$(totals.openingValue)} + {fmt$(totals.purchases)} − {fmt$(centLedger.closingCents / 100)}
             </div>
           </div>
           <div className={styles.kpi}>
             <div className={styles.kpiLabel}>Closing Value</div>
-            <div className={styles.kpiValue}>{fmt$(totals.closingValue)}</div>
+            {/* The ledger's closing (displayCents) — the exact sum of every row and sheet total shown. */}
+            <div className={styles.kpiValue}>{fmt$(centLedger.closingCents / 100)}</div>
             <div className={styles.kpiSub}>Current count</div>
           </div>
           <div className={styles.kpi}>
@@ -1837,10 +1854,33 @@ export default function Inventory() {
                 {cat.label}
                 <span className={styles.catCount} style={{ background: cat.color }}>{cat.items.length}</span>
                 <span className={styles.catCounted}>
-                  {cat.items.filter(hasCount).length} counted
+                  {(catStats[cat.key]?.counted ?? 0)} counted
                 </span>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                {/* Sheet complete — reuses the sweep: a blank on a done sheet counts
+                    as 0 for the split items on it. Only shown when the sheet has
+                    split items; unsplit items aren't affected by it. */}
+                {selectedLocation && selectedLocation !== 'all' && cat.items.some(isSplitItem) && (() => {
+                  const isDone = sectionsDone.includes(cat.key)
+                  return (
+                    <button
+                      onClick={e => {
+                        e.stopPropagation()
+                        if (!isDone && !window.confirm(
+                          `Mark the ${cat.label} sheet done?\n\nThis asserts the whole sheet was counted: for items counted on more than one sheet, a blank here counts as ZERO instead of leaving the item incomplete. You can undo this.`
+                        )) return
+                        markSectionComplete(cat.key, !isDone)
+                      }}
+                      disabled={locked || !session}
+                      title={isDone ? 'Undo — blanks on this sheet go back to unknown' : 'Mark this sheet done'}
+                      style={{ border: '1px solid ' + cat.color + '40', background: isDone ? cat.color + '18' : '#fff', color: cat.color,
+                               borderRadius: 6, padding: '2px 8px', fontSize: 11, fontWeight: 600, cursor: (locked || !session) ? 'not-allowed' : 'pointer' }}
+                    >
+                      {isDone ? '✓ Sheet done — undo' : 'Mark sheet done'}
+                    </button>
+                  )
+                })()}
                 {selectedLocation && selectedLocation !== 'all' && (
                   <button
                     onClick={e => { e.stopPropagation(); setPrintSheet(cat.key) }}
@@ -1851,8 +1891,9 @@ export default function Inventory() {
                     🖨
                   </button>
                 )}
-                <div className={styles.catTotal} style={{ color: cat.color }}>
-                  {fmt$(cat.items.reduce((s, i) => s + (i._value || 0), 0))}
+                <div className={styles.catTotal} style={{ color: cat.color }}
+                  title="This sheet's share — a split item counts only its portion here, so category totals add up to closing">
+                  {fmt$(catStats[cat.key]?.value || 0)}
                 </div>
                 <span style={{ color: cat.color, fontSize: 11 }}>
                   {collapsed[cat.key] ? '▶' : '▼'}
@@ -1974,6 +2015,22 @@ export default function Inventory() {
                           </div>
                         </td>}
                         <td className={styles.tdCount} >
+                          {isSplitItem(item) ? (
+                            // SPLIT item: one count per category sheet. On a sheet,
+                            // just that sheet's input; in the flat view, every sheet.
+                            // Writes go into the item's 'cat:<key>' bucket through
+                            // setZoneValue — never the top-level (the derived total).
+                            <SplitCountCell
+                              item={item}
+                              sheetKeys={cat.isFlat ? countCategoryKeys(item) : [cat.key]}
+                              allKeys={countCategoryKeys(item)}
+                              categories={categories}
+                              done={bucketsDone}
+                              locked={locked}
+                              onChange={setZoneValue}
+                              inputClass={styles.countInput}
+                            />
+                          ) : (<>
                           {/* When the period is locked, the actual inputs are
                               disabled — not just the buttons — so a user can't
                               type into a closed period (the lock isn't theater). */}
@@ -2015,7 +2072,7 @@ export default function Inventory() {
                               total for a zoned item. */}
                           {zonesOn && (() => {
                             const open = expandedZoneRows.has(item.id)
-                            const disp = countDisplay(item, zones, zonesCompleted)
+                            const disp = countDisplay(item, zones, bucketsDone)
                             return (
                               <div style={{ marginTop: 4 }}>
                                 <button
@@ -2030,7 +2087,7 @@ export default function Inventory() {
                                     fontSize: 10, fontWeight: 600,
                                     color: disp.incomplete ? '#d97706' : '#64748b',
                                   }}
-                                  title={disp.incomplete ? pendingZonesLabel(disp.pending, zones) : 'Per-zone breakdown'}
+                                  title={disp.incomplete ? pendingBucketsLabel(disp.pending, zones, categories) : 'Per-zone breakdown'}
                                 >
                                   {open ? '▾' : '▸'} zones{disp.incomplete ? ' · incomplete' : ''}
                                 </button>
@@ -2066,6 +2123,7 @@ export default function Inventory() {
                               </div>
                             )
                           })()}
+                          </>)}
                         </td>
 
                                                 {!isMobile && <td className={styles.tdCenter}>
@@ -2081,13 +2139,21 @@ export default function Inventory() {
                           // with a tooltip naming the outstanding zone(s) — never a
                           // number, and never item.eaches (which load() coerces from
                           // a stored null to 0, so it would show a confident $0).
-                          const disp = countDisplay(item, zones, zonesCompleted)
-                          const dash = disp.incomplete || !((item._value || 0) > 0)
+                          const disp = countDisplay(item, zones, bucketsDone)
+                          // On a category sheet a split item shows only ITS share of the
+                          // item's value; flat view shows the full value. Both are slices
+                          // of the cent ledger (displayCents), not independently rounded
+                          // floats, so the column sums EXACTLY to the sheet total and the
+                          // sheets to the Closing Value KPI.
+                          const onSheet = !cat.isFlat && isSplitItem(item)
+                          const shown = (onSheet ? centLedger.share(item.id, cat.key) : centLedger.item(item.id)) / 100
+                          const dash = disp.incomplete || !(shown > 0)
                           return (
                             <td className={styles.tdRight}
-                                title={disp.incomplete ? pendingZonesLabel(disp.pending, zones) : undefined}
-                                style={{ fontWeight: 700, color: disp.incomplete ? '#d97706' : ((item._value || 0) > 0 ? '#059669' : '#bbb') }}>
-                              {dash ? '—' : fmt$(item._value)}
+                                title={disp.incomplete ? pendingBucketsLabel(disp.pending, zones, categories)
+                                  : onSheet ? `This sheet's share of ${fmt$(centLedger.item(item.id) / 100)}` : undefined}
+                                style={{ fontWeight: 700, color: disp.incomplete ? '#d97706' : (shown > 0 ? '#059669' : '#bbb') }}>
+                              {dash ? '—' : fmt$(shown)}
                             </td>
                           )
                         })()}
@@ -2099,11 +2165,11 @@ export default function Inventory() {
                   <tr style={{ background: '#f8fafc', borderTop: '0.5px solid #e2e8f0' }}>
                     <td colSpan={isMobile ? 1 : 6} style={{ padding: '8px 12px' }}></td>
                     <td style={{ padding: '8px 12px', textAlign: 'right', fontSize: 12, color: '#64748b' }}>
-                      {cat.items.filter(hasCount).length}/{cat.items.length}
+                      {cat.isFlat ? cat.items.filter(hasCount).length : (catStats[cat.key]?.counted ?? 0)}/{cat.items.length}
                     </td>
                     <td style={{ padding: '8px 12px' }}></td>
                     {!isMobile && <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 600, fontSize: 12 }}>
-                      {fmt$(cat.items.reduce((s, i) => s + (i._value || 0), 0))}
+                      {fmt$(cat.isFlat ? flatSummary.value : (catStats[cat.key]?.value || 0))}
                     </td>}
                   </tr>
                 </tfoot>
@@ -2153,9 +2219,9 @@ export default function Inventory() {
           let headline
           if (cur == null) {
             // A zoned item with some zones counted isn't "uncounted" — say what's missing.
-            const zd = countDisplay(item, zones, zonesCompleted)
+            const zd = countDisplay(item, zones, bucketsDone)
             headline = zd.zoned && zd.pending.length && Object.keys(item.zones || {}).length
-              ? `${item.name} isn't fully counted yet. ${pendingZonesLabel(zd.pending, zones)}.`
+              ? `${item.name} isn't fully counted yet. ${pendingBucketsLabel(zd.pending, zones, categories)}.`
               : `${item.name} hasn't been counted yet for this period.`
           } else if (prior === 0) {
             headline = `${item.name} is at ${cur} this period (no prior count to compare against).`
@@ -2341,6 +2407,11 @@ export default function Inventory() {
                                 // 'General', which is otherwise read as "uncategorized"
                                 // and sent back through keyword inference.
                                 await saveEditField(item.id, 'category', catLabel, { categoryExplicit: true })
+                                // A split item keeps its sheets; the new home joins them
+                                // (untick the old one to merge its count into home).
+                                if (isSplitItem(item) && !countCategoryKeys(item).includes(catKey)) {
+                                  await setItemCountCategories(item.id, [catKey, ...countCategoryKeys(item)])
+                                }
                                 // Still no load() — it would wipe unsaved counts.
                                 // saveEditField patches local state instead.
                                 toast.success('Category updated')
@@ -2413,6 +2484,53 @@ export default function Inventory() {
                         )}
                       </div>
                     ))}
+
+                    {/* Counted on sheets — multi-category membership. The home
+                        category is always on (it's the item's own sheet). Ticking a
+                        second sheet makes this a SPLIT item: counted separately on
+                        each sheet, the sheets adding up to its total. Unticking
+                        merges that sheet's count into the home sheet. */}
+                    {(() => {
+                      const home = item._cat || 'general'
+                      const current = Array.isArray(item.countCategories) && item.countCategories.length >= 2
+                        ? item.countCategories : [home]
+                      const selected = new Set([home, ...current])
+                      const toggle = async (k) => {
+                        if (k === home) return
+                        const next = selected.has(k) ? [...selected].filter(x => x !== k) : [...selected, k]
+                        try {
+                          await setItemCountCategories(item.id, next)
+                          toast.success(next.length >= 2
+                            ? `Counted on ${next.length} sheets`
+                            : 'Counted on its home sheet only')
+                        } catch (err) {
+                          toast.error('Failed to update sheets: ' + (err.message || ''))
+                        }
+                      }
+                      return (
+                        <div style={{ marginBottom: 8 }}>
+                          <label style={{ fontSize: 13, color: '#475569', display: 'block', marginBottom: 4 }}>Counted on sheets</label>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                            {categories.map(c => {
+                              const on = selected.has(c.key)
+                              return (
+                                <label key={c.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12,
+                                  padding: '3px 8px', borderRadius: 999, border: '1px solid ' + (on ? c.color + '80' : '#e2e8f0'),
+                                  background: on ? c.bg : '#fff', color: on ? c.color : '#64748b',
+                                  cursor: (c.key === home || locked) ? 'default' : 'pointer' }}>
+                                  <input type="checkbox" checked={on} disabled={c.key === home || locked}
+                                    onChange={() => toggle(c.key)} aria-label={`Counted on the ${c.label} sheet`} />
+                                  {c.label}{c.key === home ? ' (home)' : ''}
+                                </label>
+                              )
+                            })}
+                          </div>
+                          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+                            Tick more than one to count this item separately on each sheet. Adding a sheet mid-count leaves the item incomplete until that sheet is counted.
+                          </div>
+                        </div>
+                      )
+                    })()}
                   </div>
 
                   {/* Remove from count sheet */}
@@ -2531,6 +2649,21 @@ export default function Inventory() {
                     </div>
                   )}
 
+                  {/* Rejected: items counted per sheet/zone */}
+                  {(p.rejected || []).length > 0 && (
+                    <div style={sec}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: '#b91c1c' }}>
+                        ⚠️ {p.rejected.length} item{p.rejected.length === 1 ? '' : 's'} can’t be uploaded
+                      </div>
+                      <div style={{ fontSize: 12, color: '#64748b', margin: '4px 0 6px' }}>
+                        These are counted on more than one sheet (or per zone), so there’s no single place a total from the file can go. Enter them on each sheet instead — the rest of the file still uploads.
+                      </div>
+                      <div style={{ fontSize: 13, color: '#334155', maxHeight: 140, overflowY: 'auto', border: '1px solid #f1f5f9', borderRadius: 6, padding: '6px 8px' }}>
+                        {p.rejected.map((r, i) => <div key={i} style={{ padding: '2px 0' }}>{r.itemName} — {r.why}</div>)}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Unmatched */}
                   {M > 0 && (
                     <div style={sec}>
@@ -2575,7 +2708,18 @@ export default function Inventory() {
             orgId={orgId}
             locationId={selectedLocation}
             categories={categories}
-            onSaved={(next) => setCategoriesLocal(next)}
+            sheetUsage={(catKey) => sheetUsage(items, catKey)}
+            onSaved={(next) => {
+              // A deleted category that still holds counts on split items: merge
+              // those counts into each item's home sheet — never block, never drop.
+              const removed = categories.map(c => c.key).filter(k => !next.some(n => n.key === k))
+              setCategoriesLocal(next)
+              if (removed.length) {
+                removeCategoriesFromItems(removed, 'general')
+                  .then(n => { if (n) toast.info(`${n} item${n === 1 ? '' : 's'} counted on a deleted sheet — counts merged into ${n === 1 ? 'its' : 'their'} home sheet`) })
+                  .catch(err => toast.error('Could not update items for the deleted category: ' + (err.message || '')))
+              }
+            }}
             onClose={() => setShowCatManager(false)}
           />
         )}

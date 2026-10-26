@@ -27,6 +27,8 @@
 // multi-category plan), they appear on each of those sheets with no change
 // here, and the home category is always included.
 
+import { sheetCategoryKeys } from '@/lib/buckets'
+
 export const UNCATEGORIZED_SHEET_KEY = '__uncategorized__'
 export const UNCATEGORIZED_SHEET_LABEL = 'Not in any category'
 
@@ -51,14 +53,10 @@ export const byShelf = (field) => (a, b) => {
   return byName(a, b)
 }
 
-/**
- * Which category sheets an item belongs on (category KEYS, de-duplicated,
- * home category first). Today: just item._cat. Later: plus item.countCategories.
- */
-export function sheetCategoryKeys(item) {
-  const keys = [item?._cat, ...(Array.isArray(item?.countCategories) ? item.countCategories : [])]
-  return [...new Set(keys.filter(k => typeof k === 'string' && k !== ''))]
-}
+// Membership — which sheets an item appears on — is the bucket module's rule
+// (sheetCategoryKeys): a split item's category sheets, otherwise its home.
+// Re-exported so existing imports keep working; one rule, not two.
+export { sheetCategoryKeys }
 
 /**
  * The pack/unit description a counter needs to know WHAT to count, e.g.

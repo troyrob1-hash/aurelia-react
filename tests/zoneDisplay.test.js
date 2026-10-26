@@ -18,10 +18,10 @@ import { isCounted } from '../src/lib/shrinkage'
 import {
   countDisplay,
   flatHasCount,
-  pendingZonesLabel,
-  zoneProgress,
+  pendingBucketsLabel,
+  bucketProgress,
   derivedTotalEaches,
-} from '../src/lib/zones'
+} from '../src/lib/buckets'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const code = p => readFileSync(resolve(ROOT, p), 'utf8')
@@ -112,57 +112,58 @@ describe('countDisplay — legacy records unchanged', () => {
   })
 })
 
-describe('pendingZonesLabel — labels, not slugs', () => {
+describe('pendingBucketsLabel — labels, not slugs', () => {
   it('names zones by label', () => {
-    expect(pendingZonesLabel(['storage'], ZONES)).toBe('Not counted yet in: BOH storage')
+    expect(pendingBucketsLabel(['storage'], ZONES)).toBe('Not counted yet in: BOH storage')
   })
   it('joins several', () => {
-    expect(pendingZonesLabel(['cooler', 'storage'], ZONES)).toBe('Not counted yet in: FOH cooler, BOH storage')
+    expect(pendingBucketsLabel(['cooler', 'storage'], ZONES)).toBe('Not counted yet in: FOH cooler, BOH storage')
   })
   it('falls back to the key if a zone was deleted from config', () => {
-    expect(pendingZonesLabel(['ghost'], ZONES)).toBe('Not counted yet in: ghost')
+    expect(pendingBucketsLabel(['ghost'], ZONES)).toBe('Not counted yet in: ghost')
   })
   it('empty when nothing pending', () => {
-    expect(pendingZonesLabel([], ZONES)).toBe('')
-    expect(pendingZonesLabel(null, ZONES)).toBe('')
+    expect(pendingBucketsLabel([], ZONES)).toBe('')
+    expect(pendingBucketsLabel(null, ZONES)).toBe('')
   })
 })
 
-describe('zoneProgress — the session header counter', () => {
+describe('bucketProgress — the session header counter', () => {
   it('counts swept vs configured', () => {
-    expect(zoneProgress(ZONES, [])).toEqual({ swept: 0, total: 2 })
-    expect(zoneProgress(ZONES, ['cooler'])).toEqual({ swept: 1, total: 2 })
-    expect(zoneProgress(ZONES, ['cooler', 'storage'])).toEqual({ swept: 2, total: 2 })
+    expect(bucketProgress(ZONES, [])).toEqual({ swept: 0, total: 2 })
+    expect(bucketProgress(ZONES, ['cooler'])).toEqual({ swept: 1, total: 2 })
+    expect(bucketProgress(ZONES, ['cooler', 'storage'])).toEqual({ swept: 2, total: 2 })
   })
 
   it('ignores swept keys that are no longer configured', () => {
-    expect(zoneProgress(ZONES, ['cooler', 'ghost'])).toEqual({ swept: 1, total: 2 })
+    expect(bucketProgress(ZONES, ['cooler', 'ghost'])).toEqual({ swept: 1, total: 2 })
   })
 
   it('an unconfigured location reports the single implicit zone', () => {
-    expect(zoneProgress(null, [])).toEqual({ swept: 0, total: 1 })
+    expect(bucketProgress(null, [])).toEqual({ swept: 0, total: 1 })
   })
 
   it('tolerates a junk swept list', () => {
-    expect(zoneProgress(ZONES, null)).toEqual({ swept: 0, total: 2 })
-    expect(zoneProgress(ZONES, 'nope')).toEqual({ swept: 0, total: 2 })
+    expect(bucketProgress(ZONES, null)).toEqual({ swept: 0, total: 2 })
+    expect(bucketProgress(ZONES, 'nope')).toEqual({ swept: 0, total: 2 })
   })
 })
 
 describe('Phase 3 — markZoneSwept wiring', () => {
   const SRC = code('src/hooks/useInventory.js')
 
-  it('writes zonesCompleted to the session doc with merge', () => {
-    expect(SRC).toMatch(/zonesCompleted: next/)
+  it('writes zonesCompleted to the session doc with merge (via the shared markBucketDone)', () => {
     expect(SRC).toMatch(/markZoneSwept = useCallback/)
-    const fn = SRC.slice(SRC.indexOf('const markZoneSwept'), SRC.indexOf('const setZoneValue'))
+    expect(SRC).toMatch(/markBucketDone\(\{ field: 'zonesCompleted', key: zoneKey, bucketKey: zoneKey, done: swept \}\)/)
+    const fn = SRC.slice(SRC.indexOf('const markBucketDone'), SRC.indexOf('const markSectionComplete'))
+    expect(fn).toMatch(/\[field\]: next/)
     expect(fn).toMatch(/inventorySessions/)
     expect(fn).toMatch(/\{ merge: true \}/)
   })
 
   it('supports UN-sweeping, so a withdrawn assertion returns items to incomplete', () => {
-    const fn = SRC.slice(SRC.indexOf('const markZoneSwept'), SRC.indexOf('const setZoneValue'))
-    expect(fn).toMatch(/current\.filter\(k => k !== zoneKey\)/)
+    const fn = SRC.slice(SRC.indexOf('const markBucketDone'), SRC.indexOf('const markSectionComplete'))
+    expect(fn).toMatch(/current\.filter\(k => k !== key\)/)
   })
 
   it('is exported from the hook', () => {
