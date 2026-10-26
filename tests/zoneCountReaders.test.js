@@ -131,6 +131,19 @@ describe('Excel export — closing value matches the app', () => {
     expect(inventoryExportRow({ ...legacy, _countQty: 3 })['Closing']).toBe(3)
     expect(inventoryExportRow({ ...legacy })['Closing']).toBe(3)             // un-enriched fallback
   })
+  it('columns: Opening / Purchased / Usage / Usage Value are gone (never populated)', () => {
+    expect(Object.keys(inventoryExportRow({ ...legacy, _value: 17 }))).toEqual(
+      ['Item', 'Category', 'GL Code', 'SKU', 'Unit', 'Closing', 'Unit Cost', 'Closing Value', 'Par Level', 'Reorder'])
+    const INV = code('src/routes/Inventory.jsx')
+    expect(INV).not.toMatch(/Usage Value|totalUsageValue/)
+  })
+
+  it('the CSV totals row is placed by header name, under Closing Value', () => {
+    const INV = code('src/routes/Inventory.jsx')
+    expect(INV).toMatch(/headers\.map\(\(h, k\) => h === 'Closing Value' \? totalClosingValue\.toFixed\(2\)/)
+    expect(INV).not.toMatch(/\['','','','','','','Total:'/)
+  })
+
   it('one row per item, built by the shared function; "Items Counted" uses the count-cell rule', () => {
     const INV = code('src/routes/Inventory.jsx')
     expect(INV).toMatch(/const toRow = inventoryExportRow/)

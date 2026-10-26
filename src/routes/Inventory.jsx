@@ -1026,7 +1026,6 @@ export default function Inventory() {
 
     // Summary
     const totalClosingValue = rows.reduce((s, r) => s + parseFloat(r['Closing Value']), 0)
-    const totalUsageValue = rows.reduce((s, r) => s + parseFloat(r['Usage Value']), 0)
     const totalItems = rows.length
     // Counted = what the count cells show as counted (countDisplay), so a real
     // counted zero counts and a partly-counted zoned item doesn't.
@@ -1046,7 +1045,6 @@ export default function Inventory() {
         ['Total Items,' + totalItems],
         ['Items Counted,' + itemsCounted],
         ['Total Closing Value,$' + totalClosingValue.toFixed(2)],
-        ['Total Usage Value,$' + totalUsageValue.toFixed(2)],
         ['Items Needing Reorder,' + needsReorder],
         [''],
         headers,
@@ -1055,7 +1053,10 @@ export default function Inventory() {
           return v.includes(',') ? '"' + v + '"' : v
         })),
         [''],
-        ['','','','','','','Total:','','',(totalClosingValue).toFixed(2),(totalUsageValue).toFixed(2)],
+        // Totals row placed by header NAME — the old fixed positions had drifted
+        // a column (the closing total sat under Unit Cost).
+        headers.map((h, k) => h === 'Closing Value' ? totalClosingValue.toFixed(2)
+          : headers[k + 1] === 'Closing Value' ? 'Total:' : ''),
       ]
       const csv = csvRows.map(r => Array.isArray(r) ? r.join(',') : r).join('\n')
       const blob = new Blob([csv], { type: 'text/csv' })
@@ -1082,7 +1083,6 @@ export default function Inventory() {
           ['Total Items', totalItems],
           ['Items Counted', itemsCounted],
           ['Total Closing Value', totalClosingValue],
-          ['Total Usage Value', totalUsageValue],
           ['Items Needing Reorder', needsReorder],
         ]
         const summarySheet = XLSX.utils.aoa_to_sheet(summaryData)
@@ -1091,10 +1091,10 @@ export default function Inventory() {
         // Detail sheet
         const detailSheet = XLSX.utils.json_to_sheet(rows)
         // Set column widths
+        // Item, Category, GL Code, SKU, Unit, Closing, Unit Cost, Closing Value, Par Level, Reorder
         detailSheet['!cols'] = [
-          { wch: 30 }, { wch: 15 }, { wch: 12 }, { wch: 8 },
-          { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 },
-          { wch: 10 }, { wch: 14 }, { wch: 14 }, { wch: 10 }, { wch: 8 },
+          { wch: 30 }, { wch: 15 }, { wch: 12 }, { wch: 8 }, { wch: 8 },
+          { wch: 10 }, { wch: 10 }, { wch: 14 }, { wch: 10 }, { wch: 8 },
         ]
         XLSX.utils.book_append_sheet(wb, detailSheet, 'Inventory Count')
 
@@ -1102,19 +1102,17 @@ export default function Inventory() {
         const categories = {}
         rows.forEach(r => {
           const cat = r['Category'] || 'Uncategorized'
-          if (!categories[cat]) categories[cat] = { items: 0, closingValue: 0, usageValue: 0 }
+          if (!categories[cat]) categories[cat] = { items: 0, closingValue: 0 }
           categories[cat].items++
           categories[cat].closingValue += parseFloat(r['Closing Value'])
-          categories[cat].usageValue += parseFloat(r['Usage Value'])
         })
         const catRows = Object.entries(categories).map(([cat, data]) => ({
           'Category': cat,
           'Items': data.items,
           'Closing Value': data.closingValue.toFixed(2),
-          'Usage Value': data.usageValue.toFixed(2),
         }))
         const catSheet = XLSX.utils.json_to_sheet(catRows)
-        catSheet['!cols'] = [{ wch: 20 }, { wch: 10 }, { wch: 14 }, { wch: 14 }]
+        catSheet['!cols'] = [{ wch: 20 }, { wch: 10 }, { wch: 14 }]
         XLSX.utils.book_append_sheet(wb, catSheet, 'By Category')
 
         XLSX.writeFile(wb, fileName + '.xlsx')

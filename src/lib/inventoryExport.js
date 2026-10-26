@@ -11,21 +11,17 @@
 // Closing is the zone-aware pack count (qtyOf → _countQty); a legacy item
 // reads item.qty exactly as before. One row per item.
 //
-// KNOWN, NOT FIXED HERE: Opening (item.openingQty) and Purchased
-// (item.purchased) are never populated anywhere in the app, so Usage is always
-// −Closing and Usage Value is meaningless. Left as-is pending a decision on
-// whether to source or drop those columns.
+// No Opening / Purchased / Usage / Usage Value columns: Opening and Purchased
+// read item.openingQty / item.purchased, which nothing in the app ever sets, so
+// they were always 0 — and Usage (opening + purchased − closing) was therefore
+// always −Closing, Usage Value meaningless. Dropped rather than shipped empty.
 
 import { qtyOf } from '@/lib/variance'
 
 export function inventoryExportRow(item) {
-  const opening = item.openingQty || 0
   const closing = qtyOf(item) || 0
-  const purchased = item.purchased || 0
-  const usage = opening + purchased - closing
   const unitCost = item.unitCost || 0
   const totalValue = item._value || 0
-  const usageValue = usage * unitCost
   const parLevel = item.parLevel || item.minStock || ''
   const needsReorder = parLevel && closing <= parLevel ? 'Yes' : ''
   return {
@@ -34,13 +30,9 @@ export function inventoryExportRow(item) {
     'GL Code': item.glCode || '',
     'SKU': item.sku || '',
     'Unit': item.unit || 'ea',
-    'Opening': opening,
-    'Purchased': purchased,
     'Closing': closing,
-    'Usage': usage,
     'Unit Cost': unitCost.toFixed(2),
     'Closing Value': totalValue.toFixed(2),
-    'Usage Value': usageValue.toFixed(2),
     'Par Level': parLevel,
     'Reorder': needsReorder,
   }
