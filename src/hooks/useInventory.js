@@ -774,6 +774,12 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
               reorderPoint: item.reorderPoint,
               avgDailyUsage: item.avgDailyUsage,
               lastCountedAt: item.lastCountedAt || null,
+              // Pre-existing bug, fixed in passing (in scope: the catalog-
+              // upload work that touches this same branch): isKey was never
+              // read here, so "Quick · Key items" could never work for a
+              // location using its own uploaded catalog — toggleKey wrote the
+              // field but load() silently dropped it on the next read.
+              isKey: item.isKey || false,
               isCatalogItem: true,
               // categoryExplicit (set by the edit panel) means a human picked
               // this — honor it verbatim, including 'General'/'Other'. Only an

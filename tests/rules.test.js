@@ -191,6 +191,39 @@ describe('staff role — same tier as manager (inventory writes)', () => {
 })
 
 // ============================================================
+// CATALOG BACKUPS (Item list upload — pre-upload snapshot)
+// ============================================================
+// Found during the catalog-merge-upload browser walkthrough: the upload's
+// backup write (tenants/{orgId}/inventory/{locId}/catalogBackups/{id}/items/
+// {itemId} — new in that change) had no rule at all and fell through to the
+// bottom-of-file default-deny, so EVERY Item-list upload failed with
+// "Missing or insufficient permissions" before writing anything. Same tier
+// as items/{itemId} above (only someone who can already run that upload
+// should read or write its backups).
+describe('catalog backups (Item list upload pre-upload snapshot)', () => {
+  const fooda = (role) => authedContext('u', { 'custom:tenantId': 'fooda', 'custom:role': role })
+
+  test('staff/manager CAN write a catalog backup doc', async () => {
+    await assertSucceeds(
+      fooda('staff').doc('tenants/fooda/inventory/CR_Best_Buy/catalogBackups/2026-01-02T03-04-05-000Z/items/1').set({ name: 'Coke' })
+    )
+  })
+
+  test('staff/manager CAN read a catalog backup doc', async () => {
+    await seed('tenants/fooda/inventory/CR_Best_Buy/catalogBackups/2026-01-02T03-04-05-000Z/items/1', { name: 'Coke' })
+    await assertSucceeds(
+      fooda('staff').doc('tenants/fooda/inventory/CR_Best_Buy/catalogBackups/2026-01-02T03-04-05-000Z/items/1').get()
+    )
+  })
+
+  test('viewer CANNOT write a catalog backup doc', async () => {
+    await assertFails(
+      fooda('viewer').doc('tenants/fooda/inventory/CR_Best_Buy/catalogBackups/2026-01-02T03-04-05-000Z/items/1').set({ name: 'Coke' })
+    )
+  })
+})
+
+// ============================================================
 // ORGS COLLECTION (Settings UI)
 // ============================================================
 describe('orgs/{orgId} access', () => {
