@@ -12,6 +12,7 @@ import { useAutosave } from '@/hooks/useAutosave'
 import SaveStatusBar from '@/components/SaveStatusBar'
 import { getTopVarianceIssues, calcParStatus, qtyOf } from '@/lib/variance'
 import { inventoryExportRow, uniqueItems, byCategoryRows } from '@/lib/inventoryExport'
+import { buildCatalogImport } from '@/lib/catalogImport'
 import { displayCents } from '@/lib/buckets'
 import { Search, Download, RefreshCw, Eye, EyeOff, TrendingUp, TrendingDown, Minus, AlertTriangle , Upload } from 'lucide-react'
 import { useToast } from '@/components/ui/Toast'
@@ -224,69 +225,30 @@ export default function Inventory() {
         if (!proceed) { toast.info('Upload cancelled — no changes made.'); return }
       }
 
-      function findCol(row, aliases) {
-        for (const alias of aliases) {
-          const match = headers.find(h => h.toLowerCase().trim() === alias.toLowerCase().trim())
-          if (match && row[match] !== undefined && row[match] !== '') return row[match]
-        }
-        // Partial match fallback
-        for (const alias of aliases) {
-          const match = headers.find(h => h.toLowerCase().trim().includes(alias.toLowerCase().trim()))
-          if (match && row[match] !== undefined && row[match] !== '') return row[match]
-        }
-        return null
+      // Rows → item records, in FILE ORDER, with the file's own category
+      // honored (src/lib/catalogImport.js). Each record carries catShelfOrder /
+      // flatShelfOrder = its file position, so the upload keeps the sheet's
+      // order instead of falling to byShelf's unplaced-A–Z bucket.
+      const { items: toWrite, newCategories, duplicates } = buildCatalogImport(rows, headers, categories, {
+        importedAt: new Date().toISOString(),
+        importedBy: user?.name || user?.email || '',
+      })
+
+      const { writeBatch, doc: fbDoc, getDocs, collection: col, deleteDoc, setDoc } = await import('firebase/firestore')
+
+      // Create the categories the file names that this location doesn't have
+      // yet — BEFORE writing items, so no imported item ever points at a
+      // category missing from the list. Same per-location doc the category
+      // manager writes.
+      if (newCategories.length) {
+        const nextCats = [...categories, ...newCategories]
+        await setDoc(
+          fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'settings', 'categories'),
+          { categories: nextCats },
+          { merge: true }
+        )
+        setCategoriesLocal(nextCats)
       }
-
-      function parsePrice(val) {
-        if (val == null || val === '') return 0
-        const s = String(val).replace(/[\$,\s]/g, '').trim()
-        return parseFloat(s) || 0
-      }
-
-      function parseGlCode(val) {
-        if (!val) return ''
-        const s = String(val).trim()
-        // Extract numeric GL code from "12000 - Inventory - Cafeteria"
-        const match = s.match(/^(\d+)/)
-        return match ? match[1] : s
-      }
-
-      function inferCategory(glCode, itemType, itemName) {
-        const gl = String(glCode).toLowerCase()
-        const t = String(itemType || '').toLowerCase()
-        const n = String(itemName || '').toLowerCase()
-
-        // 1. GL code is the strongest signal
-        if (gl.includes('12002')) return 'Barista'
-
-        // 2. Explicit item type from Excel (handle typos)
-        if (t.includes('barista')) return 'Barista'
-        if (t.includes('beverage') || t.includes('bev')) return 'Beverages'
-        if (t.includes('snack') || t.includes('snac')) return 'Snacks'
-        if (t.includes('condiment') || t.includes('cond')) return 'Condiments'
-
-        // 3. Infer from item name — beverages
-        const bevWords = ['juice', 'water', 'soda', 'kombucha', 'tea', 'lemonade', 'coffee', 'frappuccino', 'cola', 'coke', 'sprite', 'gatorade', 'celsius', 'red bull', 'rockstar', 'yerba', 'milk ', 'almond milk', 'oat milk', 'soy milk', 'coconut milk', 'half & half', 'cream', 'protein shake', 'naked ', 'illy ', 'tractor beverage', 'aura bora', 'boylan', "virgil's", "joe's", 'joe tea', 'eclipse water', 'boxed water', 'smart water', 'topochico', 'perrier', 'pelegrino']
-        if (bevWords.some(w => n.includes(w))) return 'Beverages'
-
-        // 4. Infer from name — barista
-        const barWords = ['cafe moto', 'espresso', 'chai', 'syrup 1883', 'syrup ', 'ghirardelli', 'david rio', 'matcha', 'teavana', 'starbucks cold brew', 'starbucks veranda', 'starbucks pike', 'starbucks verona', 'starbucks decaf', 'starbucks holiday', 'cream charger', 'agave', 'caramel sauce', 'chocolate sauce', 'white chocolate sauce', 'pumpkin spice', 'caramel brulee', 'freeze dried', 'dragonfruit', 'strawberry acai', 'mango dragonfruit', 'ground cinnamon', 'heavy cream']
-        if (barWords.some(w => n.includes(w))) return 'Barista'
-
-        // 5. Infer from name — condiments/supplies
-        const condWords = ['sauce', 'hot sauce', 'sriracha', 'cholula', 'tapatio', 'tabasco', 'ketchup', 'mustard', 'mayonnaise', 'soy sauce', 'salt packet', 'pepper packet', 'sugar ', 'sweetener', 'packet']
-        if (condWords.some(w => n.includes(w))) return 'Condiments'
-
-        // 6. Infer from name — snacks/food
-        const snackWords = ['bar ', 'chip', 'cookie', 'candy', 'chocolate', 'gummy', 'jerky', 'pretzel', 'popcorn', 'cracker', 'nut ', 'nuts', 'almond', 'cashew', 'granola', 'oatmeal', 'yogurt', 'cheese', 'salami', 'hummus', 'guacamole', 'pickle', 'olive', 'seaweed', 'mints', 'gum', 'fruit', 'wafel', 'uncrustable', 'pop tart', 'oreo', 'ice cream', 'frozen', 'soup', 'cheesecake', 'brownie', 'blondie', 'marshmallow', 'rice crisp']
-        if (snackWords.some(w => n.includes(w))) return 'Snacks'
-
-        // 7. Fallback by GL
-        if (gl.includes('12000')) return 'Snacks'
-        return 'Other'
-      }
-
-      const { writeBatch, doc: fbDoc, getDocs, collection: col, deleteDoc } = await import('firebase/firestore')
 
       // Step 1: Delete all existing items for this location
       const existingSnap = await getDocs(col(db, 'tenants', orgId, 'inventory', locKey, 'items'))
@@ -306,90 +268,16 @@ export default function Inventory() {
         console.log('Cleared', existingSnap.size, 'existing items')
       }
 
-      // Step 2: Write new items from Excel
+      // Step 2: Write new items from Excel — in file order (positions stamped
+      // by buildCatalogImport; a later duplicate of an id was skipped there).
       let count = 0
       let batch = writeBatch(db)
       let batchCount = 0
 
-      for (const row of rows) {
-        const name = findCol(row, ['Description', 'Item', 'Item Name', 'Name', 'Product'])
-        if (!name || String(name).trim() === '') continue
-        // Skip instruction/header rows — real items are short names with costs or SKUs
-        const nameStr = String(name).trim()
-        if (nameStr.length > 80) continue
-        if (nameStr.toLowerCase().startsWith('step ')) continue
-        if (nameStr.toLowerCase().startsWith('complete ')) continue
-        if (nameStr.toLowerCase().startsWith('enter ')) continue
-        if (nameStr.toLowerCase().startsWith('review ')) continue
-        if (nameStr.toLowerCase().startsWith('this report')) continue
-        if (nameStr.includes('12000 -') || nameStr.includes('12002 -')) continue
-        if (nameStr.includes('Inventory -')) continue
-        if (nameStr.toLowerCase().includes('grand total')) continue
-        if (nameStr.toLowerCase().includes('total ending')) continue
-        if (nameStr.toLowerCase().includes('beginning inventory')) continue
-        if (nameStr.toLowerCase().includes('ending inventory')) continue
-        if (nameStr.toLowerCase().includes('cost of goods')) continue
-        if (nameStr.toLowerCase().includes('monthly purchases')) continue
-        if (nameStr.toLowerCase().includes('transfer log')) continue
-        if (nameStr.toLowerCase().includes('waste log')) continue
-        if (nameStr.toLowerCase().includes('return to dashboard')) continue
-        if (nameStr.toLowerCase().includes('cogs')) continue
-        if (nameStr.toLowerCase().includes('inventory count performed')) continue
-        if (nameStr.toLowerCase().includes('café pos')) continue
-
-        // Skip rows with no cost data — section headers like "Beverages", "Barista" etc.
-        const rowPackPrice = parsePrice(findCol(row, ['Pack Price', 'Pack Cost', 'Case Price', 'Case Cost', 'Price']))
-        const rowUnitCost = parsePrice(findCol(row, ['Cost Per Unit', 'Unit Cost', 'Cost', 'Each Cost']))
-        if (rowPackPrice === 0 && rowUnitCost === 0) continue
-
-        const sku = findCol(row, ['SKU', 'UPC', 'Barcode'])
-        const packSize = findCol(row, ['Pack Size', 'Case Size', 'Unit Size']) || 'case'
-        const packPrice = parsePrice(findCol(row, ['Pack Price', 'Pack Cost', 'Case Price', 'Case Cost']))
-        const unitCost = parsePrice(findCol(row, ['Cost Per Unit', 'Unit Cost', 'Cost', 'Each Cost']))
-        const rawQtyPerPack = parseInt(findCol(row, ['Qty Per Pack', 'Qty/Pack', 'Case Qty', 'Pack Qty', 'Qty']))
-        const qtyPerPack = rawQtyPerPack > 0 ? rawQtyPerPack : (packPrice > 0 && unitCost > 0 ? Math.round(packPrice / unitCost) : 1)
-        const vendor = findCol(row, ['Vendor', 'Supplier', 'Distributor', 'Purveyor']) || ''
-        const rawGl = findCol(row, ['GL Code', 'GL', 'Account', 'GL Account']) || ''
-        const glCode = parseGlCode(rawGl)
-        const sellingPrice = parsePrice(findCol(row, ['Selling Price', 'Retail Price', 'Price', 'Sell Price']))
-        const cogsRatio = findCol(row, ['COGS', 'COGS %', 'Food Cost'])
-        const itemType = findCol(row, ['Item Type', 'Type', 'Category', 'Dept']) || ''
-        const category = inferCategory(rawGl, itemType, name)
-
-        const itemId = String(name).trim()
-          .replace(/[^a-zA-Z0-9\s]/g, '')
-          .replace(/\s+/g, '_')
-          .toLowerCase()
-          .slice(0, 80)
-
-        if (!itemId) continue
-
-        const ref = fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', itemId)
-
-        batch.set(ref, {
-          name: String(name).trim(),
-          sku: sku ? String(sku).trim() : '',
-          packSize: String(packSize).trim(),
-          qtyPerPack: qtyPerPack,
-          packPrice: packPrice,
-          unitCost: unitCost,
-          vendor: String(vendor).trim(),
-          glCode: glCode,
-          glCodeFull: String(rawGl).trim(),
-          sellingPrice: sellingPrice,
-          cogsRatio: parsePrice(String(cogsRatio).replace('%', '')) / 100 || 0,
-          itemType: String(itemType).trim(),
-          category: category,
-          isCatalogItem: true,
-          qty: null,
-          active: true,
-          importedAt: new Date().toISOString(),
-          importedBy: user?.name || user?.email || '',
-        }, { merge: true })
-
+      for (const { id, data } of toWrite) {
+        batch.set(fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', id), data, { merge: true })
         count++
         batchCount++
-
         if (batchCount >= 490) {
           await batch.commit()
           batch = writeBatch(db)
@@ -400,7 +288,11 @@ export default function Inventory() {
       if (batchCount > 0) await batch.commit()
 
       console.log('Upload complete:', count, 'items written to tenants/' + orgId + '/inventory/' + locKey + '/items')
-      toast.success('Imported ' + count + ' items from sheet "' + bestSheet + '"')
+      toast.success('Imported ' + count + ' items from sheet "' + bestSheet + '" in file order' +
+        (newCategories.length ? ` · created ${newCategories.length} categor${newCategories.length === 1 ? 'y' : 'ies'}: ${newCategories.map(c => c.label).join(', ')}` : ''))
+      if (duplicates.length) {
+        toast.info(`${duplicates.length} duplicate row${duplicates.length === 1 ? '' : 's'} skipped (same item as an earlier row): ${duplicates.slice(0, 3).map(d => d.name).join(', ')}${duplicates.length > 3 ? '…' : ''}`)
+      }
       if (typeof load === 'function') { console.log('Calling load()...'); await load(); console.log('load() done') }
 
     } catch (err) {
