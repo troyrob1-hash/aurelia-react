@@ -12,7 +12,9 @@ import { useAutosave } from '@/hooks/useAutosave'
 import SaveStatusBar from '@/components/SaveStatusBar'
 import { getTopVarianceIssues, calcParStatus, qtyOf } from '@/lib/variance'
 import { inventoryExportRow, uniqueItems, byCategoryRows } from '@/lib/inventoryExport'
-import { buildCatalogImport } from '@/lib/catalogImport'
+import {
+  buildCatalogImport, buildCatalogMerge, catalogLossSummary, catalogLossWarningText, catalogBackupTimestamp,
+} from '@/lib/catalogImport'
 import { displayCents } from '@/lib/buckets'
 import { Search, Download, RefreshCw, Eye, EyeOff, TrendingUp, TrendingDown, Minus, AlertTriangle , Upload } from 'lucide-react'
 import { useToast } from '@/components/ui/Toast'
@@ -116,130 +118,172 @@ export default function Inventory() {
     }
   }
 
-  // Upload Excel inventory sheet — creates location-specific catalog
+  // Parse an uploaded workbook into { bestSheet, rows, headers } — shared by
+  // the merge upload (uploadCatalog) and full-replace (replaceCatalog) so sheet
+  // detection and the two fail-loud guards (wrong sheet / looks-like-counts)
+  // can never drift between the two paths. Returns null when the caller should
+  // abort — the guard that fired has already shown its own toast/confirm.
+  async function parseCatalogFile(file) {
+    const XLSX = (await import('xlsx')).default || await import('xlsx')
+    const data = await file.arrayBuffer()
+    const workbook = XLSX.read(data)
+    console.log('Sheet names:', JSON.stringify(workbook.SheetNames))
+
+    // Target the right sheet — priority order for Fooda inventory templates.
+    // Managers upload the WHOLE multi-sheet OneDrive workbook; the item data
+    // lives on the "INVItems" tab, which may not be first. Normalize names
+    // (lowercase, strip spaces/underscores) so 'invitems' == 'INV Items' ==
+    // 'INV_Items' == 'InvItems' all match the same target regardless of tab
+    // position. INVItems variants come FIRST, then the legacy priority list.
+    const normSheet = (s) => String(s).toLowerCase().replace(/[\s_]+/g, '')
+    const sheetPriority = ['INVItems', 'INV Items', 'INV_Items', 'InvItems', 'Items', 'Inv_By_Item', 'Inventory_UPC', 'Items_UPC']
+    let bestSheet = null
+    for (const target of sheetPriority) {
+      const hit = workbook.SheetNames.find(s => normSheet(s) === normSheet(target))
+      if (hit) { bestSheet = hit; break }
+    }
+    // Fallback: find any sheet with "item" in the name
+    if (!bestSheet) {
+      bestSheet = workbook.SheetNames.find(s => s.toLowerCase().includes('item')) || workbook.SheetNames[0]
+    }
+
+    const ws = workbook.Sheets[bestSheet]
+    console.log('Using sheet:', bestSheet)
+
+    // Get all rows as arrays to find the header row
+    const allRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+
+    // Find the header row — look for a row with "Description" or a row right before data starts
+    let headerRowIdx = 0
+    for (let i = 0; i < Math.min(allRows.length, 20); i++) {
+      const vals = allRows[i].map(v => String(v || '').toLowerCase().trim())
+      // Exact match on key column names
+      if (vals.some(v => v === 'description' || v === 'item name') &&
+          vals.some(v => v.includes('vendor') || v.includes('cost') || v.includes('price') || v.includes('gl'))) {
+        headerRowIdx = i
+        console.log('Header row at', i, ':', allRows[i].filter(v => v))
+        break
+      }
+    }
+
+    // If no header found, look for the first row with a dollar value — header is one row before
+    if (headerRowIdx === 0) {
+      for (let i = 0; i < Math.min(allRows.length, 30); i++) {
+        const hasPrice = allRows[i].some(v => String(v || '').includes('$'))
+        if (hasPrice) {
+          headerRowIdx = Math.max(0, i - 1)
+          console.log('Inferred header at row', headerRowIdx, 'from data at row', i)
+          break
+        }
+      }
+    }
+
+    const rows = XLSX.utils.sheet_to_json(ws, { range: headerRowIdx, defval: '' })
+    if (rows.length === 0) { toast.error('No data found in file'); return null }
+
+    console.log('Headers:', Object.keys(rows[0]))
+    console.log('First row:', JSON.stringify(rows[0]).slice(0, 300))
+    console.log('Total rows:', rows.length)
+
+    const headers = Object.keys(rows[0])
+
+    // Fail-loud on a WRONG SHEET: if the chosen sheet has no name/description
+    // column, we picked a cover page / summary, not the item list. Reject BEFORE
+    // any write below, naming the sheet used and listing the file's tabs so the
+    // user can see what happened. (A silent parse of the wrong sheet is exactly
+    // the failure this guards against.)
+    const NAME_ALIASES = ['description', 'item name', 'item', 'name', 'product']
+    const hasNameCol = headers.some(h => {
+      const hl = String(h).toLowerCase().trim()
+      return NAME_ALIASES.some(a => hl === a || hl.includes(a))
+    })
+    if (!hasNameCol) {
+      toast.error(
+        `Couldn't find item data on sheet "${bestSheet}". Sheets in this file: ${workbook.SheetNames.join(', ')}. ` +
+        `Aurelia looks for a sheet named INVItems (or Items). Expected columns: name/description, pack size, ` +
+        `pack price, vendor, GL code.`
+      )
+      return null
+    }
+
+    // Fail-loud: this upload imports item DEFINITIONS only, never counts. If a
+    // column looks like counted quantities, warn BEFORE any write so a user
+    // doesn't silently lose count data (real incident: counts uploaded here
+    // were dropped silently). Anchored ^...$ so "Qty Per Pack" / "Case Qty"
+    // (legit pack-size definitions) don't false-positive.
+    const COUNT_COL_RE = /^(qty|quantity|count|counted|on[\s-]?hand|onhand|cases|units)$/i
+    const countCol = headers.find(h => COUNT_COL_RE.test(String(h).trim()))
+    if (countCol) {
+      const proceed = window.confirm(
+        `This file has a "${countCol}" column that looks like counts.\n\n` +
+        `This upload imports item definitions only (name, vendor, pack size, pack price, ` +
+        `unit cost, GL code, category) — the "${countCol}" column will be IGNORED and no ` +
+        `counts will be entered.\n\nEnter counts by hand in the count sheet.\n\nContinue anyway?`
+      )
+      if (!proceed) { toast.info('Upload cancelled — no changes made.'); return null }
+    }
+
+    return { bestSheet, rows, headers }
+  }
+
+  // Snapshot every current item doc for this location to a dated backup
+  // collection, before ANY upload (merge or replace) writes anything. There is
+  // no restore UI yet — this is deliberately cheap insurance ("destroyed
+  // something, need it back" becomes a scripted Firestore read instead of
+  // "it's gone"), not full undo. Unconditional: runs even for a merge, which
+  // rarely destroys anything, because it's nearly free (one extra batch write
+  // using data already in hand) and a merge can still hide items or touch
+  // categories when the opt-in checkboxes are on.
+  async function backupLocationCatalog(locKey, existingDocs) {
+    if (!existingDocs.length) return
+    const { writeBatch, doc: fbDoc } = await import('firebase/firestore')
+    const timestamp = catalogBackupTimestamp()
+    let batch = writeBatch(db)
+    let n = 0
+    for (const d of existingDocs) {
+      batch.set(fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'catalogBackups', timestamp, 'items', d.id), d.data)
+      n++
+      if (n >= 450) { await batch.commit(); batch = writeBatch(db); n = 0 }
+    }
+    if (n > 0) await batch.commit()
+    console.log(`Backed up ${existingDocs.length} item(s) to catalogBackups/${timestamp}`)
+    return timestamp
+  }
+
+  // Upload Excel inventory sheet — MERGE (the safe default). Updates items the
+  // file matches, adds items it doesn't, and otherwise LEAVES THE LOCATION'S
+  // CATALOG ALONE: never deletes, never reorders an existing item, never
+  // touches par levels / isKey / removed-state / multi-category sheet
+  // membership for a matched item. See src/lib/catalogImport.js
+  // (buildCatalogMerge) for the full guarantee and why. For the old
+  // delete-and-rebuild behavior, see replaceCatalog below.
   async function uploadCatalog(file) {
-    console.log('uploadCatalog called:', file?.name, 'location:', location)
+    console.log('uploadCatalog (merge) called:', file?.name, 'location:', location)
     toast.info('Uploading ' + (file?.name || 'file') + '...')
     if (!file) return
     if (!location) { toast.error('Select a location first'); return }
     const locKey = sanitizeDocId(location)
 
     try {
-      const XLSX = (await import('xlsx')).default || await import('xlsx')
-      const data = await file.arrayBuffer()
-      const workbook = XLSX.read(data)
-      console.log('Sheet names:', JSON.stringify(workbook.SheetNames))
+      const parsed = await parseCatalogFile(file)
+      if (!parsed) return
+      const { bestSheet, rows, headers } = parsed
 
-      // Target the right sheet — priority order for Fooda inventory templates.
-      // Managers upload the WHOLE multi-sheet OneDrive workbook; the item data
-      // lives on the "INVItems" tab, which may not be first. Normalize names
-      // (lowercase, strip spaces/underscores) so 'invitems' == 'INV Items' ==
-      // 'INV_Items' == 'InvItems' all match the same target regardless of tab
-      // position. INVItems variants come FIRST, then the legacy priority list.
-      const normSheet = (s) => String(s).toLowerCase().replace(/[\s_]+/g, '')
-      const sheetPriority = ['INVItems', 'INV Items', 'INV_Items', 'InvItems', 'Items', 'Inv_By_Item', 'Inventory_UPC', 'Items_UPC']
-      let bestSheet = null
-      for (const target of sheetPriority) {
-        const hit = workbook.SheetNames.find(s => normSheet(s) === normSheet(target))
-        if (hit) { bestSheet = hit; break }
-      }
-      // Fallback: find any sheet with "item" in the name
-      if (!bestSheet) {
-        bestSheet = workbook.SheetNames.find(s => s.toLowerCase().includes('item')) || workbook.SheetNames[0]
-      }
+      const { writeBatch, doc: fbDoc, getDocs, collection: col, setDoc, serverTimestamp } = await import('firebase/firestore')
 
-      const ws = workbook.Sheets[bestSheet]
-      console.log('Using sheet:', bestSheet)
+      const existingSnap = await getDocs(col(db, 'tenants', orgId, 'inventory', locKey, 'items'))
+      const existingDocs = existingSnap.docs.map(d => ({ id: d.id, data: d.data() }))
+      await backupLocationCatalog(locKey, existingDocs)
 
-      // Get all rows as arrays to find the header row
-      const allRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
-
-      // Find the header row — look for a row with "Description" or a row right before data starts
-      let headerRowIdx = 0
-      for (let i = 0; i < Math.min(allRows.length, 20); i++) {
-        const vals = allRows[i].map(v => String(v || '').toLowerCase().trim())
-        // Exact match on key column names
-        if (vals.some(v => v === 'description' || v === 'item name') &&
-            vals.some(v => v.includes('vendor') || v.includes('cost') || v.includes('price') || v.includes('gl'))) {
-          headerRowIdx = i
-          console.log('Header row at', i, ':', allRows[i].filter(v => v))
-          break
-        }
-      }
-
-      // If no header found, look for the first row with a dollar value — header is one row before
-      if (headerRowIdx === 0) {
-        for (let i = 0; i < Math.min(allRows.length, 30); i++) {
-          const hasPrice = allRows[i].some(v => String(v || '').includes('$'))
-          if (hasPrice) {
-            headerRowIdx = Math.max(0, i - 1)
-            console.log('Inferred header at row', headerRowIdx, 'from data at row', i)
-            break
-          }
-        }
-      }
-
-      const rows = XLSX.utils.sheet_to_json(ws, { range: headerRowIdx, defval: '' })
-      if (rows.length === 0) { toast.error('No data found in file'); return }
-
-      console.log('Headers:', Object.keys(rows[0]))
-      console.log('First row:', JSON.stringify(rows[0]).slice(0, 300))
-      console.log('Total rows:', rows.length)
-
-      // Fuzzy column finder — matches partial, case-insensitive
-      const headers = Object.keys(rows[0])
-
-      // Fail-loud on a WRONG SHEET: if the chosen sheet has no name/description
-      // column, we picked a cover page / summary, not the item list. Reject BEFORE
-      // the destructive catalog-clear below, naming the sheet used and listing the
-      // file's tabs so the user can see what happened. (A silent parse of the wrong
-      // sheet is exactly the failure this guards against.)
-      const NAME_ALIASES = ['description', 'item name', 'item', 'name', 'product']
-      const hasNameCol = headers.some(h => {
-        const hl = String(h).toLowerCase().trim()
-        return NAME_ALIASES.some(a => hl === a || hl.includes(a))
-      })
-      if (!hasNameCol) {
-        toast.error(
-          `Couldn't find item data on sheet "${bestSheet}". Sheets in this file: ${workbook.SheetNames.join(', ')}. ` +
-          `Aurelia looks for a sheet named INVItems (or Items). Expected columns: name/description, pack size, ` +
-          `pack price, vendor, GL code.`
-        )
-        return
-      }
-
-      // Fail-loud: this upload imports item DEFINITIONS only, never counts. If a
-      // column looks like counted quantities, warn BEFORE any write so a user
-      // doesn't silently lose count data (real incident: counts uploaded here
-      // were dropped silently). Anchored ^...$ so "Qty Per Pack" / "Case Qty"
-      // (legit pack-size definitions) don't false-positive.
-      const COUNT_COL_RE = /^(qty|quantity|count|counted|on[\s-]?hand|onhand|cases|units)$/i
-      const countCol = headers.find(h => COUNT_COL_RE.test(String(h).trim()))
-      if (countCol) {
-        const proceed = window.confirm(
-          `This file has a "${countCol}" column that looks like counts.\n\n` +
-          `This upload imports item definitions only (name, vendor, pack size, pack price, ` +
-          `unit cost, GL code, category) — the "${countCol}" column will be IGNORED and no ` +
-          `counts will be entered.\n\nEnter counts by hand in the count sheet.\n\nContinue anyway?`
-        )
-        if (!proceed) { toast.info('Upload cancelled — no changes made.'); return }
-      }
-
-      // Rows → item records, in FILE ORDER, with the file's own category
-      // honored (src/lib/catalogImport.js). Each record carries catShelfOrder /
-      // flatShelfOrder = its file position, so the upload keeps the sheet's
-      // order instead of falling to byShelf's unplaced-A–Z bucket.
-      const { items: toWrite, newCategories, duplicates } = buildCatalogImport(rows, headers, categories, {
-        importedAt: new Date().toISOString(),
-        importedBy: user?.name || user?.email || '',
-      })
-
-      const { writeBatch, doc: fbDoc, getDocs, collection: col, deleteDoc, setDoc } = await import('firebase/firestore')
+      const { toAdd, toUpdate, toHide, notInFile, newCategories, duplicates } = buildCatalogMerge(
+        rows, headers, existingDocs, categories,
+        { updateCategories: mergeUpdateCategories, hideNotInFile: mergeHideNotInFile },
+        { importedAt: new Date().toISOString(), importedBy: user?.name || user?.email || '' }
+      )
 
       // Create the categories the file names that this location doesn't have
-      // yet — BEFORE writing items, so no imported item ever points at a
-      // category missing from the list. Same per-location doc the category
-      // manager writes.
+      // yet — BEFORE writing items, so no item ever points at a missing
+      // category. Same per-location doc the category manager writes.
       if (newCategories.length) {
         const nextCats = [...categories, ...newCategories]
         await setDoc(
@@ -250,54 +294,126 @@ export default function Inventory() {
         setCategoriesLocal(nextCats)
       }
 
-      // Step 1: Delete all existing items for this location
+      // One batched pass: new items (full record), matched items (definition
+      // fields only — see buildCatalogMerge for exactly what's never included),
+      // and — only when opted in — the removed-flag for items not in the file.
+      // Every write is merge:true: an add creates the doc with every field it
+      // needs; an update patches only the fields in its payload, leaving
+      // catShelfOrder/flatShelfOrder/isKey/countCategories/removed untouched.
+      let batch = writeBatch(db)
+      let batchCount = 0
+      const flush = async () => { if (batchCount > 0) { await batch.commit(); batch = writeBatch(db); batchCount = 0 } }
+      const write = (id, data) => {
+        batch.set(fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', id), data, { merge: true })
+        batchCount++
+      }
+      for (const { id, data } of toAdd) { write(id, data); if (batchCount >= 450) await flush() }
+      for (const { id, data } of toUpdate) { write(id, data); if (batchCount >= 450) await flush() }
+      for (const { id, name } of toHide) {
+        const existingVendor = existingDocs.find(d => d.id === id)?.data?.vendor ?? null
+        write(id, { removed: true, removedAt: serverTimestamp(), removedBy: (user?.email || 'unknown') + ' (not in uploaded file)', name, vendor: existingVendor })
+        if (batchCount >= 450) await flush()
+      }
+      await flush()
+
+      console.log(`Merge upload: ${toAdd.length} added, ${toUpdate.length} updated, ${toHide.length} hidden, ${notInFile.length} not in file`)
+      toast.success(
+        `Merged "${bestSheet}": ${toAdd.length} added, ${toUpdate.length} updated` +
+        (newCategories.length ? ` · created ${newCategories.length} categor${newCategories.length === 1 ? 'y' : 'ies'}: ${newCategories.map(c => c.label).join(', ')}` : '') +
+        (toHide.length ? ` · hid ${toHide.length} item${toHide.length === 1 ? '' : 's'} not in the file` : '')
+      )
+      if (duplicates.length) {
+        toast.info(`${duplicates.length} duplicate row${duplicates.length === 1 ? '' : 's'} skipped (same item as an earlier row): ${duplicates.slice(0, 3).map(d => d.name).join(', ')}${duplicates.length > 3 ? '…' : ''}`)
+      }
+      setUploadSummary({ mode: 'merge', sheet: bestSheet, toAdd, toUpdate, toHide, notInFile, newCategories, duplicates })
+      if (typeof load === 'function') { console.log('Calling load()...'); await load(); console.log('load() done') }
+
+    } catch (err) {
+      console.error('Catalog merge upload error:', err)
+      toast.error('Failed to import: ' + (err.message || 'unknown error'))
+    }
+  }
+
+  // Full catalog REPLACE — the old delete-and-rebuild behavior, demoted behind
+  // its own explicit, named confirm (catalogLossWarningText — exact counts, not
+  // a generic warning) and a pre-upload backup. Not reachable from the normal
+  // "Item list" button; only from "Replace entire catalog" below it.
+  async function replaceCatalog(file) {
+    console.log('replaceCatalog called:', file?.name, 'location:', location)
+    if (!file) return
+    if (!location) { toast.error('Select a location first'); return }
+    const locKey = sanitizeDocId(location)
+    setReplacingCatalog(true)
+    try {
+      const parsed = await parseCatalogFile(file)
+      if (!parsed) return
+      const { bestSheet, rows, headers } = parsed
+
+      const { writeBatch, doc: fbDoc, getDocs, collection: col, setDoc } = await import('firebase/firestore')
       const existingSnap = await getDocs(col(db, 'tenants', orgId, 'inventory', locKey, 'items'))
-      if (!existingSnap.empty) {
-        let delBatch = writeBatch(db)
-        let delCount = 0
-        for (const d of existingSnap.docs) {
-          delBatch.delete(d.ref)
-          delCount++
-          if (delCount >= 490) {
-            await delBatch.commit()
-            delBatch = writeBatch(db)
-            delCount = 0
-          }
-        }
-        if (delCount > 0) await delBatch.commit()
-        console.log('Cleared', existingSnap.size, 'existing items')
+      const existingDocs = existingSnap.docs.map(d => ({ id: d.id, data: d.data() }))
+
+      const summary = catalogLossSummary(existingDocs)
+      if (!window.confirm(catalogLossWarningText(summary, cleanLocName(location)))) {
+        toast.info('Replace cancelled — no changes made.')
+        return
       }
 
-      // Step 2: Write new items from Excel — in file order (positions stamped
-      // by buildCatalogImport; a later duplicate of an id was skipped there).
+      toast.info('Replacing ' + (file?.name || 'file') + '...')
+      await backupLocationCatalog(locKey, existingDocs)
+
+      const { items: toWrite, newCategories, duplicates } = buildCatalogImport(rows, headers, categories, {
+        importedAt: new Date().toISOString(),
+        importedBy: user?.name || user?.email || '',
+      })
+
+      if (newCategories.length) {
+        const nextCats = [...categories, ...newCategories]
+        await setDoc(
+          fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'settings', 'categories'),
+          { categories: nextCats },
+          { merge: true }
+        )
+        setCategoriesLocal(nextCats)
+      }
+
+      if (existingDocs.length) {
+        let delBatch = writeBatch(db)
+        let delCount = 0
+        for (const d of existingDocs) {
+          delBatch.delete(fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', d.id))
+          delCount++
+          if (delCount >= 490) { await delBatch.commit(); delBatch = writeBatch(db); delCount = 0 }
+        }
+        if (delCount > 0) await delBatch.commit()
+        console.log('Cleared', existingDocs.length, 'existing items')
+      }
+
       let count = 0
       let batch = writeBatch(db)
       let batchCount = 0
-
       for (const { id, data } of toWrite) {
         batch.set(fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', id), data, { merge: true })
         count++
         batchCount++
-        if (batchCount >= 490) {
-          await batch.commit()
-          batch = writeBatch(db)
-          batchCount = 0
-        }
+        if (batchCount >= 490) { await batch.commit(); batch = writeBatch(db); batchCount = 0 }
       }
-
       if (batchCount > 0) await batch.commit()
 
-      console.log('Upload complete:', count, 'items written to tenants/' + orgId + '/inventory/' + locKey + '/items')
-      toast.success('Imported ' + count + ' items from sheet "' + bestSheet + '" in file order' +
+      console.log('Replace complete:', count, 'items written to tenants/' + orgId + '/inventory/' + locKey + '/items')
+      toast.success('Replaced catalog from "' + bestSheet + '": ' + count + ' items, in file order' +
         (newCategories.length ? ` · created ${newCategories.length} categor${newCategories.length === 1 ? 'y' : 'ies'}: ${newCategories.map(c => c.label).join(', ')}` : ''))
       if (duplicates.length) {
         toast.info(`${duplicates.length} duplicate row${duplicates.length === 1 ? '' : 's'} skipped (same item as an earlier row): ${duplicates.slice(0, 3).map(d => d.name).join(', ')}${duplicates.length > 3 ? '…' : ''}`)
       }
-      if (typeof load === 'function') { console.log('Calling load()...'); await load(); console.log('load() done') }
+      setUploadSummary({ mode: 'replace', sheet: bestSheet, count, lost: summary, newCategories, duplicates })
+      if (typeof load === 'function') { await load() }
 
     } catch (err) {
-      console.error('Catalog upload error:', err)
-      toast.error('Failed to import: ' + (err.message || 'unknown error'))
+      console.error('Catalog replace error:', err)
+      toast.error('Failed to replace: ' + (err.message || 'unknown error'))
+    } finally {
+      setReplacingCatalog(false)
     }
   }
 
@@ -523,6 +639,15 @@ export default function Inventory() {
   // (possibly partial) count — the button disappears rather than risk that.
   const showRollover = isShortWeek(currentWeek, week) && !items.some(hasCount)
   const [rollingOver, setRollingOver] = useState(false)
+
+  // Item-list upload: MERGE is the default (safe) behavior — see uploadCatalog.
+  // Both checkboxes are opt-in, off by default, read at upload time (no preview
+  // step today; the file runs on selection, same as before). uploadSummary
+  // drives the post-upload results panel shared by merge and full-replace.
+  const [mergeUpdateCategories, setMergeUpdateCategories] = useState(false)
+  const [mergeHideNotInFile, setMergeHideNotInFile] = useState(false)
+  const [uploadSummary, setUploadSummary] = useState(null)
+  const [replacingCatalog, setReplacingCatalog] = useState(false)
   async function handleRollOver() {
     if (!window.confirm(
       `Roll over ${cleanLocName(location)}'s prior week's closing count as this stub week's count?\n\n` +
@@ -1218,13 +1343,21 @@ export default function Inventory() {
         })}
       </div>
 
-      {/* Upload catalog */}
+      {/* Upload catalog — MERGE (the default, safe path) */}
       <input
         type="file"
         accept=".xlsx,.xls,.csv"
         style={{ display: 'none' }}
         id="catalog-upload"
         onChange={e => { if (e.target.files[0]) { uploadCatalog(e.target.files[0]); e.target.value = '' } }}
+      />
+      {/* Full catalog REPLACE — demoted, separate input, its own named confirm. */}
+      <input
+        type="file"
+        accept=".xlsx,.xls,.csv"
+        style={{ display: 'none' }}
+        id="catalog-replace-upload"
+        onChange={e => { if (e.target.files[0]) { replaceCatalog(e.target.files[0]); e.target.value = '' } }}
       />
 
 
@@ -1392,6 +1525,23 @@ export default function Inventory() {
                 uploadCatalog() only guards on !file/!location — so greying this out
                 would render as disabled while still working. Also a <label>, which
                 cannot take `disabled` at all. */}
+            {/* Two opt-in, OFF-by-default checkboxes for the merge upload below.
+                "Also update categories" only ever applies a row's category when
+                the row actually names one (never falls back to inference for an
+                existing item — see resolveRowCategory's comment in
+                catalogImport.js). "Also hide items not in this file" reuses the
+                existing removed mechanism (restorable from the removed-items
+                drawer), never a hard delete. */}
+            <label title="When checked, a matched item's category is updated to what the file says for that row — but only when the row actually names one. Off by default so a hand-corrected category never gets silently reverted by a re-upload."
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: '#92400e', whiteSpace: 'nowrap', cursor: 'pointer' }}>
+              <input type="checkbox" checked={mergeUpdateCategories} onChange={e => setMergeUpdateCategories(e.target.checked)} />
+              Update categories
+            </label>
+            <label title="When checked, an item at this location that ISN'T in the uploaded file is hidden (the same as clicking Remove) instead of just being reported. Hidden items can be restored from ⚙ Manage items → Removed. Off by default."
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: '#92400e', whiteSpace: 'nowrap', cursor: 'pointer' }}>
+              <input type="checkbox" checked={mergeHideNotInFile} onChange={e => setMergeHideNotInFile(e.target.checked)} />
+              Hide missing items
+            </label>
             <label
               htmlFor="catalog-upload"
               style={{
@@ -1401,9 +1551,22 @@ export default function Inventory() {
                 cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
                 whiteSpace: 'nowrap',
               }}
-              title="Upload item list (.xlsx, .csv) — item definitions only (name, vendor, pack size, price, GL, category). Does NOT import counts."
+              title="Upload item list (.xlsx, .csv) — MERGES into the existing catalog: updates matched items' pricing/vendor/GL, adds new items, never deletes anything. Does NOT import counts."
             >
               <Upload size={14} /> Item list
+            </label>
+            {/* Full replace — deliberately demoted: plain text, not a button-shaped
+                control, so it reads as the exception rather than a peer of "Item
+                list". Its own confirm names exactly what would be lost. */}
+            <label
+              htmlFor={replacingCatalog ? undefined : 'catalog-replace-upload'}
+              style={{
+                fontSize: 11, color: replacingCatalog ? '#cbd5e1' : '#94a3b8', textDecoration: 'underline',
+                cursor: replacingCatalog ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap', alignSelf: 'center',
+              }}
+              title="Delete this location's ENTIRE item catalog and rebuild it from a file — loses par levels, shelf order, and multi-category sheet membership for every item not re-created by the file. A backup is saved first; there is no restore button yet. Use 'Item list' instead unless you specifically mean to start over."
+            >
+              {replacingCatalog ? 'Replacing…' : 'Replace entire catalog'}
             </label>
             <button className={styles.btnIcon} onClick={() => exportInventory('csv')} title="Export CSV">
               <Download size={15} />
@@ -2588,6 +2751,78 @@ export default function Inventory() {
                     disabled={N === 0}
                     style={{ padding: '8px 16px', fontSize: 13, fontWeight: 600, border: 'none', borderRadius: 8, background: N === 0 ? '#e2e8f0' : '#1D9E75', color: N === 0 ? '#94a3b8' : '#fff', cursor: N === 0 ? 'not-allowed' : 'pointer' }}
                   >Apply {N} count{N === 1 ? '' : 's'}</button>
+                </div>
+              </div>
+            </div>
+          )
+        })()}
+
+        {/* ── Item-list upload results (merge or replace) ──────────────────
+            Report-only by nature — "not in file" is ALWAYS listed here even
+            when opts.hideNotInFile is off, since the toast alone can't carry a
+            name list. Closing just clears the state; nothing to undo from here
+            (the backup written before the upload is the safety net). */}
+        {uploadSummary && (() => {
+          const s = uploadSummary
+          const sec = { marginTop: 14 }
+          const nameList = (arr, max = 12) => {
+            const names = arr.map(x => x.name || x.id)
+            return names.length > max ? `${names.slice(0, max).join(', ')} and ${names.length - max} more` : names.join(', ')
+          }
+          return (
+            <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 4000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+              <div style={{ background: '#fff', borderRadius: 12, boxShadow: '0 20px 60px rgba(15,23,42,0.25)', width: 640, maxWidth: '100%', maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}>
+                <div style={{ padding: '18px 22px 12px', borderBottom: '1px solid #e5e7eb' }}>
+                  <h3 style={{ fontSize: 16, fontWeight: 600, color: '#0f172a', margin: 0 }}>
+                    {s.mode === 'replace' ? 'Catalog replaced' : 'Item list merged'}
+                  </h3>
+                  <div style={{ fontSize: 13, color: '#475569', marginTop: 4 }}>
+                    From "{s.sheet}" at <strong>{cleanLocName(location)}</strong>
+                  </div>
+                </div>
+                <div style={{ padding: '14px 22px 20px', overflowY: 'auto' }}>
+                  {s.mode === 'replace' ? (
+                    <div style={{ fontSize: 13, color: '#334155' }}>
+                      {s.count} item{s.count === 1 ? '' : 's'} written. The entire previous catalog ({s.lost.total} item{s.lost.total === 1 ? '' : 's'}) was deleted — a backup was saved first.
+                    </div>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: 13, color: '#334155' }}>
+                        <strong>{s.toAdd.length}</strong> added, <strong>{s.toUpdate.length}</strong> updated. Nothing was deleted.
+                      </div>
+                      {s.newCategories.length > 0 && (
+                        <div style={sec}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: '#0f172a' }}>Categories created</div>
+                          <div style={{ fontSize: 13, color: '#334155', marginTop: 2 }}>{s.newCategories.map(c => c.label).join(', ')}</div>
+                        </div>
+                      )}
+                      {s.notInFile.length > 0 && (
+                        <div style={sec}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: mergeHideNotInFile ? '#b91c1c' : '#d97706' }}>
+                            {mergeHideNotInFile
+                              ? `⚠️ ${s.notInFile.length} item${s.notInFile.length === 1 ? '' : 's'} hidden (not in this file)`
+                              : `${s.notInFile.length} item${s.notInFile.length === 1 ? '' : 's'} at this location weren't in the file`}
+                          </div>
+                          <div style={{ fontSize: 12, color: '#64748b', margin: '4px 0 6px' }}>
+                            {mergeHideNotInFile
+                              ? 'Restorable from ⚙ Manage items → Removed.'
+                              : 'Left untouched. Check "Hide missing items" before uploading if you want these hidden automatically.'}
+                          </div>
+                          <div style={{ fontSize: 13, color: '#334155', maxHeight: 140, overflowY: 'auto', border: '1px solid #f1f5f9', borderRadius: 6, padding: '6px 8px' }}>
+                            {nameList(s.notInFile)}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                  {s.duplicates.length > 0 && (
+                    <div style={{ ...sec, fontSize: 12, color: '#b45309' }}>
+                      {s.duplicates.length} duplicate row{s.duplicates.length === 1 ? '' : 's'} skipped: {nameList(s.duplicates, 6)}
+                    </div>
+                  )}
+                </div>
+                <div style={{ padding: '12px 22px', borderTop: '1px solid #f1f5f9', display: 'flex', justifyContent: 'flex-end' }}>
+                  <button onClick={() => setUploadSummary(null)} style={{ padding: '8px 16px', fontSize: 13, fontWeight: 600, border: 'none', borderRadius: 8, background: '#1D9E75', color: '#fff', cursor: 'pointer' }}>Done</button>
                 </div>
               </div>
             </div>

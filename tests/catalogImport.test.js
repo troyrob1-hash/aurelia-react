@@ -152,10 +152,12 @@ describe('3. duplicate ids — the first row wins', () => {
   })
 })
 
-describe('wiring — uploadCatalog uses it, and still deletes-and-rebuilds', () => {
-  // RAW source: the Step 1 marker is a comment, which code() strips.
+describe('wiring — replaceCatalog still uses buildCatalogImport and deletes-and-rebuilds', () => {
+  // RAW source: the Step markers are comments, which code() strips.
   const INV = readFileSync(resolve(ROOT, 'src/routes/Inventory.jsx'), 'utf8')
-  const fn = INV.slice(INV.indexOf('async function uploadCatalog'), INV.indexOf("console.error('Catalog upload error:'"))
+  // uploadCatalog is now the MERGE path (see tests/catalogMerge.test.js) —
+  // the old delete-and-rebuild behavior moved, unchanged, to replaceCatalog.
+  const fn = INV.slice(INV.indexOf('async function replaceCatalog'), INV.indexOf("console.error('Catalog replace error:'"))
 
   it('maps rows with buildCatalogImport and writes each record in order', () => {
     expect(fn).toMatch(/buildCatalogImport\(rows, headers, categories/)
@@ -165,12 +167,11 @@ describe('wiring — uploadCatalog uses it, and still deletes-and-rebuilds', () 
   it('creates new categories BEFORE the delete/rebuild and the item writes', () => {
     const create = fn.indexOf("'settings', 'categories'")
     expect(create).toBeGreaterThan(-1)
-    expect(create).toBeLessThan(fn.indexOf('Step 1: Delete all existing items'))
+    expect(create).toBeLessThan(fn.indexOf('if (existingDocs.length) {'))
     expect(fn).toMatch(/setCategoriesLocal\(nextCats\)/)
   })
 
-  it('the delete-and-rebuild step is unchanged (out of scope for this change)', () => {
-    expect(fn).toMatch(/Step 1: Delete all existing items for this location/)
-    expect(fn).toMatch(/delBatch\.delete\(d\.ref\)/)
+  it('still deletes every existing item then rewrites from the file (out of scope to change)', () => {
+    expect(fn).toMatch(/delBatch\.delete\(fbDoc\(db, 'tenants', orgId, 'inventory', locKey, 'items', d\.id\)\)/)
   })
 })

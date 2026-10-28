@@ -98,6 +98,18 @@ service cloud.firestore {
         allow write: if ownsTenant(tenantId) && isManager();
       }
 
+      // Pre-upload catalog backups (Item list upload, both merge and full
+      // replace) — a dated snapshot of every item doc, written BEFORE the
+      // upload changes anything. Same read/write tier as items/{itemId} above,
+      // since only someone who can already run that upload should be able to
+      // read or write its backups. There is no restore UI yet (see
+      // catalogLossWarningText) — recovering one today is a manual read.
+      // Rules don't cascade to subcollections, so this needs its own match.
+      match /inventory/{locationId}/catalogBackups/{backupId}/items/{itemId} {
+        allow read:  if ownsTenant(tenantId);
+        allow write: if ownsTenant(tenantId) && isManager();
+      }
+
       // Per-location inventory settings (e.g. the `categories` doc) — any real
       // operator role manages their own location's category groupings:
       // manager/director/vp/admin (everyone except plain viewers).
