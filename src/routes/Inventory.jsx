@@ -26,6 +26,7 @@ import ZoneManagerModal from '@/components/inventory/ZoneManagerModal'
 import CountSheetPrintModal from '@/components/inventory/CountSheetPrintModal'
 import SplitCountCell from '@/components/inventory/SplitCountCell'
 import { byShelf } from '@/lib/countSheets'
+import { nextShelfPosition, shelfWriteChunks, seedPatches } from '@/lib/shelfOrder'
 import { canEditInventoryCategories } from '@/lib/permissions'
 // Zone display layer (Phase 4). countDisplay is the ONLY correct source for
 // what a count cell shows — a zoned item's in-memory top-level is NOT its
@@ -629,6 +630,37 @@ export default function Inventory() {
       setEditSavingCount(c => c - 1)
     }
   }, [location, orgId, patchItemFields])
+
+  // Edit-panel category CHANGE: move the item to the END of its new sheet, in
+  // the order placed, instead of leaving it with a position from its OLD sheet
+  // (meaningless on the new one) or none at all (bottom A-Z). The category and
+  // its position are ONE payload on that doc, so they can never land apart.
+  // Unpositioned items already on the new sheet are numbered first in their
+  // current display order (see lib/shelfOrder.js); positioned ones are never
+  // rewritten. Callers use this only for a real change on a NON-split item —
+  // a split item's one catShelfOrder is shared by all its sheets.
+  const assignCategoryAtEnd = useCallback(async (itemId, catKey, catLabel) => {
+    if (!location) throw new Error('Pick a single location before editing items.')
+    setEditSavingCount(c => c + 1)
+    try {
+      const { writeBatch, doc: fbDoc } = await import('firebase/firestore')
+      const locKey = sanitizeDocId(location)
+      const { seeds, position } = nextShelfPosition(items, catKey, { excludeId: itemId })
+      const seedSets = [{ field: 'catShelfOrder', seeds }]
+      const payload = { category: catLabel, categoryExplicit: true, catShelfOrder: position }
+      for (const chunk of shelfWriteChunks(seedSets, { id: String(itemId), data: payload })) {
+        const batch = writeBatch(db)
+        for (const { id, data } of chunk) {
+          batch.set(fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', String(id)), data, { merge: true })
+        }
+        await batch.commit()
+      }
+      patchItemFields({ ...seedPatches(seedSets), [itemId]: payload })
+      setEditLastSavedAt(Date.now())
+    } finally {
+      setEditSavingCount(c => c - 1)
+    }
+  }, [location, orgId, items, patchItemFields])
   // Reset the "all saved" affordance when the panel switches items (or closes).
   // Without this, opening item B right after editing item A would briefly show
   // "✓ All changes saved" stale from A's session.
@@ -2461,7 +2493,16 @@ export default function Inventory() {
                                 // assignCategory honors it verbatim — including
                                 // 'General', which is otherwise read as "uncategorized"
                                 // and sent back through keyword inference.
-                                await saveEditField(item.id, 'category', catLabel, { categoryExplicit: true })
+                                // A real move of a non-split item lands at the END of
+                                // the new sheet (assignCategoryAtEnd). Re-picking the same
+                                // category, or a split item, keeps the old write — no
+                                // position (split positioning is out of scope; see
+                                // lib/shelfOrder.js).
+                                if (catKey !== item._cat && !isSplitItem(item)) {
+                                  await assignCategoryAtEnd(item.id, catKey, catLabel)
+                                } else {
+                                  await saveEditField(item.id, 'category', catLabel, { categoryExplicit: true })
+                                }
                                 // A split item keeps its sheets; the new home joins them
                                 // (untick the old one to merge its count into home).
                                 if (isSplitItem(item) && !countCategoryKeys(item).includes(catKey)) {
