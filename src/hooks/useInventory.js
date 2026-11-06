@@ -6,6 +6,7 @@ import { classifyVariance } from '@/lib/variance'
 import { useCountsListener } from '@/hooks/useCountsListener'
 import { useToast } from '@/components/ui/Toast'
 import { resolveZones } from '@/lib/zoneHelpers'
+import { nextShelfPosition, nextFlatPosition, shelfWriteChunks, seedPatches } from '@/lib/shelfOrder'
 // Phase 1 model layer — the single source of the zone arithmetic and the
 // honesty rule. The write path CALLS these; it never restates them.
 import { hasBucketData, bucketHasEntry, derivedTotalEaches, mergeRemoteBuckets, itemCountQty, itemTotalEaches, storedCountQty, isBucketed, isSplitItem, countCategoryKeys, bucketsFor, catBucketKey, completedBuckets, categoryTotals, rebucketForMembership, displayCents } from '@/lib/buckets'
@@ -1564,11 +1565,31 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       createdAt: serverTimestamp(),
       createdBy: user?.email || 'unknown',
     }
+    // Land it at the END of its category sheet and of the flat list, in the
+    // order added — not at the bottom A-Z (see lib/shelfOrder.js). Unpositioned
+    // items already on the sheet are numbered first, in their current display
+    // order, so "end" really is the end; positioned items are never rewritten.
+    const pool = itemsRef.current.map(i => ({ ...i, _cat: assignCategory(i, categories) }))
+    const catPlan = nextShelfPosition(pool, assignCategory(newItem, categories))
+    const flatPlan = nextFlatPosition(pool)
+    newItem.catShelfOrder = catPlan.position
+    newItem.flatShelfOrder = flatPlan.position
+    const seedSets = [
+      { field: 'catShelfOrder', seeds: catPlan.seeds },
+      { field: 'flatShelfOrder', seeds: flatPlan.seeds },
+    ]
     try {
-      await setDoc(
-        doc(db, 'tenants', orgId, 'inventory', locId, 'items', customId),
-        newItem
-      )
+      // Seeds first, the new item in the LAST batch (one batch when it all fits).
+      for (const chunk of shelfWriteChunks(seedSets, { id: customId, data: newItem })) {
+        const batch = writeBatch(db)
+        for (const { id, data } of chunk) {
+          const ref = doc(db, 'tenants', orgId, 'inventory', locId, 'items', String(id))
+          if (id === customId) batch.set(ref, data)
+          else batch.set(ref, data, { merge: true })
+        }
+        await batch.commit()
+      }
+      setItems(prev => applyItemPatches(prev, seedPatches(seedSets)))
       // Persist any in-progress counts BEFORE the optimistic insert, so adding
       // an item can never discard unsaved counts (a reload would otherwise
       // rebuild items blank and wipe them). Per-item docs (Phase 1) — must write
@@ -1599,7 +1620,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
     } catch (e) {
       console.error('Failed to add custom item:', e)
     }
-  }, [orgId, locId, periodKey, items, user])
+  }, [orgId, locId, periodKey, items, user, categories])
 
   // List of removed items for the manage drawer. We need to query the
   // override collection separately because removed items are filtered out
