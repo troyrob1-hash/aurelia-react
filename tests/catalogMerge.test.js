@@ -338,11 +338,15 @@ describe('full replace: the loss summary names exact counts, not a generic warni
 
   it('replaceCatalog shows this confirm BEFORE deleting, and aborts on cancel', () => {
     const SRC = code('src/routes/Inventory.jsx')
-    const fn = SRC.slice(SRC.indexOf('async function replaceCatalog'), SRC.indexOf('async function'.length > 0 ? SRC.indexOf('async function', SRC.indexOf('async function replaceCatalog') + 1) : SRC.length))
-    const confirmAt = fn.indexOf('catalogLossWarningText(')
+    const LIB = code('src/lib/catalogImport.js')
+    const fn = SRC.slice(SRC.indexOf('async function replaceCatalog'), SRC.indexOf('const { periodKey, isCurrentPeriod'))
+    expect(fn).toMatch(/confirm: \(summary, incomingCount\) => window\.confirm\(catalogLossWarningText\(summary, cleanLocName\(location\), incomingCount\)\)/)
+    expect(fn).toMatch(/if \(result\.status === 'cancelled'\) \{ toast\.info\('Replace cancelled — no changes made\.'\); return \}/)
+    const run = LIB.slice(LIB.indexOf('export async function runCatalogReplace'))
+    const confirmAt = run.indexOf('io.confirm(')
     expect(confirmAt).toBeGreaterThan(-1)
-    expect(confirmAt).toBeLessThan(fn.indexOf('if (existingDocs.length) {'))
-    expect(fn).toMatch(/if \(!window\.confirm\(catalogLossWarningText\(summary, cleanLocName\(location\)\)\)\) \{/)
+    expect(confirmAt).toBeLessThan(run.indexOf('io.deleteItems('))
+    expect(run).toMatch(/if \(!\(await io\.confirm\(summary, built\.items\.length\)\)\) return \{ status: 'cancelled', summary \}/)
   })
 
   it('both merge and replace write a backup BEFORE their first catalog-mutating write', () => {
@@ -354,12 +358,16 @@ describe('full replace: the loss summary names exact counts, not a generic warni
     expect(mergeWriteAt).toBeGreaterThan(-1)
     expect(mergeBackupAt).toBeLessThan(mergeWriteAt)
 
+    // Replace: the backup callback really backs up, and runCatalogReplace calls
+    // it before any mutating step.
     const replaceFn = SRC.slice(SRC.indexOf('async function replaceCatalog'))
-    const replaceBackupAt = replaceFn.indexOf('backupLocationCatalog(')
-    const replaceWriteAt = replaceFn.indexOf('buildCatalogImport(')
-    expect(replaceBackupAt).toBeGreaterThan(-1)
-    expect(replaceWriteAt).toBeGreaterThan(-1)
-    expect(replaceBackupAt).toBeLessThan(replaceWriteAt)
+    expect(replaceFn).toMatch(/backup: async \(docs\) => \{[^}]*await backupLocationCatalog\(locKey, docs\)/)
+    const run = code('src/lib/catalogImport.js').slice(code('src/lib/catalogImport.js').indexOf('export async function runCatalogReplace'))
+    const backupAt = run.indexOf('io.backup(')
+    expect(backupAt).toBeGreaterThan(-1)
+    for (const step of ['io.saveCategories(', 'io.deleteItems(', 'io.writeItems(']) {
+      expect(run.indexOf(step)).toBeGreaterThan(backupAt)
+    }
   })
 })
 
