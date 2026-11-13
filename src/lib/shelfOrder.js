@@ -110,3 +110,60 @@ export function seedPatches(seedSets) {
   }
   return out
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reorder within a sheet — shared by Arrange drag and typed position
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Insert-and-shift: move arr[from] to index `to`; everything between shifts by one. Never a swap. */
+export function arrayMove(arr, from, to) {
+  const next = arr.slice()
+  const [moved] = next.splice(from, 1)
+  next.splice(to, 0, moved)
+  return next
+}
+
+/**
+ * Parse what was typed in an Arrange position box. Whole numbers only (sign
+ * allowed — planMoveTo clamps); blank, decimal, or anything else → null, which
+ * the box treats as "revert, write nothing". A typo like 2.5 must not silently
+ * land somewhere.
+ */
+export function parsePositionInput(raw) {
+  const s = String(raw ?? '').trim()
+  return /^[-+]?\d+$/.test(s) ? parseInt(s, 10) : null
+}
+
+/**
+ * Typed move: put itemId at sheet place n (1-based) within `ids` — the sheet's
+ * CURRENT displayed order — shifting the items between. Over-size clamps to the
+ * end, 0/negative to 1. Returns the new order, or null for a no-op (unknown id,
+ * non-integer n, or already at that place). The result is exactly what dragging
+ * the item to slot n produces (same arrayMove), and goes to the same persist.
+ */
+export function planMoveTo(ids, itemId, n) {
+  if (!Array.isArray(ids) || !Number.isInteger(n)) return null
+  const from = ids.findIndex(id => String(id) === String(itemId))
+  if (from < 0) return null
+  const to = Math.min(Math.max(n, 1), ids.length) - 1
+  if (to === from) return null
+  return arrayMove(ids, from, to)
+}
+
+/**
+ * The writes a reorder needs: the sheet renumbered 1..N in `orderedIds` order,
+ * diffed against each item's current `field` — only changed positions are
+ * written. Unpositioned items get their displayed place (so a first move
+ * numbers the whole sheet, like a first drag). A split item is renumbered like
+ * any other: its ONE catShelfOrder is shared by all its sheets, so this moves
+ * it on those sheets too — intentional, matching drag (per-sheet positions are
+ * a separate schema change).
+ */
+export function reorderChanges(items, field, orderedIds) {
+  const cur = new Map((items || []).map(i => [String(i.id), i[field]]))
+  const changes = []
+  ;(orderedIds || []).forEach((id, idx) => {
+    if (cur.get(String(id)) !== idx + 1) changes.push({ id, pos: idx + 1 })
+  })
+  return changes
+}
