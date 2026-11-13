@@ -471,12 +471,18 @@ export function catalogLossSummary(existingDocs) {
   return { total: docs.length, withPar, withPosition, withSplit, withKey, removedCount }
 }
 
-/** The full-replace confirm text, naming exact counts — never a generic warning. */
-export function catalogLossWarningText(summary, locationLabel) {
+/**
+ * The full-replace confirm text, naming exact counts — never a generic warning.
+ * incomingCount (optional) = items the file will write, so the confirm states
+ * what replaces the catalog as well as what it loses.
+ */
+export function catalogLossWarningText(summary, locationLabel, incomingCount = null) {
+  const incoming = incomingCount == null ? [] : ['', `The file will replace them with ${incomingCount} item${incomingCount === 1 ? '' : 's'}.`]
   if (!summary.total && !summary.removedCount) {
-    return `Replace the entire item catalog at ${locationLabel}? There's nothing there yet, so nothing will be lost.`
+    return `Replace the entire item catalog at ${locationLabel}? There's nothing there yet, so nothing will be lost.` +
+      (incomingCount == null ? '' : ` The file adds ${incomingCount} item${incomingCount === 1 ? '' : 's'}.`)
   }
-  const lines = [`Replace the ENTIRE item catalog at ${locationLabel}?`, '', `This deletes all ${summary.total} current item${summary.total === 1 ? '' : 's'}, including:`]
+  const lines = [`Replace the ENTIRE item catalog at ${locationLabel}?`, ...incoming, '', `This deletes all ${summary.total} current item${summary.total === 1 ? '' : 's'}, including:`]
   if (summary.withPosition) lines.push(`• ${summary.withPosition} item${summary.withPosition === 1 ? '' : 's'} with a saved shelf/print order`)
   if (summary.withPar) lines.push(`• ${summary.withPar} item${summary.withPar === 1 ? '' : 's'} with par/reorder levels set`)
   if (summary.withSplit) lines.push(`• ${summary.withSplit} item${summary.withSplit === 1 ? '' : 's'} counted on more than one category sheet`)
@@ -484,4 +490,64 @@ export function catalogLossWarningText(summary, locationLabel) {
   if (summary.removedCount) lines.push(`• ${summary.removedCount} hidden item${summary.removedCount === 1 ? '' : 's'} and their removal history`)
   lines.push('', 'A backup of the current catalog is saved automatically, but there is no restore button yet —', 'recovering it means a manual Firestore read. Consider "Item list" (merge) instead unless you', 'specifically mean to start over.', '', 'Continue?')
   return lines.join('\n')
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Zero-item guard — a file that yields no items must never reach a write
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// parseCatalogRow skips any row with no cost data as a "section header". A file
+// whose cost columns were deleted (or are all blank/$0) therefore parses to ZERO
+// items — and full replace used to delete the whole catalog, write nothing, and
+// report success. Real incident: TOPS, 2026-11-13 (an HDK file with its cost
+// columns removed). Both upload paths now check this BEFORE any confirm, backup
+// or write, and abort with a message naming the likely cause.
+
+// Every cost alias parseCatalogRow's skip-check reads (findCol matches exact,
+// then partial — mirrored here with includes()).
+const COST_ALIASES = ['pack price', 'pack cost', 'case price', 'case cost', 'price', 'cost per unit', 'unit cost', 'cost', 'each cost']
+
+/** How many rows of the file parse to an item (same rules both upload paths use). */
+export function countUsableCatalogRows(rows, headers) {
+  return (rows || []).filter(r => parseCatalogRow(r, headers || [])).length
+}
+
+/** The abort message for a file that produced 0 items — names the likely cause. */
+export function zeroItemFileMessage(headers) {
+  const hasCost = (headers || []).some(h => COST_ALIASES.some(a => String(h).toLowerCase().trim().includes(a)))
+  return hasCost
+    ? "Your file produced 0 items — every row's cost/price is blank or $0, so each one was skipped. Nothing was changed."
+    : 'Your file produced 0 items — check that it has a cost/price column (Pack Price, Case Price, Cost Per Unit, Unit Cost or Price). Nothing was changed.'
+}
+
+/** null when the file yields at least one item, else the abort message. */
+export function catalogFileError(rows, headers) {
+  return countUsableCatalogRows(rows, headers) > 0 ? null : zeroItemFileMessage(headers)
+}
+
+/**
+ * Full catalog REPLACE, in its one safe order. Pure orchestration — the caller
+ * supplies the I/O, so the order (and "nothing destructive on a 0-item file")
+ * is tested against the code that ships.
+ *
+ *   build → 0-item guard → confirm → backup → new categories → delete → write
+ *
+ * @param input { rows, headers, existingDocs, categories, meta }
+ * @param io    { confirm(summary, incomingCount) → bool, backup(existingDocs),
+ *                saveCategories(nextCats), deleteItems(existingDocs), writeItems(items) }
+ * @returns { status: 'empty', error } | { status: 'cancelled', summary }
+ *        | { status: 'done', items, newCategories, duplicates, summary }
+ */
+export async function runCatalogReplace({ rows, headers, existingDocs, categories, meta }, io) {
+  const built = buildCatalogImport(rows, headers, categories, meta)
+  if (!built.items.length) return { status: 'empty', error: zeroItemFileMessage(headers) }
+
+  const summary = catalogLossSummary(existingDocs)
+  if (!(await io.confirm(summary, built.items.length))) return { status: 'cancelled', summary }
+
+  await io.backup(existingDocs)
+  if (built.newCategories.length) await io.saveCategories([...(categories || []), ...built.newCategories])
+  await io.deleteItems(existingDocs)
+  await io.writeItems(built.items)
+  return { status: 'done', items: built.items, newCategories: built.newCategories, duplicates: built.duplicates, summary }
 }

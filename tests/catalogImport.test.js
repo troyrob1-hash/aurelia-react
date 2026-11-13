@@ -152,22 +152,28 @@ describe('3. duplicate ids — the first row wins', () => {
   })
 })
 
-describe('wiring — replaceCatalog still uses buildCatalogImport and deletes-and-rebuilds', () => {
+describe('wiring — replaceCatalog runs runCatalogReplace (buildCatalogImport + delete-and-rebuild)', () => {
   // RAW source: the Step markers are comments, which code() strips.
   const INV = readFileSync(resolve(ROOT, 'src/routes/Inventory.jsx'), 'utf8')
+  const LIB = readFileSync(resolve(ROOT, 'src/lib/catalogImport.js'), 'utf8')
   // uploadCatalog is now the MERGE path (see tests/catalogMerge.test.js) —
-  // the old delete-and-rebuild behavior moved, unchanged, to replaceCatalog.
+  // the old delete-and-rebuild behavior moved to replaceCatalog, whose ORDER now
+  // lives in runCatalogReplace (behavior-tested in tests/catalogZeroItemGuard.test.js).
   const fn = INV.slice(INV.indexOf('async function replaceCatalog'), INV.indexOf("console.error('Catalog replace error:'"))
+  const run = LIB.slice(LIB.indexOf('export async function runCatalogReplace'))
 
   it('maps rows with buildCatalogImport and writes each record in order', () => {
-    expect(fn).toMatch(/buildCatalogImport\(rows, headers, categories/)
-    expect(fn).toMatch(/for \(const \{ id, data \} of toWrite\)/)
+    expect(fn).toMatch(/runCatalogReplace\(\s*\{ rows, headers, existingDocs, categories,/)
+    expect(run).toMatch(/buildCatalogImport\(rows, headers, categories, meta\)/)
+    expect(fn).toMatch(/for \(const \{ id, data \} of items\)/)
   })
 
   it('creates new categories BEFORE the delete/rebuild and the item writes', () => {
-    const create = fn.indexOf("'settings', 'categories'")
+    const create = run.indexOf('io.saveCategories(')
     expect(create).toBeGreaterThan(-1)
-    expect(create).toBeLessThan(fn.indexOf('if (existingDocs.length) {'))
+    expect(create).toBeLessThan(run.indexOf('io.deleteItems('))
+    expect(create).toBeLessThan(run.indexOf('io.writeItems('))
+    expect(fn).toMatch(/'settings', 'categories'/)
     expect(fn).toMatch(/setCategoriesLocal\(nextCats\)/)
   })
 

@@ -13,7 +13,7 @@ import SaveStatusBar from '@/components/SaveStatusBar'
 import { getTopVarianceIssues, calcParStatus, qtyOf } from '@/lib/variance'
 import { inventoryExportRow, uniqueItems, byCategoryRows } from '@/lib/inventoryExport'
 import {
-  buildCatalogImport, buildCatalogMerge, catalogLossSummary, catalogLossWarningText, catalogBackupTimestamp,
+  buildCatalogMerge, catalogLossWarningText, catalogBackupTimestamp, catalogFileError, runCatalogReplace,
 } from '@/lib/catalogImport'
 import { displayCents } from '@/lib/buckets'
 import { Search, Download, RefreshCw, Eye, EyeOff, TrendingUp, TrendingDown, Minus, AlertTriangle , Upload } from 'lucide-react'
@@ -270,6 +270,12 @@ export default function Inventory() {
       if (!parsed) return
       const { bestSheet, rows, headers } = parsed
 
+      // 0-item guard, before the backup or any write: a merge that yields no
+      // items would otherwise report "0 added" as success — or, with "hide
+      // items not in file" ticked, hide the entire catalog.
+      const fileError = catalogFileError(rows, headers)
+      if (fileError) { toast.error(fileError); return }
+
       const { writeBatch, doc: fbDoc, getDocs, collection: col, setDoc, serverTimestamp } = await import('firebase/firestore')
 
       const existingSnap = await getDocs(col(db, 'tenants', orgId, 'inventory', locKey, 'items'))
@@ -354,52 +360,49 @@ export default function Inventory() {
       const existingSnap = await getDocs(col(db, 'tenants', orgId, 'inventory', locKey, 'items'))
       const existingDocs = existingSnap.docs.map(d => ({ id: d.id, data: d.data() }))
 
-      const summary = catalogLossSummary(existingDocs)
-      if (!window.confirm(catalogLossWarningText(summary, cleanLocName(location)))) {
-        toast.info('Replace cancelled — no changes made.')
-        return
-      }
-
-      toast.info('Replacing ' + (file?.name || 'file') + '...')
-      await backupLocationCatalog(locKey, existingDocs)
-
-      const { items: toWrite, newCategories, duplicates } = buildCatalogImport(rows, headers, categories, {
-        importedAt: new Date().toISOString(),
-        importedBy: user?.name || user?.email || '',
-      })
-
-      if (newCategories.length) {
-        const nextCats = [...categories, ...newCategories]
-        await setDoc(
-          fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'settings', 'categories'),
-          { categories: nextCats },
-          { merge: true }
-        )
-        setCategoriesLocal(nextCats)
-      }
-
-      if (existingDocs.length) {
-        let delBatch = writeBatch(db)
-        let delCount = 0
-        for (const d of existingDocs) {
-          delBatch.delete(fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', d.id))
-          delCount++
-          if (delCount >= 490) { await delBatch.commit(); delBatch = writeBatch(db); delCount = 0 }
+      // The order (and the 0-item guard ahead of every destructive step) lives
+      // in runCatalogReplace so it's tested; this supplies only the Firestore I/O.
+      const result = await runCatalogReplace(
+        { rows, headers, existingDocs, categories, meta: { importedAt: new Date().toISOString(), importedBy: user?.name || user?.email || '' } },
+        {
+          confirm: (summary, incomingCount) => window.confirm(catalogLossWarningText(summary, cleanLocName(location), incomingCount)),
+          backup: async (docs) => { toast.info('Replacing ' + (file?.name || 'file') + '...'); await backupLocationCatalog(locKey, docs) },
+          saveCategories: async (nextCats) => {
+            await setDoc(
+              fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'settings', 'categories'),
+              { categories: nextCats },
+              { merge: true }
+            )
+            setCategoriesLocal(nextCats)
+          },
+          deleteItems: async (docs) => {
+            if (!docs.length) return
+            let delBatch = writeBatch(db)
+            let delCount = 0
+            for (const d of docs) {
+              delBatch.delete(fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', d.id))
+              delCount++
+              if (delCount >= 490) { await delBatch.commit(); delBatch = writeBatch(db); delCount = 0 }
+            }
+            if (delCount > 0) await delBatch.commit()
+            console.log('Cleared', docs.length, 'existing items')
+          },
+          writeItems: async (items) => {
+            let batch = writeBatch(db)
+            let batchCount = 0
+            for (const { id, data } of items) {
+              batch.set(fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', id), data, { merge: true })
+              batchCount++
+              if (batchCount >= 490) { await batch.commit(); batch = writeBatch(db); batchCount = 0 }
+            }
+            if (batchCount > 0) await batch.commit()
+          },
         }
-        if (delCount > 0) await delBatch.commit()
-        console.log('Cleared', existingDocs.length, 'existing items')
-      }
-
-      let count = 0
-      let batch = writeBatch(db)
-      let batchCount = 0
-      for (const { id, data } of toWrite) {
-        batch.set(fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', id), data, { merge: true })
-        count++
-        batchCount++
-        if (batchCount >= 490) { await batch.commit(); batch = writeBatch(db); batchCount = 0 }
-      }
-      if (batchCount > 0) await batch.commit()
+      )
+      if (result.status === 'empty') { toast.error(result.error); return }
+      if (result.status === 'cancelled') { toast.info('Replace cancelled — no changes made.'); return }
+      const { items: toWrite, newCategories, duplicates, summary } = result
+      const count = toWrite.length
 
       console.log('Replace complete:', count, 'items written to tenants/' + orgId + '/inventory/' + locKey + '/items')
       toast.success('Replaced catalog from "' + bestSheet + '": ' + count + ' items, in file order' +
