@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { arrayMove, planMoveTo } from '@/lib/shelfOrder'
 
 // Self-contained pointer-events drag-reorder hook (mouse + touch; NOT HTML5
 // DnD). All drag logic lives here so a bug stays inside the ArrangeList subtree
@@ -15,6 +16,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 //   getHandleProps(groupKey, itemId) — spread onto the grip handle element
 //   registerRow(groupKey, itemId, el) — ref callback for each row (for rects)
 //   draggingId    — id of the row currently being dragged (for styling), or null
+//   moveTo(groupKey, itemId, n) — typed move to sheet place n; same optimistic
+//                    order update + same onReorder as a drop (see planMoveTo)
 
 const EDGE = 64        // px from the scroll edge where auto-scroll engages
 const MAX_SPEED = 16   // px/frame at the very edge, scaled down toward EDGE
@@ -41,13 +44,6 @@ function getScrollParent(el) {
     node = node.parentElement
   }
   return null
-}
-
-function arrayMove(arr, from, to) {
-  const next = arr.slice()
-  const [moved] = next.splice(from, 1)
-  next.splice(to, 0, moved)
-  return next
 }
 
 export function useDragReorder({ groups, onReorder }) {
@@ -179,6 +175,19 @@ export function useDragReorder({ groups, onReorder }) {
     style: { touchAction: 'none', cursor: draggingId === itemId ? 'grabbing' : 'grab' },
   }), [startDrag, handlePointerMove, endDrag, draggingId])
 
+  // Typed move (grouped Arrange's position box). Exactly a drop's two steps —
+  // optimistic local order, then onReorder with the full ordered group — so
+  // typing and drag share one move function and one persist path. n is the
+  // sheet place (1-based) in the order on screen right now. No-op → nothing.
+  const moveTo = useCallback((groupKey, itemId, n) => {
+    const ids = orderRef.current[groupKey] || []
+    const next = planMoveTo(ids, itemId, n)
+    if (!next) return false
+    setOrder(o => ({ ...o, [groupKey]: next }))
+    onReorder?.(groupKey, next)
+    return true
+  }, [onReorder])
+
   // Apply the live order to the groups handed back for rendering.
   const orderedGroups = (groups || []).map(g => {
     const ord = order[g.key]
@@ -190,5 +199,5 @@ export function useDragReorder({ groups, onReorder }) {
     return { ...g, items }
   })
 
-  return { groups: orderedGroups, getHandleProps, registerRow, draggingId }
+  return { groups: orderedGroups, getHandleProps, registerRow, draggingId, moveTo }
 }

@@ -26,7 +26,7 @@ import ZoneManagerModal from '@/components/inventory/ZoneManagerModal'
 import CountSheetPrintModal from '@/components/inventory/CountSheetPrintModal'
 import SplitCountCell from '@/components/inventory/SplitCountCell'
 import { byShelf } from '@/lib/countSheets'
-import { nextShelfPosition, shelfWriteChunks, seedPatches } from '@/lib/shelfOrder'
+import { nextShelfPosition, shelfWriteChunks, seedPatches, reorderChanges } from '@/lib/shelfOrder'
 import { canEditInventoryCategories } from '@/lib/permissions'
 // Zone display layer (Phase 4). countDisplay is the ONLY correct source for
 // what a count cell shows — a zoned item's in-memory top-level is NOT its
@@ -84,6 +84,29 @@ function calcConfidence(item) {
 // ═══════════════════════════════════════════════════════════════════════════
 // Inventory Component - Aurelia FMS
 // ═══════════════════════════════════════════════════════════════════════════
+
+// Shelf order is the single default sort: byShelf puts arranged items in
+// ascending shelf position, with un-arranged (null position) items falling to
+// the bottom A-Z. With nothing arranged every item is null → pure A-Z, so this
+// also IS the alphabetical behavior — no separate sort toggle. Flat view: one
+// synthetic group sorted by flatShelfOrder, so the SAME row-rendering code
+// serves both views. Shared by the counting table (filtered items) and Arrange
+// mode (unfiltered items) so their grouping can never drift.
+function shelfGroups(list, categories, viewMode, activeCat) {
+  if (viewMode === 'flat') {
+    const sorted = [...list].sort(byShelf('flatShelfOrder'))
+    if (sorted.length === 0) return []
+    return [{ key: '__flat__', label: null, isFlat: true, color: '#0f172a', bg: '#f8fafc', items: sorted }]
+  }
+  const cats = activeCat === 'all' ? categories : categories.filter(c => c.key === activeCat)
+  // Within-group order by catShelfOrder (null → bottom A-Z).
+  return cats.map(cat => ({
+    ...cat,
+    items: list
+      .filter(i => sheetCategoryKeys(i).includes(cat.key))   // split items appear on each sheet
+      .sort(byShelf('catShelfOrder')),
+  })).filter(g => g.items.length > 0)
+}
 
 export default function Inventory() {
   const toast = useToast()
@@ -709,12 +732,7 @@ export default function Inventory() {
     if (!orgId || !location || !orderedIds?.length) return
     const field = viewMode === 'flat' ? 'flatShelfOrder' : 'catShelfOrder'
     const locKey = sanitizeDocId(location)
-    const curById = new Map(items.map(i => [i.id, i[field]]))
-    const changes = []
-    orderedIds.forEach((id, idx) => {
-      const pos = idx + 1
-      if (curById.get(id) !== pos) changes.push({ id, pos })
-    })
+    const changes = reorderChanges(items, field, orderedIds)
     if (!changes.length) return
     try {
       const { writeBatch, doc: fbDoc } = await import('firebase/firestore')
@@ -1216,27 +1234,20 @@ export default function Inventory() {
   // countSheets.js — the printed count sheets sort with the SAME functions, so
   // a sheet's item order can never drift from the grouped screen's.
 
-  const displayGroups = useMemo(() => {
-    // Shelf order is the single default sort: byShelf puts arranged items in
-    // ascending shelf position, with un-arranged (null position) items falling
-    // to the bottom A-Z. With nothing arranged every item is null → pure A-Z,
-    // so this also IS the alphabetical behavior — no separate sort toggle.
-    // Flat view: one synthetic group sorted by flatShelfOrder. Returning a
-    // single group means the SAME row-rendering code path serves both views.
-    if (viewMode === 'flat') {
-      const sorted = [...displayItems].sort(byShelf('flatShelfOrder'))
-      if (sorted.length === 0) return []
-      return [{ key: '__flat__', label: null, isFlat: true, color: '#0f172a', bg: '#f8fafc', items: sorted }]
-    }
-    const cats = activeCat === 'all' ? categories : categories.filter(c => c.key === activeCat)
-    // Within-group order by catShelfOrder (null → bottom A-Z).
-    return cats.map(cat => ({
-      ...cat,
-      items: displayItems
-        .filter(i => sheetCategoryKeys(i).includes(cat.key))   // split items appear on each sheet
-        .sort(byShelf('catShelfOrder')),
-    })).filter(g => g.items.length > 0)
-  }, [displayItems, activeCat, categories, viewMode])
+  const displayGroups = useMemo(
+    () => shelfGroups(displayItems, categories, viewMode, activeCat),
+    [displayItems, activeCat, categories, viewMode])
+
+  // Arrange mode orders WHOLE sheets: built from the UNFILTERED items, so search
+  // and the Quick / Section / Zone count modes never apply while arranging.
+  // persistReorder renumbers the group it's handed 1..N — a filtered group (3
+  // search hits) used to write 1..3 over items whose hidden neighbours kept
+  // their numbers: duplicate positions, a scrambled sheet. The category chip
+  // still picks WHICH sheets show in grouped view (each one whole); the flat
+  // list is always the full list.
+  const arrangeGroups = useMemo(
+    () => shelfGroups(items, categories, viewMode, viewMode === 'flat' ? 'all' : activeCat),
+    [items, activeCat, categories, viewMode])
 
   // Flat view list: every visible item in one list, no category grouping.
   // Derived purely from displayItems (the same source as the grouped view) so
@@ -1920,7 +1931,7 @@ export default function Inventory() {
               >Back to counting</button>
             </div>
           )}>
-            <ArrangeList groups={displayGroups} viewMode={viewMode} onReorder={persistReorder} />
+            <ArrangeList groups={arrangeGroups} viewMode={viewMode} onReorder={persistReorder} filtersActive={!!q || countMode !== 'full'} />
           </ErrorBoundary>
         ) : displayGroups.map(cat => (
           <div key={cat.key} className={styles.section}>
