@@ -3,6 +3,7 @@ import { getClaims, persistenceReady, signOut as authSignOut } from '@/lib/auth'
 import { db, auth } from '@/lib/firebase'
 import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore'
 import { onAuthStateChanged } from 'firebase/auth'
+import { startViewPrefsSync, stopViewPrefsSync } from './viewPrefsSync'
 
 /**
  * CUTOVER 2026-09-28 (Cognito → Firebase Auth):
@@ -34,6 +35,7 @@ export const useAuthStore = create((set, get) => ({
 
     unsubAuth = onAuthStateChanged(auth, async (fbUser) => {
       if (!fbUser) {
+        stopViewPrefsSync()
         set({ user: null, loading: false })
         return
       }
@@ -62,12 +64,15 @@ export const useAuthStore = create((set, get) => ({
     set({ user: baseUser, loading: false, error: null })
     const enriched = await loadProfile(baseUser)
     set({ user: enriched })
+    // Inventory View settings follow the user across sign-ins (viewPrefsSync).
+    startViewPrefsSync({ tenantId: enriched.tenantId, uid: enriched.uid, preferences: enriched.preferences })
     return enriched
   },
 
-  clearAuth: () => set({ user: null }),
+  clearAuth: () => { stopViewPrefsSync(); set({ user: null }) },
 
   signOut: async () => {
+    stopViewPrefsSync()
     await authSignOut()
     set({ user: null })
   },
@@ -112,7 +117,7 @@ async function loadProfile(user) {
       // so the client/rules agreement is unchanged. The consequence to know:
       // editing the Firestore doc alone no longer changes access — the claim
       // must be re-set and the user's ID token refreshed for it to take effect.
-      return { ...user, uid, managedRegionIds: profile.managedRegionIds || [], assignedLocations: profile.assignedLocations || [], displayName: profile.displayName || user.name }
+      return { ...user, uid, managedRegionIds: profile.managedRegionIds || [], assignedLocations: profile.assignedLocations || [], displayName: profile.displayName || user.name, preferences: profile.preferences || {} }
     }
   } catch(e) { console.warn('[authStore] profile read failed:', e?.message || e) }
   return { ...user, uid }
