@@ -53,24 +53,6 @@
 .headerActions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 
 /* ─── Buttons ─────────────────────────────────────────────────────────────── */
-.btnIcon {
-  width: 36px; height: 36px;
-  display: flex; align-items: center; justify-content: center;
-  border: 1px solid #ddd; border-radius: 8px;
-  background: #fff; cursor: pointer; color: #555;
-  
-}
-.btnIcon:hover { background: #f5f5f5; border-color: #ccc; }
-
-.btnMode {
-  display: flex; align-items: center; gap: 6px;
-  padding: 8px 12px; font-size: 0.8rem;
-  border: 1px solid #ddd; border-radius: 8px;
-  background: #fff; cursor: pointer; color: #555;
-  transition: all 0.15s;
-}
-.btnMode:hover { background: #f5f5f5; }
-.btnModeActive { background: #1a1a2e; color: #fff; border-color: #1a1a2e; }
 
 .btnSave {
   padding: 8px 16px; font-size: 0.85rem; font-weight: 600;
@@ -80,37 +62,6 @@
 .btnSave:hover { background: #059669; }
 .btnSave:disabled { opacity: 0.6; cursor: not-allowed; }
 
-.btnVariance {
-  display: flex; align-items: center; gap: 4px;
-  padding: 8px 12px; font-size: 0.8rem;
-  border: 1px solid #ddd; border-radius: 8px;
-  background: #fff; cursor: pointer; color: #555;
-}
-.btnVarianceActive { background: #f3f4f6; border-color: #9ca3af; }
-
-/* ─── Chip Bar ────────────────────────────────────────────────────────────── */
-.chipBar {
-  display: flex;
-  gap: 8px;
-  padding: 1rem 1.5rem;
-  background: #f9fafb;
-  border-bottom: 1px solid #e5e7eb;
-  overflow-x: auto;
-  flex-wrap: wrap;
-}
-.chip {
-  display: flex; align-items: center; gap: 6px;
-  padding: 6px 12px; font-size: 0.8rem;
-  border: 1.5px solid #ddd; border-radius: 20px;
-  background: #fff; cursor: pointer; color: #555;
-  white-space: nowrap; transition: all 0.15s;
-}
-.chip:hover { background: #f5f5f5; }
-.chipActive { font-weight: 600; }
-.chipBadge {
-  font-size: 0.65rem; padding: 2px 6px;
-  background: #6b7280; color: #fff; border-radius: 10px;
-}
 
 /* ─── KPI Bar ─────────────────────────────────────────────────────────────── */
 .kpiBar {
@@ -222,36 +173,6 @@
   width: 2px;
   background: #6b7280;
 }
-
-/* ─── Toolbar ─────────────────────────────────────────────────────────────── */
-.toolbar {
-  display: flex;
-  gap: 12px;
-  margin-bottom: 1rem;
-  align-items: center;
-}
-.searchWrap {
-  flex: 1;
-  position: relative;
-  max-width: 400px;
-}
-.searchIcon {
-  position: absolute;
-  left: 12px;
-  top: 50%;
-  transform: translateY(-50%);
-  color: #9ca3af;
-}
-.searchInput {
-  width: 100%;
-  padding: 10px 12px 10px 36px;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  font-size: 0.9rem;
-  outline: none;
-  transition: border-color 0.15s;
-}
-.searchInput:focus { border-color: #3b82f6; }
 
 /* ─── Loading / Error ─────────────────────────────────────────────────────── */
 .loading {
@@ -490,18 +411,6 @@
     border-radius: 8px !important;
   }
 
-  /* Category pills — horizontal scroll */
-  .catBar {
-    display: flex !important;
-    overflow-x: auto;
-    gap: 6px;
-    padding-bottom: 6px;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-  }
-  .catBar::-webkit-scrollbar { display: none; }
-  .catPill { white-space: nowrap; font-size: 0.7rem; padding: 5px 10px; flex-shrink: 0; }
-
   /* Save button — sticky at bottom above mobile nav */
   .btnSave, .btnSaveFooter {
     position: fixed !important;
@@ -516,10 +425,6 @@
     box-shadow: 0 -4px 12px rgba(0,0,0,0.15);
   }
 
-  /* Mode tabs (Quick/Section/Full) — compact */
-  .modeTabs { gap: 0; }
-  .modeTabs button, .btnMode { font-size: 0.7rem; padding: 6px 8px; }
-
   /* Add bottom padding so content isn't hidden behind sticky save button */
   .invContent { padding-bottom: 100px !important; }
 }
@@ -533,37 +438,6 @@
    ============================================ */
 
 @media (max-width: 768px) {
-  .page {
-    padding: 12px !important;
-  }
-
-  /* Toolbar stacks vertically */
-  .toolbar, .toolbarRow {
-    flex-direction: column !important;
-    gap: 8px !important;
-    align-items: stretch !important;
-  }
-
-  .toolbar button, .toolbarRow button {
-    min-height: 44px !important;
-    font-size: 14px !important;
-  }
-
-  .toolbar input, .toolbarRow input {
-    min-height: 44px !important;
-    font-size: 16px !important;
-    padding: 12px !important;
-  }
-
-  /* Search bar full width */
-  .search, .searchInput {
-    width: 100% !important;
-    font-size: 16px !important;
-    min-height: 48px !important;
-    padding: 12px 16px !important;
-    border-radius: 10px !important;
-  }
-
   /* Category filters scroll horizontally */
   .categories, .filterRow, .categoryRow {
     overflow-x: auto !important;
@@ -728,12 +602,6 @@
     flex-shrink: 0 !important;
   }
 
-  /* Export buttons smaller on mobile */
-  .btnIcon {
-    min-height: 40px !important;
-    min-width: 40px !important;
-    padding: 8px !important;
-  }
 }
 
 /* Tablet tweaks */
@@ -869,12 +737,6 @@
   .kpiGrid, .summaryGrid {
     grid-template-columns: 1fr 1fr !important;
     gap: 6px !important;
-  }
-
-  /* Search input */
-  .search input, .searchBox input {
-    font-size: 16px !important; /* prevents iOS zoom */
-    min-height: 44px !important;
   }
 
   /* Bottom toolbar - sticky */

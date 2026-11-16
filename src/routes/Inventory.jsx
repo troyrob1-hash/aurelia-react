@@ -16,11 +16,14 @@ import {
   buildCatalogMerge, catalogLossWarningText, catalogBackupTimestamp, catalogFileError, runCatalogReplace,
 } from '@/lib/catalogImport'
 import { displayCents } from '@/lib/buckets'
-import { Search, Download, RefreshCw, Eye, EyeOff, TrendingUp, TrendingDown, Minus, AlertTriangle , Upload } from 'lucide-react'
+import { Search, TrendingUp, TrendingDown, Minus, Upload } from 'lucide-react'
 import { useToast } from '@/components/ui/Toast'
 import AllLocationsGrid from '@/components/AllLocationsGrid'
 import ErrorBoundary from '@/components/ErrorBoundary'
 import ArrangeList from '@/components/inventory/ArrangeList'
+import InventoryToolbar, { ParPill, StartStrip, startStripVisible } from '@/components/inventory/InventoryToolbar'
+import { EditSheetBar, ItemListUploadDialog } from '@/components/inventory/EditSheet'
+import tb from '@/components/inventory/InventoryToolbar.module.css'
 import CategoryManagerModal from '@/components/inventory/CategoryManagerModal'
 import ZoneManagerModal from '@/components/inventory/ZoneManagerModal'
 import CountSheetPrintModal from '@/components/inventory/CountSheetPrintModal'
@@ -34,6 +37,7 @@ import { canEditInventoryCategories } from '@/lib/permissions'
 // would print a confident 0 for an item whose on-hand is actually unknown.
 import { countDisplay, pendingBucketsLabel, bucketProgress, closeOutIssues, closeOutWarningText, completedBuckets, isSplitItem, sheetCategoryKeys, catBucketKey, countCategoryKeys, bucketHasEntry, sheetUsage } from '@/lib/buckets'
 import { hasMultipleZones } from '@/lib/zoneHelpers'
+import { sheetOptions, sheetState, sheetValue } from '@/lib/sheetPicker'
 import { resolveCountColumns, buildCatalogIndex, matchCountRow } from '@/lib/countUpload'
 import styles from './Inventory.module.css'
 
@@ -366,8 +370,9 @@ export default function Inventory() {
 
   // Full catalog REPLACE — the old delete-and-rebuild behavior, demoted behind
   // its own explicit, named confirm (catalogLossWarningText — exact counts, not
-  // a generic warning) and a pre-upload backup. Not reachable from the normal
-  // "Item list" button; only from "Replace entire catalog" below it.
+  // a generic warning) and a pre-upload backup. Reached only from Edit sheet →
+  // Upload item list with "Replace everything" picked (ItemListUploadDialog);
+  // the default mode, and the page drop target, run the merge.
   async function replaceCatalog(file) {
     console.log('replaceCatalog called:', file?.name, 'location:', location)
     if (!file) return
@@ -494,8 +499,18 @@ export default function Inventory() {
   const exitArrangeMode = () => setArrangeMode(false)
   const [activeCat, setActiveCat] = useState('all')
   const [collapsed, setCollapsed] = useState({})
-  const [blindMode, setBlindMode] = useState(false)
-  const [showVariance, setShowVariance] = useState(true)
+  // View menu toggles — persisted in useUIStore exactly like viewMode.
+  // Display only: they hide table columns / hints, never the data. _priorQty
+  // and _variance are still computed by useInventory and still feed the
+  // variance alerts, the Why panel and everything downstream.
+  // "Show last week's counts" off = the Prior column hidden AND the old blind
+  // count mode (no prior hint in the count box, no double-click copy, no
+  // variance alerts). "Show variance" off = the Variance column hidden.
+  const showPrior = useUIStore(s => s.inventoryShowPrior)
+  const setShowPrior = useUIStore(s => s.setInventoryShowPrior)
+  const blindMode = !showPrior
+  const showVariance = useUIStore(s => s.inventoryShowVariance)
+  const setShowVariance = useUIStore(s => s.setInventoryShowVariance)
   const [showParPanel, setShowParPanel] = useState(false)
   const [countMode, setCountMode] = useState('full')  // 'quick' | 'section' | 'full'
   const [showManage, setShowManage] = useState(false)
@@ -706,6 +721,7 @@ export default function Inventory() {
   const [mergeHideNotInFile, setMergeHideNotInFile] = useState(false)
   const [uploadSummary, setUploadSummary] = useState(null)
   const [replacingCatalog, setReplacingCatalog] = useState(false)
+  const [showItemListUpload, setShowItemListUpload] = useState(false)
   async function handleRollOver() {
     if (!window.confirm(
       `Roll over ${cleanLocName(location)}'s prior week's closing count as this stub week's count?\n\n` +
@@ -1212,6 +1228,24 @@ export default function Inventory() {
     toast.info('Refreshing inventory...')
   }, [load, toast])
 
+  // Upload a count file: same fail-fast locked guard the green button had.
+  const openCountUpload = () => {
+    if (locked) { toast.error('Period is closed — a director must reopen it to make changes.'); return }
+    document.getElementById('counts-upload')?.click()
+  }
+
+  const openManageItems = () => { setShowManage(true); loadRemovedItems() }
+
+  const toggleBuddy = () => {
+    if (buddyMode) {
+      setBuddyMode(false)
+      setBuddyNames({ caller: '', marker: '' })
+    } else {
+      setBuddyDraft({ caller: '', marker: '' })
+      setShowBuddySetup(true)
+    }
+  }
+
   // ─── Filtered Items ────────────────────────────────────────────────────────
   const q = search.toLowerCase()
   const displayItems = useMemo(() => items.filter(i => {
@@ -1229,6 +1263,18 @@ export default function Inventory() {
   }), [items, activeCat, q, countMode, activeZone])
 
   const keyItemCount = useMemo(() => items.filter(i => i.isKey).length, [items])
+
+  // Sheet button (lib/sheetPicker): one picker over countMode/activeCat/activeZone.
+  const currentSheet = sheetValue({ countMode, activeCat, activeZone })
+  const sheetList = useMemo(() => sheetOptions({
+    items, categories, catStats, totals, zones, zonesOn, zonesCompleted, hasCount,
+  }), [items, categories, catStats, totals, zones, zonesOn, zonesCompleted])
+  const pickSheet = value => {
+    const next = sheetState(value)
+    setCountMode(next.countMode)
+    setActiveCat(next.activeCat)
+    setActiveZone(next.activeZone)
+  }
 
   // Shelf-to-sheet sort comparators (byName / byShelf) are imported from
   // countSheets.js — the printed count sheets sort with the SAME functions, so
@@ -1345,66 +1391,6 @@ export default function Inventory() {
         </div>
       )}
 
-      {/* Category Chips */}
-      <div className={styles.chipBar}>
-        <button 
-          className={`${styles.chip} ${activeCat === 'all' ? styles.chipActive : ''}`} 
-          onClick={() => setActiveCat('all')}
-        >
-          All Items
-          <span className={styles.chipBadge}>{totals.counted || 0}/{totals.total || 0}</span>
-        </button>
-        {categories.map(cat => {
-          const cc = catStats[cat.key] || { total: 0, counted: 0 }
-          const done = cc.counted === cc.total && cc.total > 0
-          const pct = cc.total > 0 ? cc.counted / cc.total : 0
-          return (
-            <button 
-              key={cat.key}
-              className={`${styles.chip} ${activeCat === cat.key ? styles.chipActive : ''}`}
-              onClick={() => setActiveCat(cat.key)}
-              style={activeCat === cat.key 
-                ? { borderColor: cat.color, color: cat.color, background: cat.bg } 
-                : { borderColor: cat.color + '40', color: cat.color }
-              }
-            >
-              <svg width="14" height="14" viewBox="0 0 14 14" style={{ flexShrink: 0 }}>
-                <circle cx="7" cy="7" r="5" fill="none" stroke={cat.color + '30'} strokeWidth="2" />
-                <circle 
-                  cx="7" cy="7" r="5" fill="none" 
-                  stroke={done ? '#10b981' : cat.color} 
-                  strokeWidth="2"
-                  strokeDasharray={`${pct * 31.4} 31.4`} 
-                  strokeLinecap="round"
-                  transform="rotate(-90 7 7)" 
-                  style={{ transition: 'stroke-dasharray .4s' }} 
-                />
-              </svg>
-              {cat.label}
-              <span className={styles.chipBadge} style={{ background: done ? '#10b981' : cat.color + '99' }}>
-                {cc.counted}/{cc.total}
-              </span>
-            </button>
-          )
-        })}
-      </div>
-
-      {/* Upload catalog — MERGE (the default, safe path) */}
-      <input
-        type="file"
-        accept=".xlsx,.xls,.csv"
-        style={{ display: 'none' }}
-        id="catalog-upload"
-        onChange={e => { if (e.target.files[0]) { uploadCatalog(e.target.files[0]); e.target.value = '' } }}
-      />
-      {/* Full catalog REPLACE — demoted, separate input, its own named confirm. */}
-      <input
-        type="file"
-        accept=".xlsx,.xls,.csv"
-        style={{ display: 'none' }}
-        id="catalog-replace-upload"
-        onChange={e => { if (e.target.files[0]) { replaceCatalog(e.target.files[0]); e.target.value = '' } }}
-      />
 
 
       <div className={styles.invContent}>
@@ -1423,90 +1409,11 @@ export default function Inventory() {
             </p>
           </div>
           <div className={styles.headerActions}>
-            <button 
-              className={`${styles.btnMode} ${blindMode ? styles.btnModeActive : ''}`} 
-              onClick={() => setBlindMode(v => !v)} 
-              title="Blind count mode"
-            >
-              {blindMode ? <EyeOff size={14} /> : <Eye size={14} />}
-              {blindMode ? 'Blind' : 'Show prior'}
-            </button>
-            <button
-              className={styles.btnMode}
-              onClick={() => { setShowManage(true); loadRemovedItems() }}
-              title="Add or remove items for this location"
-            >
-              ⚙ Manage items
-            </button>
-            {canEditCats && selectedLocation && selectedLocation !== 'all' && (
-              <button
-                className={styles.btnMode}
-                onClick={() => setShowCatManager(true)}
-                disabled={locked}
-                title={locked ? 'Period closed — reopen to edit' : "Manage this location's inventory categories"}
-                style={locked ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
-              >
-                ⚙ Manage categories
-              </button>
-            )}
-            {canEditCats && selectedLocation && selectedLocation !== 'all' && (
-              <button
-                className={styles.btnMode}
-                onClick={() => setShowZoneManager(true)}
-                disabled={locked}
-                title={locked ? 'Period closed — reopen to edit' : "Manage this location's counting zones"}
-                style={locked ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
-              >
-                ⚙ Manage zones
-              </button>
-            )}
-            {selectedLocation && selectedLocation !== 'all' && (
-              <button
-                className={styles.btnMode}
-                onClick={() => setPrintSheet('__all__')}
-                disabled={items.length === 0}
-                title="Print blank count sheets by category for crew to fill in by hand"
-              >
-                🖨 Count sheets
-              </button>
-            )}
-            <button
-              className={`${styles.btnMode} ${buddyMode ? styles.btnModeActive : ''}`}
-              onClick={() => {
-                if (buddyMode) {
-                  setBuddyMode(false)
-                  setBuddyNames({ caller: '', marker: '' })
-                } else {
-                  setBuddyDraft({ caller: '', marker: '' })
-                  setShowBuddySetup(true)
-                }
-              }}
-              title={buddyMode ? 'Exit buddy mode' : 'Start a team count with two people'}
-            >
-              {buddyMode ? `👥 ${buddyNames.caller || '?'} + ${buddyNames.marker || '?'}` : '👥 Buddy mode'}
-            </button>
-            <button 
-              className={`${styles.btnMode} ${showParPanel ? styles.btnModeActive : ''}`} 
-              onClick={() => setShowParPanel(v => !v)} 
-              title="Par levels"
-            >
-              <AlertTriangle size={14} />
-              Par ({totals.belowPar || 0})
-            </button>
-            {/* Save / Save & Close moved to the SaveStatusBar (bottom) — single
-                source of truth for both actions. */}
-
-            <button onClick={() => setShowScanner(true)} style={{
-              padding: '8px 14px', fontSize: 12, fontWeight: 600,
-              background: '#F15D3B18', color: '#F15D3B', borderRadius: 8,
-              border: '1px solid #F15D3B40', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
-            }}>
-              <Search size={14} /> Scan &amp; count
-            </button>
-
-            {/* Upload COUNTS (quantities) — green, visually distinct from the
-                amber "Item list" (catalog/definitions) upload. Blocks on a locked
-                period BEFORE opening the file dialog (fail fast). */}
+            {/* "N below par" — only when there is something below par; opens
+                the same par panel the old always-on "Par (N)" button did. */}
+            <ParPill count={totals.belowPar || 0} open={showParPanel} onToggle={() => setShowParPanel(v => !v)} />
+            {/* Hidden input behind More → Upload a count file and the start
+                strip (openCountUpload). */}
             <input
               type="file"
               accept=".xlsx,.xls,.csv"
@@ -1514,115 +1421,6 @@ export default function Inventory() {
               id="counts-upload"
               onChange={e => { if (e.target.files[0]) { parseCountFile(e.target.files[0]); e.target.value = '' } }}
             />
-            <button
-              onClick={() => {
-                if (locked) { toast.error('Period is closed — a director must reopen it to make changes.'); return }
-                document.getElementById('counts-upload')?.click()
-              }}
-              disabled={locked}
-              title="Upload counted quantities (.xlsx, .csv) for this period — matched by item name. Previews before writing."
-              style={{
-                padding: '8px 14px', fontSize: 12, fontWeight: 600,
-                background: locked ? '#e2e8f0' : '#1D9E7518', color: locked ? '#94a3b8' : '#1D9E75',
-                borderRadius: 8, border: '1px solid ' + (locked ? '#e2e8f0' : '#1D9E7540'),
-                cursor: locked ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: 6,
-              }}
-            >
-              <Upload size={14} /> Upload counts
-            </button>
-
-            {/* Short/stub-week shortcut: carry the prior week's closing count forward as
-                THIS week's count, instead of physically counting a 1-day week. Only shows
-                on a short week (<7 days) with no count yet — disappears the moment any
-                item has a real count, so it can never silently overwrite one. */}
-            {showRollover && (
-              <button
-                onClick={handleRollOver}
-                disabled={rollingOver || locked}
-                title="Carry the prior period's closing count forward as this stub week's count. Editable afterward — not a lock."
-                style={{
-                  padding: '8px 14px', fontSize: 12, fontWeight: 600,
-                  background: locked ? '#e2e8f0' : '#d9770618', color: locked ? '#94a3b8' : '#d97706',
-                  borderRadius: 8, border: '1px solid ' + (locked ? '#e2e8f0' : '#d9770640'),
-                  cursor: (rollingOver || locked) ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: 6,
-                }}
-              >
-                <RefreshCw size={14} className={rollingOver ? styles.spin : ''} />
-                {rollingOver ? 'Rolling over…' : 'Roll over inventory'}
-              </button>
-            )}
-
-            {/* Item list = item DEFINITIONS (catalog) — the AMBER counterpart to
-                the green "Upload counts" above: amber = definitions, green = counts.
-                directions.js documents it as "the amber Item list button" in five
-                places, so the white styling it had was contradicting the docs users
-                are told to follow. Reuses the same amber token as "Roll over
-                inventory" (#d97706 family) in the shape "Upload counts" uses for
-                green, so the pair reads as a pair.
-
-                It previously used styles.btnIcon, whose fixed 36x36 square (meant
-                for the icon-ONLY buttons — Download/.xlsx/Refresh) forced the text
-                onto two lines and overflowed the box. It sizes to content now, like
-                the text siblings; whiteSpace:nowrap keeps that guarantee even if the
-                toolbar is squeezed (flex items can shrink before the row wraps).
-
-                NOTE: intentionally has NO locked/disabled state. Unlike Upload
-                counts (which has both an `if (locked)` guard and disabled={locked}),
-                uploadCatalog() only guards on !file/!location — so greying this out
-                would render as disabled while still working. Also a <label>, which
-                cannot take `disabled` at all. */}
-            {/* Two opt-in, OFF-by-default checkboxes for the merge upload below.
-                "Also update categories" only ever applies a row's category when
-                the row actually names one (never falls back to inference for an
-                existing item — see resolveRowCategory's comment in
-                catalogImport.js). "Also hide items not in this file" reuses the
-                existing removed mechanism (restorable from the removed-items
-                drawer), never a hard delete. */}
-            <label title="When checked, a matched item's category is updated to what the file says for that row — but only when the row actually names one. Off by default so a hand-corrected category never gets silently reverted by a re-upload."
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: '#92400e', whiteSpace: 'nowrap', cursor: 'pointer' }}>
-              <input type="checkbox" checked={mergeUpdateCategories} onChange={e => setMergeUpdateCategories(e.target.checked)} />
-              Update categories
-            </label>
-            <label title="When checked, an item at this location that ISN'T in the uploaded file is hidden (the same as clicking Remove) instead of just being reported. Hidden items can be restored from ⚙ Manage items → Removed. Off by default."
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: '#92400e', whiteSpace: 'nowrap', cursor: 'pointer' }}>
-              <input type="checkbox" checked={mergeHideNotInFile} onChange={e => setMergeHideNotInFile(e.target.checked)} />
-              Hide missing items
-            </label>
-            <label
-              htmlFor="catalog-upload"
-              style={{
-                padding: '8px 14px', fontSize: 12, fontWeight: 600,
-                background: '#d9770618', color: '#d97706',
-                borderRadius: 8, border: '1px solid #d9770640',
-                cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
-                whiteSpace: 'nowrap',
-              }}
-              title="Upload item list (.xlsx, .csv) — MERGES into the existing catalog: updates matched items' pricing/vendor/GL, adds new items, never deletes anything. Does NOT import counts."
-            >
-              <Upload size={14} /> Item list
-            </label>
-            {/* Full replace — deliberately demoted: plain text, not a button-shaped
-                control, so it reads as the exception rather than a peer of "Item
-                list". Its own confirm names exactly what would be lost. */}
-            <label
-              htmlFor={replacingCatalog ? undefined : 'catalog-replace-upload'}
-              style={{
-                fontSize: 11, color: replacingCatalog ? '#cbd5e1' : '#94a3b8', textDecoration: 'underline',
-                cursor: replacingCatalog ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap', alignSelf: 'center',
-              }}
-              title="Delete this location's ENTIRE item catalog and rebuild it from a file — loses par levels, shelf order, and multi-category sheet membership for every item not re-created by the file. A backup is saved first; there is no restore button yet. Use 'Item list' instead unless you specifically mean to start over."
-            >
-              {replacingCatalog ? 'Replacing…' : 'Replace entire catalog'}
-            </label>
-            <button className={styles.btnIcon} onClick={() => exportInventory('csv')} title="Export CSV">
-              <Download size={15} />
-            </button>
-            <button className={styles.btnIcon} onClick={() => exportInventory('xlsx')} title="Export Excel" style={{ fontSize: 10, fontWeight: 600, padding: '4px 8px' }}>
-              .xlsx
-            </button>
-            <button className={styles.btnIcon} onClick={handleRefresh} title="Refresh">
-              <RefreshCw size={15} className={loading ? styles.spin : ''} />
-            </button>
           </div>
         </div>
 
@@ -1694,30 +1492,100 @@ export default function Inventory() {
           </div>
         )}
 
+        {/* Control row: Sheet · Search · View · Edit sheet · More. Every
+            control here is a moved header/toolbar button — see
+            InventoryToolbar for the mapping. */}
+        <InventoryToolbar
+          sheets={sheetList}
+          sheet={currentSheet}
+          onSheetChange={pickSheet}
+          search={search}
+          onSearchChange={setSearch}
+          onScan={() => setShowScanner(true)}
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          showPrior={showPrior}
+          onShowPriorChange={setShowPrior}
+          showVariance={showVariance}
+          onShowVarianceChange={setShowVariance}
+          editing={arrangeMode}
+          editDisabled={locked && !arrangeMode}
+          editTitle={locked ? 'Period closed — reopen to edit' : 'Arrange shelf order, add items, manage categories and zones, upload the item list'}
+          onToggleEdit={() => (arrangeMode ? exitArrangeMode() : enterArrangeMode())}
+          more={{
+            onPrint: () => setPrintSheet('__all__'),
+            printDisabled: items.length === 0,
+            onUploadCounts: openCountUpload,
+            uploadCountsDisabled: locked,
+            uploadCountsTitle: locked ? 'Period closed — reopen to edit' : 'Upload counted quantities (.xlsx, .csv) for this period — matched by item name. Previews before writing.',
+            buddyMode,
+            buddyLabel: `${buddyNames.caller || '?'} + ${buddyNames.marker || '?'}`,
+            onBuddy: toggleBuddy,
+            onExport: exportInventory,
+            onRefresh: handleRefresh,
+          }}
+        />
+
+        {/* Edit sheet mode: the bar above the ArrangeList. */}
+        {arrangeMode && (
+          <EditSheetBar
+            onAddItem={() => { openManageItems(); requestAnimationFrame(() => document.getElementById('manage-add-name')?.focus()) }}
+            onManageItems={openManageItems}
+            canEditCats={canEditCats}
+            locked={locked}
+            onCategories={() => setShowCatManager(true)}
+            onZones={() => setShowZoneManager(true)}
+            onUploadItemList={() => setShowItemListUpload(true)}
+            uploadBusy={replacingCatalog}
+            onDone={exitArrangeMode}
+          />
+        )}
+        {showItemListUpload && (
+          <ItemListUploadDialog
+            onClose={() => setShowItemListUpload(false)}
+            updateCategories={mergeUpdateCategories}
+            onUpdateCategories={setMergeUpdateCategories}
+            hideMissing={mergeHideNotInFile}
+            onHideMissing={setMergeHideNotInFile}
+            onMerge={uploadCatalog}
+            onReplace={replaceCatalog}
+          />
+        )}
+
+        {/* Start this count — only until the first item is counted. Roll over
+            (carry the prior week's closing forward on a short/stub week) keeps
+            its own rule: showRollover already requires zero counts, so it can
+            never silently overwrite a real count. */}
+        {startStripVisible({ loading, editing: arrangeMode, items, hasCount }) && (
+          <StartStrip
+            onPrint={() => setPrintSheet('__all__')}
+            printDisabled={items.length === 0}
+            onUploadCounts={openCountUpload}
+            uploadCountsDisabled={locked}
+            uploadCountsTitle={locked ? 'Period closed — reopen to edit' : 'Upload counted quantities (.xlsx, .csv) for this period — matched by item name. Previews before writing.'}
+            showRollover={showRollover}
+            onRollOver={handleRollOver}
+            rollOverDisabled={rollingOver || locked}
+            rollingOver={rollingOver}
+          />
+        )}
+
         {/* ── Zone picker + sweep (Phase 3/4) ──────────────────────────
             Counting is physically per zone: pick one, count the list into it,
             then mark it swept. Sweeping is the assertion that turns "blank"
             from UNKNOWN into a real zero for every item in that zone — so it
             is deliberately explicit, reversible, and labelled as such. */}
         {zonesOn && countMode === 'zone' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 0' }}>
-            <span style={{ fontSize: 12, color: '#64748b', fontWeight: 600 }}>Counting zone:</span>
-            {zones.map(z => {
-              const active = activeZone === z.key
-              const swept = zonesCompleted.includes(z.key)
-              return (
-                <button key={z.key} onClick={() => setActiveZone(z.key)}
-                  className={`${styles.chip} ${active ? styles.chipActive : ''}`}
-                  title={swept ? 'Swept — blanks in this zone count as zero' : 'Not swept — blanks are unknown'}>
-                  {swept ? '✓ ' : ''}{z.label}
-                </button>
-              )
-            })}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '0 0 8px' }}>
+            <span style={{ fontSize: 12, color: '#64748b', fontWeight: 600 }}>
+              Counting zone: {zones.find(z => z.key === activeZone)?.label || '—'} (pick another from the Sheet list)
+            </span>
             {activeZone !== 'all' && (() => {
               const swept = zonesCompleted.includes(activeZone)
               const label = zones.find(z => z.key === activeZone)?.label || activeZone
               return (
                 <button
+                  type="button"
                   onClick={() => {
                     if (!swept && !window.confirm(
                       `Mark "${label}" as swept?\n\nThis asserts you walked the whole zone: any item with no entry here will count as ZERO in it, instead of leaving the item incomplete. You can undo this.`
@@ -1726,13 +1594,7 @@ export default function Inventory() {
                   }}
                   disabled={locked || !session}
                   title={!session ? 'Start a count session first' : swept ? 'Un-sweep — returns blanks to unknown' : 'Mark this zone swept'}
-                  style={{
-                    padding: '6px 12px', fontSize: 12, fontWeight: 600, borderRadius: 8,
-                    cursor: (locked || !session) ? 'not-allowed' : 'pointer',
-                    background: swept ? '#1D9E7518' : '#d9770618',
-                    color: swept ? '#1D9E75' : '#d97706',
-                    border: '1px solid ' + (swept ? '#1D9E7540' : '#d9770640'),
-                  }}>
+                  className={`${tb.btn} ${swept ? tb.btnCounts : tb.btnDefs}`}>
                   {swept ? `✓ ${label} swept — undo` : `Mark ${label} swept`}
                 </button>
               )
@@ -1783,119 +1645,6 @@ export default function Inventory() {
           </div>
         )}
 
-        {/* Toolbar */}
-        <div className={styles.toolbar}>
-          {/* Count mode selector */}
-          <div style={{
-            display: 'inline-flex',
-            background: '#f1f5f9',
-            borderRadius: 8,
-            padding: 3,
-            marginRight: 12,
-            gap: 2,
-          }}>
-            {[
-              { key: 'quick',   label: 'Quick',   sub: keyItemCount > 0 ? `${keyItemCount} key items` : 'key items' },
-              { key: 'section', label: 'Section', sub: 'one category' },
-              // Zone mode only appears for multi-zone locations — counting is
-              // physically per-zone (walk the cooler, count it, mark it swept).
-              ...(zonesOn ? [{ key: 'zone', label: 'Zone', sub: 'one zone' }] : []),
-              { key: 'full',    label: 'Full',    sub: `${items.length} items` },
-            ].map(m => {
-              const active = countMode === m.key
-              return (
-                <button
-                  key={m.key}
-                  onClick={() => setCountMode(m.key)}
-                  style={{
-                    background: active ? '#fff' : 'transparent',
-                    border: 'none',
-                    borderRadius: 6,
-                    padding: '6px 14px',
-                    cursor: 'pointer',
-                    boxShadow: active ? '0 1px 3px rgba(15,23,42,0.08)' : 'none',
-                    fontFamily: 'inherit',
-                    textAlign: 'left',
-                    minWidth: 90,
-                    transition: 'all 0.15s',
-                  }}
-                >
-                  <div style={{
-                    fontSize: 12,
-                    fontWeight: 500,
-                    color: active ? '#0f172a' : '#64748b',
-                    lineHeight: 1.2,
-                  }}>
-                    {m.label}
-                  </div>
-                  <div style={{
-                    fontSize: 9,
-                    color: active ? '#94a3b8' : '#94a3b8',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.04em',
-                    marginTop: 1,
-                  }}>
-                    {m.sub}
-                  </div>
-                </button>
-              )
-            })}
-          </div>
-          <div className={styles.searchWrap}>
-            <Search size={14} className={styles.searchIcon} />
-            <input 
-              type="text" 
-              value={search} 
-              onChange={e => setSearch(e.target.value)}
-              placeholder="Search items or vendor..." 
-              className={styles.searchInput} 
-            />
-          </div>
-          <div style={{ display: 'inline-flex', border: '1px solid #cbd5e1', borderRadius: 8, overflow: 'hidden' }}>
-            <button
-              onClick={() => setViewMode('grouped')}
-              title="Group items by category"
-              style={{
-                padding: '6px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer', border: 'none',
-                background: viewMode === 'grouped' ? '#0f172a' : '#fff',
-                color: viewMode === 'grouped' ? '#fff' : '#475569',
-              }}
-            >Grouped</button>
-            <button
-              onClick={() => setViewMode('flat')}
-              title="Show all items A-Z, no categories"
-              style={{
-                padding: '6px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer', border: 'none',
-                borderLeft: '1px solid #cbd5e1',
-                background: viewMode === 'flat' ? '#0f172a' : '#fff',
-                color: viewMode === 'flat' ? '#fff' : '#475569',
-              }}
-            >A–Z</button>
-          </div>
-          {/* Arrange mode toggle (Stage 2): hides counting, shows the drag list.
-              Sort is always shelf-order-by-default, so arranging takes effect
-              immediately in whichever view you're in. */}
-          <button
-            onClick={() => (arrangeMode ? exitArrangeMode() : enterArrangeMode())}
-            disabled={locked && !arrangeMode}
-            title={locked ? 'Period closed — reopen to rearrange' : 'Drag items into physical shelf order'}
-            style={{
-              padding: '6px 14px', fontSize: 13, fontWeight: 600, cursor: (locked && !arrangeMode) ? 'not-allowed' : 'pointer',
-              border: '1px solid #cbd5e1', borderRadius: 8,
-              background: arrangeMode ? '#1D9E75' : '#fff',
-              color: arrangeMode ? '#fff' : '#475569',
-              opacity: (locked && !arrangeMode) ? 0.5 : 1,
-            }}
-          >{arrangeMode ? 'Done arranging' : 'Arrange'}</button>
-          <button
-            className={`${styles.btnVariance} ${showVariance ? styles.btnVarianceActive : ''}`}
-            onClick={() => setShowVariance(v => !v)}
-          >
-            {showVariance ? <TrendingDown size={13} /> : <TrendingUp size={13} />}
-            Variance
-          </button>
-        </div>
-
         {/* Loading State */}
         {loading && <div className={styles.loading}>Loading inventory...</div>}
 
@@ -1931,7 +1680,7 @@ export default function Inventory() {
               >Back to counting</button>
             </div>
           )}>
-            <ArrangeList groups={arrangeGroups} viewMode={viewMode} onReorder={persistReorder} filtersActive={!!q || countMode !== 'full'} />
+            <ArrangeList groups={arrangeGroups} viewMode={viewMode} onReorder={persistReorder} filtersActive={!!q || countMode === 'quick' || countMode === 'zone'} />
           </ErrorBoundary>
         ) : displayGroups.map(cat => (
           <div key={cat.key} className={styles.section}>
@@ -2012,9 +1761,9 @@ export default function Inventory() {
                     {!isMobile && <th className={styles.thCenter}>Pack</th>}
                     {!isMobile && <th className={styles.thCenter}>Qty/pk</th>}
                     {!isMobile && <th className={styles.thRight}>Pack $</th>}
-                    {!isMobile && <th className={styles.thCenter} title={priorFromPeriod ? `The immediately-prior period had no count — Prior shown is from ${priorFromPeriod}` : undefined}>Prior{priorFromPeriod && <div style={{ fontSize: 9, fontWeight: 400, color: '#d97706', textTransform: 'none', letterSpacing: 0 }}>from {priorFromPeriod}</div>}</th>}
+                    {!isMobile && showPrior && <th className={styles.thCenter} title={priorFromPeriod ? `The immediately-prior period had no count — Prior shown is from ${priorFromPeriod}` : undefined}>Prior{priorFromPeriod && <div style={{ fontSize: 9, fontWeight: 400, color: '#d97706', textTransform: 'none', letterSpacing: 0 }}>from {priorFromPeriod}</div>}</th>}
                     <th className={styles.thCenter} style={{ width: isMobile ? 100 : 130 }}>Count<div style={{ fontSize: 9, fontWeight: 400, color: '#94a3b8', textTransform: 'none', letterSpacing: 0 }}>cases · .5 ok</div></th>
-                    {!isMobile && <th className={styles.thCenter}>Variance</th>}
+                    {!isMobile && showVariance && <th className={styles.thCenter}>Variance</th>}
                     {!isMobile && <th className={styles.thRight}>Value</th>}
                   </tr>
                 </thead>
@@ -2042,7 +1791,7 @@ export default function Inventory() {
                             {!isMobile && <button
                               tabIndex={-1}
                               onClick={() => toggleKey(item.id)}
-                              title={item.isKey ? 'Unmark as key item' : 'Mark as key item (shows in Quick count mode)'}
+                              title={item.isKey ? 'Unmark as key item' : 'Mark as key item (shows on the Key items sheet)'}
                               style={{
                                 background: 'none',
                                 border: 'none',
@@ -2062,7 +1811,7 @@ export default function Inventory() {
                             {!isMobile && <button
                               tabIndex={-1}
                               onClick={() => {
-                                if (window.confirm(`Remove "${item.name}" from this location's count sheet? You can restore it from Manage Items.`)) {
+                                if (window.confirm(`Remove "${item.name}" from this location's count sheet? You can restore it from Edit sheet → Manage items.`)) {
                                   removeItem(item.id)
                                 }
                               }}
@@ -2109,7 +1858,7 @@ export default function Inventory() {
                           {item.packPrice ? ('$' + item.packPrice.toFixed(2)) : (item.unitCost ? ('$' + item.unitCost.toFixed(2) + '/ea') : '--')}
                         </td>}
 
-                        {!isMobile && <td className={styles.tdCenter} style={{ color: '#94a3b8', fontSize: 12 }}>
+                        {!isMobile && showPrior && <td className={styles.tdCenter} data-col="prior" style={{ color: '#94a3b8', fontSize: 12 }}>
                           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', lineHeight: 1.6 }}>
                             <span>{(item._priorQty || 0) > 0 ? item._priorQty : '—'}</span>
                             <span>{(item._priorEaches || 0) > 0 ? item._priorEaches : '—'}</span>
@@ -2227,7 +1976,7 @@ export default function Inventory() {
                           </>)}
                         </td>
 
-                                                {!isMobile && <td className={styles.tdCenter}>
+                        {!isMobile && showVariance && <td className={styles.tdCenter} data-col="variance">
                           {isCounted && (item._priorQty || 0) > 0 ? (
                             <span className={`${styles.varBadge} ${styles['var_' + varDir]}`}>
                               {varDir === 'up' ? <TrendingUp size={10} /> : varDir === 'down' ? <TrendingDown size={10} /> : <Minus size={10} />}
@@ -2264,11 +2013,12 @@ export default function Inventory() {
                 </tbody>
                 <tfoot>
                   <tr style={{ background: '#f8fafc', borderTop: '0.5px solid #e2e8f0' }}>
-                    <td colSpan={isMobile ? 1 : 6} style={{ padding: '8px 12px' }}></td>
+                    {/* Item … Pack $ (+ Prior when shown) */}
+                    <td colSpan={isMobile ? 1 : (showPrior ? 6 : 5)} style={{ padding: '8px 12px' }}></td>
                     <td style={{ padding: '8px 12px', textAlign: 'right', fontSize: 12, color: '#64748b' }}>
                       {cat.isFlat ? cat.items.filter(hasCount).length : (catStats[cat.key]?.counted ?? 0)}/{cat.items.length}
                     </td>
-                    <td style={{ padding: '8px 12px' }}></td>
+                    {(isMobile || showVariance) && <td style={{ padding: '8px 12px' }}></td>}
                     {!isMobile && <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 600, fontSize: 12 }}>
                       {fmt$(cat.isFlat ? flatSummary.value : (catStats[cat.key]?.value || 0))}
                     </td>}
@@ -2860,7 +2610,7 @@ export default function Inventory() {
                           </div>
                           <div style={{ fontSize: 12, color: '#64748b', margin: '4px 0 6px' }}>
                             {mergeHideNotInFile
-                              ? 'Restorable from ⚙ Manage items → Removed.'
+                              ? 'Restorable from Edit sheet → Manage items → Removed.'
                               : 'Left untouched. Check "Hide missing items" before uploading if you want these hidden automatically.'}
                           </div>
                           <div style={{ fontSize: 13, color: '#334155', maxHeight: 140, overflowY: 'auto', border: '1px solid #f1f5f9', borderRadius: 6, padding: '6px 8px' }}>
@@ -2987,6 +2737,7 @@ export default function Inventory() {
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
                     <input
                       type="text"
+                      id="manage-add-name"
                       placeholder="Item name *"
                       value={customDraft.name}
                       onChange={e => setCustomDraft(d => ({ ...d, name: e.target.value }))}

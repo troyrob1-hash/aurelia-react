@@ -62,8 +62,9 @@ export const START_HERE = {
       'ordering, valuation, invoicing. The unit manager owns this list; nobody sets it up for you.',
     'Get the workbook from the company OneDrive and upload it whole — Aurelia reads the INVItems tab ' +
       'automatically and tells you which sheet it used.',
-    'Inventory → "Item list" (amber button). This loads item DEFINITIONS — names, pack sizes, prices, ' +
-      'vendors, GL codes. NOT counts. You enter counts after, by typing them or using the green "Upload counts" button.',
+    'Inventory → Edit sheet → "Upload item list" (amber button), mode "Add and update". This loads item DEFINITIONS — ' +
+      'names, pack sizes, prices, vendors, GL codes. NOT counts. You enter counts after, by typing them or with ' +
+      'More → "Upload a count file".',
   ],
 }
 
@@ -455,17 +456,22 @@ export const TABS = [
       'This is also where you FIRST load your item list (see "Start here").',
     workflow: [
       'Pick a location ("Select a location to begin counting").',
-      'Load the item list once with the amber "Item list" button (the whole OneDrive workbook — Aurelia reads INVItems).',
-      'For each item, enter the count: cases in the first box, loose units in the "eaches" box.',
+      'Load the item list once: Edit sheet → the amber "Upload item list" button (the whole OneDrive workbook — Aurelia reads INVItems).',
+      'Pick what to count with the Sheet button at the top of the list (All items, Key items, or one category; zones too if your location has them). It shows how many are counted, with a check on finished sheets.',
+      'For each item, enter the count: cases in the first box, loose units in the "eaches" box. To find an item fast, type in the search box or tap Scan inside it.',
+      'Before the first count of the week, the "Start this count" strip offers Print count sheets and Upload a count file (and Roll over last week on a short stub week). Everything else lives under More.',
+      'To put items in shelf order, add or remove items, or edit categories and zones: Edit sheet. Drag items, or type a position number. Done returns to counting.',
       'Counts autosave; use Save, or Save & Close Period when the week’s count is final.',
     ],
     uploads: [
       {
-        name: 'Item list (amber button) — item DEFINITIONS only',
+        name: 'Upload item list (Edit sheet → amber button) — item DEFINITIONS only',
         note:
           'Builds this location’s catalog: names, vendors, pack sizes, prices, GL, category. It does NOT import counts. ' +
           'Upload the whole workbook — Aurelia finds the INVItems tab and tells you which sheet it used. If the file has a ' +
           'counts-looking column (qty/quantity/count/on hand/cases/units) it warns you that the column will be IGNORED. ' +
+          'Mode "Add and update" (the default) updates and adds, never deletes. "Replace everything" rebuilds the whole ' +
+          'catalog from the file — it names exactly what would be lost and saves a backup before deleting anything. ' +
           'Columns it reads:',
         columns: [
           { col: 'Description / Item / Name', desc: 'item name' },
@@ -479,7 +485,7 @@ export const TABS = [
         ],
       },
       {
-        name: 'Upload counts (green button) — actual COUNTS',
+        name: 'Upload a count file (More menu, or the "Start this count" strip) — actual COUNTS',
         note:
           'Imports counted quantities for this period, matched to items by name, and always shows a preview (naming the ' +
           'sheet it read) before writing. Columns (matched case-insensitively):',
@@ -491,7 +497,7 @@ export const TABS = [
       },
     ],
     gotchas: [
-      'Item list ≠ Upload counts. The amber "Item list" button only defines what items exist; the green "Upload counts" button enters how many you have. Uploading counts into the item-list button does nothing to your counts (and it warns you).',
+      'Upload item list ≠ Upload a count file. The amber "Upload item list" button (in Edit sheet) only defines what items exist; "Upload a count file" (More menu) enters how many you have. Uploading counts as an item list does nothing to your counts (and it warns you).',
       'Eaches-only counts DO count. An item with loose units but zero full cases still contributes to inventory value — you do not have to put anything in the cases box for it to count.',
       'A count upload previews first: it shows how many rows will be counted, how many will not match an item (fix the name or add it to the catalog), and how many had an item but no count value (skipped).',
     ],
@@ -722,7 +728,7 @@ export const FAQ = [
   },
   {
     q: 'What’s the difference between the two Inventory upload buttons?',
-    a: 'Amber "Item list" = definitions, no counts. Green "Upload counts" = counts, previewed before they’re written.',
+    a: 'Edit sheet → amber "Upload item list" = definitions, no counts. More → "Upload a count file" = counts, previewed before they’re written.',
   },
   {
     q: 'Why isn’t my Order Hub order showing as a cost?',
