@@ -26,8 +26,8 @@ export default function InventoryToolbar({
     <MenuItem kind="radio" checked={viewMode === 'grouped'} onSelect={() => onViewModeChange('grouped')} close={close} title="Group items by category">Grouped</MenuItem>
     <MenuItem kind="radio" checked={viewMode === 'flat'} onSelect={() => onViewModeChange('flat')} close={close} title="Show all items A-Z, no categories">A–Z</MenuItem>
     <MenuDivider />
-    <MenuItem kind="checkbox" checked={showPrior} onSelect={() => onShowPriorChange(!showPrior)} close={close} title="Off = blind count: no prior-count hints in the count boxes, no variance alerts">Show last week's counts</MenuItem>
-    <MenuItem kind="checkbox" checked={showVariance} onSelect={() => onShowVarianceChange(!showVariance)} close={close}>Show variance</MenuItem>
+    <MenuItem kind="checkbox" checked={showPrior} onSelect={() => onShowPriorChange(!showPrior)} close={close} title="Off = blind count: hides the Prior column, the prior hint in the count boxes and the variance alerts">Show last week's counts</MenuItem>
+    <MenuItem kind="checkbox" checked={showVariance} onSelect={() => onShowVarianceChange(!showVariance)} close={close} title="Off hides the Variance column">Show variance</MenuItem>
   </>)
 
   return (

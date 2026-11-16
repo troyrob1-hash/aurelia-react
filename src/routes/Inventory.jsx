@@ -500,7 +500,12 @@ export default function Inventory() {
   const [activeCat, setActiveCat] = useState('all')
   const [collapsed, setCollapsed] = useState({})
   // View menu toggles — persisted in useUIStore exactly like viewMode.
-  // "Show last week's counts" off IS the old blind count mode.
+  // Display only: they hide table columns / hints, never the data. _priorQty
+  // and _variance are still computed by useInventory and still feed the
+  // variance alerts, the Why panel and everything downstream.
+  // "Show last week's counts" off = the Prior column hidden AND the old blind
+  // count mode (no prior hint in the count box, no double-click copy, no
+  // variance alerts). "Show variance" off = the Variance column hidden.
   const showPrior = useUIStore(s => s.inventoryShowPrior)
   const setShowPrior = useUIStore(s => s.setInventoryShowPrior)
   const blindMode = !showPrior
@@ -1756,9 +1761,9 @@ export default function Inventory() {
                     {!isMobile && <th className={styles.thCenter}>Pack</th>}
                     {!isMobile && <th className={styles.thCenter}>Qty/pk</th>}
                     {!isMobile && <th className={styles.thRight}>Pack $</th>}
-                    {!isMobile && <th className={styles.thCenter} title={priorFromPeriod ? `The immediately-prior period had no count — Prior shown is from ${priorFromPeriod}` : undefined}>Prior{priorFromPeriod && <div style={{ fontSize: 9, fontWeight: 400, color: '#d97706', textTransform: 'none', letterSpacing: 0 }}>from {priorFromPeriod}</div>}</th>}
+                    {!isMobile && showPrior && <th className={styles.thCenter} title={priorFromPeriod ? `The immediately-prior period had no count — Prior shown is from ${priorFromPeriod}` : undefined}>Prior{priorFromPeriod && <div style={{ fontSize: 9, fontWeight: 400, color: '#d97706', textTransform: 'none', letterSpacing: 0 }}>from {priorFromPeriod}</div>}</th>}
                     <th className={styles.thCenter} style={{ width: isMobile ? 100 : 130 }}>Count<div style={{ fontSize: 9, fontWeight: 400, color: '#94a3b8', textTransform: 'none', letterSpacing: 0 }}>cases · .5 ok</div></th>
-                    {!isMobile && <th className={styles.thCenter}>Variance</th>}
+                    {!isMobile && showVariance && <th className={styles.thCenter}>Variance</th>}
                     {!isMobile && <th className={styles.thRight}>Value</th>}
                   </tr>
                 </thead>
@@ -1853,7 +1858,7 @@ export default function Inventory() {
                           {item.packPrice ? ('$' + item.packPrice.toFixed(2)) : (item.unitCost ? ('$' + item.unitCost.toFixed(2) + '/ea') : '--')}
                         </td>}
 
-                        {!isMobile && <td className={styles.tdCenter} style={{ color: '#94a3b8', fontSize: 12 }}>
+                        {!isMobile && showPrior && <td className={styles.tdCenter} data-col="prior" style={{ color: '#94a3b8', fontSize: 12 }}>
                           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', lineHeight: 1.6 }}>
                             <span>{(item._priorQty || 0) > 0 ? item._priorQty : '—'}</span>
                             <span>{(item._priorEaches || 0) > 0 ? item._priorEaches : '—'}</span>
@@ -1971,7 +1976,7 @@ export default function Inventory() {
                           </>)}
                         </td>
 
-                                                {!isMobile && <td className={styles.tdCenter}>
+                        {!isMobile && showVariance && <td className={styles.tdCenter} data-col="variance">
                           {isCounted && (item._priorQty || 0) > 0 ? (
                             <span className={`${styles.varBadge} ${styles['var_' + varDir]}`}>
                               {varDir === 'up' ? <TrendingUp size={10} /> : varDir === 'down' ? <TrendingDown size={10} /> : <Minus size={10} />}
@@ -2008,11 +2013,12 @@ export default function Inventory() {
                 </tbody>
                 <tfoot>
                   <tr style={{ background: '#f8fafc', borderTop: '0.5px solid #e2e8f0' }}>
-                    <td colSpan={isMobile ? 1 : 6} style={{ padding: '8px 12px' }}></td>
+                    {/* Item … Pack $ (+ Prior when shown) */}
+                    <td colSpan={isMobile ? 1 : (showPrior ? 6 : 5)} style={{ padding: '8px 12px' }}></td>
                     <td style={{ padding: '8px 12px', textAlign: 'right', fontSize: 12, color: '#64748b' }}>
                       {cat.isFlat ? cat.items.filter(hasCount).length : (catStats[cat.key]?.counted ?? 0)}/{cat.items.length}
                     </td>
-                    <td style={{ padding: '8px 12px' }}></td>
+                    {(isMobile || showVariance) && <td style={{ padding: '8px 12px' }}></td>}
                     {!isMobile && <td style={{ padding: '8px 12px', textAlign: 'right', fontWeight: 600, fontSize: 12 }}>
                       {fmt$(cat.isFlat ? flatSummary.value : (catStats[cat.key]?.value || 0))}
                     </td>}
