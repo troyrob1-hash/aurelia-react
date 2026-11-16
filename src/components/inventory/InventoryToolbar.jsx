@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { AlertTriangle, ChevronDown, MoreHorizontal, Search, SlidersHorizontal } from 'lucide-react'
+import { AlertTriangle, ChevronDown, MoreHorizontal, Printer, RefreshCw, ScanLine, Search, SlidersHorizontal, Upload } from 'lucide-react'
 import Menu, { MenuItem, MenuHeading, MenuDivider } from './Menu'
 import { sheetButtonLabel } from '@/lib/sheetPicker'
 import styles from './InventoryToolbar.module.css'
@@ -12,7 +12,7 @@ import styles from './InventoryToolbar.module.css'
 // reappear inside More; their More copies carry styles.phoneOnly.
 export default function InventoryToolbar({
   sheets, sheet, onSheetChange,
-  search, onSearchChange,
+  search, onSearchChange, onScan,
   viewMode, onViewModeChange, showPrior, onShowPriorChange, showVariance, onShowVarianceChange,
   editing, editDisabled, editTitle, onToggleEdit,
   more,
@@ -69,7 +69,7 @@ export default function InventoryToolbar({
         </>)}
       </Menu>
 
-      {/* 2. Search */}
+      {/* 2. Search or scan — the Scan button opens the existing barcode scanner. */}
       <div className={styles.searchWrap}>
         <Search size={14} className={styles.searchIcon} aria-hidden="true" />
         <input
@@ -80,6 +80,9 @@ export default function InventoryToolbar({
           aria-label="Search items or vendor"
           className={styles.searchInput}
         />
+        <button type="button" className={styles.scanBtn} onClick={onScan} title="Scan a barcode and count it">
+          <ScanLine size={13} aria-hidden="true" /> Scan
+        </button>
       </div>
 
       {/* 3. View */}
@@ -153,5 +156,36 @@ export function ParPill({ count, open, onToggle }) {
       onClick={onToggle} aria-pressed={!!open} title="Par levels">
       <AlertTriangle size={13} aria-hidden="true" /> {count} below par
     </button>
+  )
+}
+
+// The strip shows while the sheet is loaded, has items, and NOTHING is counted
+// yet — the first count hides it for good this period. Not while editing.
+export function startStripVisible({ loading, editing, items, hasCount }) {
+  return !loading && !editing && items.length > 0 && !items.some(hasCount)
+}
+
+// "Start this count" — see startStripVisible for when it shows. Roll over appears only under the caller's showRollover rule
+// (a short/stub week with no counts) and keeps its locked/in-progress gating.
+export function StartStrip({ onPrint, printDisabled, onUploadCounts, uploadCountsDisabled, uploadCountsTitle, showRollover, onRollOver, rollOverDisabled, rollingOver }) {
+  return (
+    <div className={styles.strip} role="region" aria-label="Start this count">
+      <span className={styles.stripTitle}>Start this count</span>
+      <button type="button" className={styles.btn} onClick={onPrint} disabled={printDisabled}
+        title="Print blank count sheets by category for crew to fill in by hand">
+        <Printer size={14} aria-hidden="true" /> Print count sheets
+      </button>
+      <button type="button" className={`${styles.btn} ${styles.btnCounts}`} onClick={onUploadCounts} disabled={uploadCountsDisabled}
+        title={uploadCountsTitle}>
+        <Upload size={14} aria-hidden="true" /> Upload a count file
+      </button>
+      {showRollover && (
+        <button type="button" className={`${styles.btn} ${styles.btnDefs}`} onClick={onRollOver} disabled={rollOverDisabled}
+          title="Carry the prior period's closing count forward as this stub week's count. Editable afterward — not a lock.">
+          <RefreshCw size={14} aria-hidden="true" className={rollingOver ? styles.spin : ''} />
+          {rollingOver ? 'Rolling over…' : 'Roll over last week'}
+        </button>
+      )}
+    </div>
   )
 }

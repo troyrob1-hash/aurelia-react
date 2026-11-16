@@ -6,7 +6,7 @@
 
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, cleanup, within } from '@testing-library/react'
-import InventoryToolbar, { ParPill } from '../src/components/inventory/InventoryToolbar'
+import InventoryToolbar, { ParPill, StartStrip, startStripVisible } from '../src/components/inventory/InventoryToolbar'
 import { useUIStore } from '../src/store/uiStore'
 
 afterEach(cleanup)
@@ -153,5 +153,60 @@ describe('Par pill', () => {
     rerender(<ParPill count={3} open={false} onToggle={onToggle} />)
     fireEvent.click(screen.getByRole('button', { name: /3 below par/ }))
     expect(onToggle).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('Search or scan', () => {
+  it('Scan sits inside the search box and opens the scanner', () => {
+    const { onScan, onSearchChange } = setup()
+    const box = screen.getByRole('textbox', { name: 'Search items or vendor' })
+    const scan = screen.getByRole('button', { name: 'Scan' })
+    expect(box.parentElement.contains(scan)).toBe(true)
+    fireEvent.click(scan)
+    expect(onScan).toHaveBeenCalledTimes(1)
+    fireEvent.change(box, { target: { value: 'coke' } })
+    expect(onSearchChange).toHaveBeenCalledWith('coke')
+  })
+})
+
+describe('Start this count strip', () => {
+  const base = () => ({ onPrint: vi.fn(), onUploadCounts: vi.fn(), onRollOver: vi.fn(), uploadCountsTitle: 'Upload' })
+  it('Print count sheets and Upload a count file; Roll over only under showRollover', () => {
+    const h = base()
+    const { rerender } = render(<StartStrip {...h} showRollover={false} />)
+    expect(screen.queryByRole('button', { name: /Roll over/ })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Print count sheets/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Upload a count file/ }))
+    expect(h.onPrint).toHaveBeenCalledTimes(1)
+    expect(h.onUploadCounts).toHaveBeenCalledTimes(1)
+    rerender(<StartStrip {...h} showRollover />)
+    fireEvent.click(screen.getByRole('button', { name: /Roll over last week/ }))
+    expect(h.onRollOver).toHaveBeenCalledTimes(1)
+  })
+  it('locked: Upload a count file and Roll over are disabled', () => {
+    const h = base()
+    render(<StartStrip {...h} showRollover uploadCountsDisabled rollOverDisabled />)
+    fireEvent.click(screen.getByRole('button', { name: /Upload a count file/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Roll over/ }))
+    expect(h.onUploadCounts).not.toHaveBeenCalled()
+    expect(h.onRollOver).not.toHaveBeenCalled()
+  })
+})
+
+describe('when the start strip shows', () => {
+  const hasCount = i => i.qty != null
+  const blank = [{ id: 1, qty: null }, { id: 2, qty: null }]
+  it('only at zero counted, with items loaded, outside Edit sheet', () => {
+    expect(startStripVisible({ loading: false, editing: false, items: blank, hasCount })).toBe(true)
+    expect(startStripVisible({ loading: false, editing: false, items: [...blank, { id: 3, qty: 0 }], hasCount })).toBe(false)
+    expect(startStripVisible({ loading: true, editing: false, items: blank, hasCount })).toBe(false)
+    expect(startStripVisible({ loading: false, editing: true, items: blank, hasCount })).toBe(false)
+    expect(startStripVisible({ loading: false, editing: false, items: [], hasCount })).toBe(false)
+  })
+  it('Inventory uses the real hasCount (eaches-only counts count) and the existing showRollover', () => {
+    const src = require('fs').readFileSync(require('path').resolve(__dirname, '../src/routes/Inventory.jsx'), 'utf8')
+    expect(src).toMatch(/startStripVisible\(\{ loading, editing: arrangeMode, items, hasCount \}\)/)
+    expect(src).toMatch(/showRollover=\{showRollover\}/)
+    expect(src).toMatch(/const showRollover = isShortWeek\(currentWeek, week\) && !items\.some\(hasCount\)/)
   })
 })

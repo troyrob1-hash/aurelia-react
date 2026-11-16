@@ -16,12 +16,12 @@ import {
   buildCatalogMerge, catalogLossWarningText, catalogBackupTimestamp, catalogFileError, runCatalogReplace,
 } from '@/lib/catalogImport'
 import { displayCents } from '@/lib/buckets'
-import { Search, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle, Upload } from 'lucide-react'
+import { Search, TrendingUp, TrendingDown, Minus, Upload } from 'lucide-react'
 import { useToast } from '@/components/ui/Toast'
 import AllLocationsGrid from '@/components/AllLocationsGrid'
 import ErrorBoundary from '@/components/ErrorBoundary'
 import ArrangeList from '@/components/inventory/ArrangeList'
-import InventoryToolbar, { ParPill } from '@/components/inventory/InventoryToolbar'
+import InventoryToolbar, { ParPill, StartStrip, startStripVisible } from '@/components/inventory/InventoryToolbar'
 import CategoryManagerModal from '@/components/inventory/CategoryManagerModal'
 import ZoneManagerModal from '@/components/inventory/ZoneManagerModal'
 import CountSheetPrintModal from '@/components/inventory/CountSheetPrintModal'
@@ -1449,13 +1449,6 @@ export default function Inventory() {
             {/* Save / Save & Close moved to the SaveStatusBar (bottom) — single
                 source of truth for both actions. */}
 
-            <button onClick={() => setShowScanner(true)} style={{
-              padding: '8px 14px', fontSize: 12, fontWeight: 600,
-              background: '#F15D3B18', color: '#F15D3B', borderRadius: 8,
-              border: '1px solid #F15D3B40', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
-            }}>
-              <Search size={14} /> Scan &amp; count
-            </button>
 
             {/* Upload COUNTS (quantities) — green, visually distinct from the
                 amber "Item list" (catalog/definitions) upload. Blocks on a locked
@@ -1468,26 +1461,6 @@ export default function Inventory() {
               onChange={e => { if (e.target.files[0]) { parseCountFile(e.target.files[0]); e.target.value = '' } }}
             />
 
-            {/* Short/stub-week shortcut: carry the prior week's closing count forward as
-                THIS week's count, instead of physically counting a 1-day week. Only shows
-                on a short week (<7 days) with no count yet — disappears the moment any
-                item has a real count, so it can never silently overwrite one. */}
-            {showRollover && (
-              <button
-                onClick={handleRollOver}
-                disabled={rollingOver || locked}
-                title="Carry the prior period's closing count forward as this stub week's count. Editable afterward — not a lock."
-                style={{
-                  padding: '8px 14px', fontSize: 12, fontWeight: 600,
-                  background: locked ? '#e2e8f0' : '#d9770618', color: locked ? '#94a3b8' : '#d97706',
-                  borderRadius: 8, border: '1px solid ' + (locked ? '#e2e8f0' : '#d9770640'),
-                  cursor: (rollingOver || locked) ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: 6,
-                }}
-              >
-                <RefreshCw size={14} className={rollingOver ? styles.spin : ''} />
-                {rollingOver ? 'Rolling over…' : 'Roll over inventory'}
-              </button>
-            )}
 
             {/* Item list = item DEFINITIONS (catalog) — the AMBER counterpart to
                 the green "Upload counts" above: amber = definitions, green = counts.
@@ -1631,6 +1604,7 @@ export default function Inventory() {
           onSheetChange={pickSheet}
           search={search}
           onSearchChange={setSearch}
+          onScan={() => setShowScanner(true)}
           viewMode={viewMode}
           onViewModeChange={setViewMode}
           showPrior={showPrior}
@@ -1654,6 +1628,24 @@ export default function Inventory() {
             onRefresh: handleRefresh,
           }}
         />
+
+        {/* Start this count — only until the first item is counted. Roll over
+            (carry the prior week's closing forward on a short/stub week) keeps
+            its own rule: showRollover already requires zero counts, so it can
+            never silently overwrite a real count. */}
+        {startStripVisible({ loading, editing: arrangeMode, items, hasCount }) && (
+          <StartStrip
+            onPrint={() => setPrintSheet('__all__')}
+            printDisabled={items.length === 0}
+            onUploadCounts={openCountUpload}
+            uploadCountsDisabled={locked}
+            uploadCountsTitle={locked ? 'Period closed — reopen to edit' : 'Upload counted quantities (.xlsx, .csv) for this period — matched by item name. Previews before writing.'}
+            showRollover={showRollover}
+            onRollOver={handleRollOver}
+            rollOverDisabled={rollingOver || locked}
+            rollingOver={rollingOver}
+          />
+        )}
 
         {/* ── Zone picker + sweep (Phase 3/4) ──────────────────────────
             Counting is physically per zone: pick one, count the list into it,
