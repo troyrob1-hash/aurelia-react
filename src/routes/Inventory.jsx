@@ -23,6 +23,7 @@ import ErrorBoundary from '@/components/ErrorBoundary'
 import ArrangeList from '@/components/inventory/ArrangeList'
 import InventoryToolbar, { ParPill, StartStrip, startStripVisible } from '@/components/inventory/InventoryToolbar'
 import { EditSheetBar, ItemListUploadDialog } from '@/components/inventory/EditSheet'
+import tb from '@/components/inventory/InventoryToolbar.module.css'
 import CategoryManagerModal from '@/components/inventory/CategoryManagerModal'
 import ZoneManagerModal from '@/components/inventory/ZoneManagerModal'
 import CountSheetPrintModal from '@/components/inventory/CountSheetPrintModal'
@@ -1579,6 +1580,7 @@ export default function Inventory() {
               const label = zones.find(z => z.key === activeZone)?.label || activeZone
               return (
                 <button
+                  type="button"
                   onClick={() => {
                     if (!swept && !window.confirm(
                       `Mark "${label}" as swept?\n\nThis asserts you walked the whole zone: any item with no entry here will count as ZERO in it, instead of leaving the item incomplete. You can undo this.`
@@ -1587,13 +1589,7 @@ export default function Inventory() {
                   }}
                   disabled={locked || !session}
                   title={!session ? 'Start a count session first' : swept ? 'Un-sweep — returns blanks to unknown' : 'Mark this zone swept'}
-                  style={{
-                    padding: '6px 12px', fontSize: 12, fontWeight: 600, borderRadius: 8,
-                    cursor: (locked || !session) ? 'not-allowed' : 'pointer',
-                    background: swept ? '#1D9E7518' : '#d9770618',
-                    color: swept ? '#1D9E75' : '#d97706',
-                    border: '1px solid ' + (swept ? '#1D9E7540' : '#d9770640'),
-                  }}>
+                  className={`${tb.btn} ${swept ? tb.btnCounts : tb.btnDefs}`}>
                   {swept ? `✓ ${label} swept — undo` : `Mark ${label} swept`}
                 </button>
               )
@@ -1790,7 +1786,7 @@ export default function Inventory() {
                             {!isMobile && <button
                               tabIndex={-1}
                               onClick={() => toggleKey(item.id)}
-                              title={item.isKey ? 'Unmark as key item' : 'Mark as key item (shows in Quick count mode)'}
+                              title={item.isKey ? 'Unmark as key item' : 'Mark as key item (shows on the Key items sheet)'}
                               style={{
                                 background: 'none',
                                 border: 'none',

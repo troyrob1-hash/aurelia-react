@@ -75,3 +75,21 @@ describe('every former control maps to a reachable new one', () => {
     }
   })
 })
+
+describe('Help & Directions names the new controls, not the moved ones', () => {
+  const D = readFileSync(resolve(ROOT, 'src/content/directions.js'), 'utf8')
+  it('no amber "Item list" button, green "Upload counts" button, Manage items or Arrange button', () => {
+    expect(D).not.toMatch(/"Item list" button|amber "Item list"|"Upload counts" button|Upload counts \(green|⚙ Manage|Arrange button/)
+  })
+  it('points at Edit sheet → Upload item list and More → Upload a count file', () => {
+    expect(D).toMatch(/Edit sheet → "Upload item list"/)
+    expect(D).toMatch(/More → "Upload a count file"/)
+  })
+})
+
+describe('dead responsive rules are gone', () => {
+  const CSS = readFileSync(resolve(ROOT, 'src/routes/Inventory.module.css'), 'utf8')
+  it.each(['.toolbarRow', '.search ', '.search,', '.page ', '.catBar', '.catPill', '.modeTabs'])('%s', sel => {
+    expect(CSS.includes(sel)).toBe(false)
+  })
+})

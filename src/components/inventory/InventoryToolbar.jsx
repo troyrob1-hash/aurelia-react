@@ -120,7 +120,7 @@ function MoreItems({ close, more, viewItems, edit }) {
       title="Print blank count sheets by category for crew to fill in by hand">Print count sheets</MenuItem>
     <MenuItem onSelect={more.onUploadCounts} disabled={more.uploadCountsDisabled} close={close}
       title={more.uploadCountsTitle}>Upload a count file</MenuItem>
-    <MenuItem kind="checkbox" checked={more.buddyMode} onSelect={more.onBuddy} close={close}
+    <MenuItem onSelect={more.onBuddy} close={close}
       title={more.buddyMode ? 'Exit buddy mode' : 'Start a team count with two people'}>
       {more.buddyMode ? `Buddy mode: ${more.buddyLabel}` : 'Buddy mode'}
     </MenuItem>

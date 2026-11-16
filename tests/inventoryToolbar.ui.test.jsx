@@ -107,7 +107,7 @@ describe('More menu', () => {
   it('buddy mode shows who is counting while active', () => {
     setup({ more: { buddyMode: true, buddyLabel: 'Ana + Bo' } })
     open('More')
-    expect(anyItem('Buddy mode').textContent).toBe('✓Buddy mode: Ana + Bo')
+    expect(anyItem('Buddy mode').textContent).toBe('Buddy mode: Ana + Bo')
   })
   it('a locked period disables Upload a count file; no items disables Print', () => {
     const { more } = setup({ more: { uploadCountsDisabled: true, printDisabled: true } })

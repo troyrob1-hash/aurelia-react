@@ -151,7 +151,9 @@
   .row .btn { min-height: 44px; }
   .searchWrap { order: 3; flex: 1 1 100%; max-width: none; }
   .searchInput { min-height: 44px; font-size: 16px; /* no iOS zoom on focus */ }
-  .menu { position: fixed; left: 12px; right: 12px; top: auto; bottom: 12px; min-width: 0; max-height: 70vh; }
+  /* Bottom sheet; above the floating assistant button (z-index 9999) so it
+     never covers a menu row. */
+  .menu { position: fixed; left: 12px; right: 12px; top: auto; bottom: 12px; min-width: 0; max-height: 70vh; z-index: 10000; }
   .menuItem { min-height: 44px; }
   .strip .btn, .editBar .btn { min-height: 44px; }
 }

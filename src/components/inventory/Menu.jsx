@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import styles from './InventoryToolbar.module.css'
 
 // Minimal dropdown for the Inventory control row: a trigger button plus a
@@ -7,7 +7,20 @@ import styles from './InventoryToolbar.module.css'
 // keep the menu open (e.g. the Export format choice).
 export default function Menu({ label, buttonContent, buttonClassName = '', align = 'left', disabled, title, children, wide = false }) {
   const [open, setOpen] = useState(false)
+  const [maxHeight, setMaxHeight] = useState(null)
   const wrap = useRef(null)
+  const pop = useRef(null)
+
+  // Fit the popover to the space below its button so a long list (the Sheet
+  // list) scrolls inside itself instead of running off a short window. The
+  // phone layout pins the popover to the bottom of the screen (position:
+  // fixed in the CSS), which sizes itself — leave that alone.
+  useLayoutEffect(() => {
+    if (!open || !pop.current || !wrap.current) return
+    if (window.getComputedStyle(pop.current).position === 'fixed') { setMaxHeight(null); return }
+    const below = window.innerHeight - wrap.current.getBoundingClientRect().bottom - 16
+    setMaxHeight(Math.max(180, Math.min(520, below)))
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -40,7 +53,7 @@ export default function Menu({ label, buttonContent, buttonClassName = '', align
         {buttonContent}
       </button>
       {open && (
-        <div role="menu" aria-label={label}
+        <div role="menu" aria-label={label} ref={pop} style={maxHeight ? { maxHeight } : undefined}
           className={`${styles.menu} ${align === 'right' ? styles.menuRight : ''} ${wide ? styles.menuWide : ''}`}>
           {children({ close })}
         </div>
