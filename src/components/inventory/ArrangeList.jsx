@@ -50,7 +50,7 @@ export default function ArrangeList({ groups, viewMode, onReorder, filtersActive
         background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8,
         margin: '0 0 12px',
       }}>
-        Arrange mode — counting is paused.{' '}
+        Editing the sheet — counting is paused.{' '}
         {viewMode === 'flat'
           ? 'Drag items into one flat shelf order across all items.'
           : 'Drag items into shelf order within each category group.'}{' '}

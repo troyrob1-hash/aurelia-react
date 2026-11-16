@@ -488,7 +488,7 @@ export function catalogLossWarningText(summary, locationLabel, incomingCount = n
   if (summary.withSplit) lines.push(`• ${summary.withSplit} item${summary.withSplit === 1 ? '' : 's'} counted on more than one category sheet`)
   if (summary.withKey) lines.push(`• ${summary.withKey} item${summary.withKey === 1 ? '' : 's'} marked as a quick-count key item`)
   if (summary.removedCount) lines.push(`• ${summary.removedCount} hidden item${summary.removedCount === 1 ? '' : 's'} and their removal history`)
-  lines.push('', 'A backup of the current catalog is saved automatically, but there is no restore button yet —', 'recovering it means a manual Firestore read. Consider "Item list" (merge) instead unless you', 'specifically mean to start over.', '', 'Continue?')
+  lines.push('', 'A backup of the current catalog is saved automatically, but there is no restore button yet —', 'recovering it means a manual Firestore read. Consider "Add and update" (merge) instead unless you', 'specifically mean to start over.', '', 'Continue?')
   return lines.join('\n')
 }
 

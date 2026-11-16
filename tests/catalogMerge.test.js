@@ -387,21 +387,27 @@ describe('the isKey hydration bug (found in scope, fixed here)', () => {
   })
 })
 
-describe('UI wiring — merge is the default "Item list" button; replace is separate and demoted', () => {
+describe('UI wiring — Upload item list: merge is the default mode; replace is opt-in and destructive', () => {
   const INV = code('src/routes/Inventory.jsx')
+  const DLG = code('src/components/inventory/EditSheet.jsx')
 
-  it('the Item list input still calls uploadCatalog (now merge)', () => {
-    expect(INV).toMatch(/id="catalog-upload"[\s\S]{0,120}uploadCatalog\(e\.target\.files\[0\]\)/)
+  it('the dialog hands "Add and update" to uploadCatalog (merge) and "Replace everything" to replaceCatalog', () => {
+    expect(INV).toMatch(/<ItemListUploadDialog[\s\S]{0,400}onMerge=\{uploadCatalog\}\s*onReplace=\{replaceCatalog\}/)
+    expect(DLG).toMatch(/const \[mode, setMode\] = useState\('merge'\)/)
+    expect(DLG).toMatch(/if \(replace\) onReplace\(file\)\s*else onMerge\(file\)/)
   })
 
-  it('a separate input + trigger exist for replaceCatalog, not reachable from the Item list label', () => {
-    expect(INV).toMatch(/id="catalog-replace-upload"[\s\S]{0,120}replaceCatalog\(e\.target\.files\[0\]\)/)
-    expect(INV).toMatch(/htmlFor=\{replacingCatalog \? undefined : 'catalog-replace-upload'\}/)
+  it('no other path reaches replaceCatalog (the old standalone link and its hidden input are gone)', () => {
+    expect(INV).not.toMatch(/catalog-replace-upload/)
+    expect(INV.match(/replaceCatalog\b(?! called)/g)).toHaveLength(2) // the definition + the dialog prop (not its log line)
+    // the page drop target still merges
+    expect(INV).toMatch(/file\.name\.endsWith\('\.csv'\)\)\) \{\s*uploadCatalog\(file\)/)
   })
 
-  it('both checkboxes are read at upload time and default off', () => {
+  it('both options default off, are the parent state, and are read at upload time', () => {
     expect(INV).toMatch(/const \[mergeUpdateCategories, setMergeUpdateCategories\] = useState\(false\)/)
     expect(INV).toMatch(/const \[mergeHideNotInFile, setMergeHideNotInFile\] = useState\(false\)/)
     expect(INV).toMatch(/updateCategories: mergeUpdateCategories, hideNotInFile: mergeHideNotInFile/)
+    expect(INV).toMatch(/updateCategories=\{mergeUpdateCategories\}\s*onUpdateCategories=\{setMergeUpdateCategories\}\s*hideMissing=\{mergeHideNotInFile\}\s*onHideMissing=\{setMergeHideNotInFile\}/)
   })
 })

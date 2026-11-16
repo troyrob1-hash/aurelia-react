@@ -22,6 +22,7 @@ import AllLocationsGrid from '@/components/AllLocationsGrid'
 import ErrorBoundary from '@/components/ErrorBoundary'
 import ArrangeList from '@/components/inventory/ArrangeList'
 import InventoryToolbar, { ParPill, StartStrip, startStripVisible } from '@/components/inventory/InventoryToolbar'
+import { EditSheetBar, ItemListUploadDialog } from '@/components/inventory/EditSheet'
 import CategoryManagerModal from '@/components/inventory/CategoryManagerModal'
 import ZoneManagerModal from '@/components/inventory/ZoneManagerModal'
 import CountSheetPrintModal from '@/components/inventory/CountSheetPrintModal'
@@ -368,8 +369,9 @@ export default function Inventory() {
 
   // Full catalog REPLACE — the old delete-and-rebuild behavior, demoted behind
   // its own explicit, named confirm (catalogLossWarningText — exact counts, not
-  // a generic warning) and a pre-upload backup. Not reachable from the normal
-  // "Item list" button; only from "Replace entire catalog" below it.
+  // a generic warning) and a pre-upload backup. Reached only from Edit sheet →
+  // Upload item list with "Replace everything" picked (ItemListUploadDialog);
+  // the default mode, and the page drop target, run the merge.
   async function replaceCatalog(file) {
     console.log('replaceCatalog called:', file?.name, 'location:', location)
     if (!file) return
@@ -713,6 +715,7 @@ export default function Inventory() {
   const [mergeHideNotInFile, setMergeHideNotInFile] = useState(false)
   const [uploadSummary, setUploadSummary] = useState(null)
   const [replacingCatalog, setReplacingCatalog] = useState(false)
+  const [showItemListUpload, setShowItemListUpload] = useState(false)
   async function handleRollOver() {
     if (!window.confirm(
       `Roll over ${cleanLocName(location)}'s prior week's closing count as this stub week's count?\n\n` +
@@ -1225,6 +1228,8 @@ export default function Inventory() {
     document.getElementById('counts-upload')?.click()
   }
 
+  const openManageItems = () => { setShowManage(true); loadRemovedItems() }
+
   const toggleBuddy = () => {
     if (buddyMode) {
       setBuddyMode(false)
@@ -1380,22 +1385,6 @@ export default function Inventory() {
         </div>
       )}
 
-      {/* Upload catalog — MERGE (the default, safe path) */}
-      <input
-        type="file"
-        accept=".xlsx,.xls,.csv"
-        style={{ display: 'none' }}
-        id="catalog-upload"
-        onChange={e => { if (e.target.files[0]) { uploadCatalog(e.target.files[0]); e.target.value = '' } }}
-      />
-      {/* Full catalog REPLACE — demoted, separate input, its own named confirm. */}
-      <input
-        type="file"
-        accept=".xlsx,.xls,.csv"
-        style={{ display: 'none' }}
-        id="catalog-replace-upload"
-        onChange={e => { if (e.target.files[0]) { replaceCatalog(e.target.files[0]); e.target.value = '' } }}
-      />
 
 
       <div className={styles.invContent}>
@@ -1417,42 +1406,8 @@ export default function Inventory() {
             {/* "N below par" — only when there is something below par; opens
                 the same par panel the old always-on "Par (N)" button did. */}
             <ParPill count={totals.belowPar || 0} open={showParPanel} onToggle={() => setShowParPanel(v => !v)} />
-            <button
-              className={styles.btnMode}
-              onClick={() => { setShowManage(true); loadRemovedItems() }}
-              title="Add or remove items for this location"
-            >
-              ⚙ Manage items
-            </button>
-            {canEditCats && selectedLocation && selectedLocation !== 'all' && (
-              <button
-                className={styles.btnMode}
-                onClick={() => setShowCatManager(true)}
-                disabled={locked}
-                title={locked ? 'Period closed — reopen to edit' : "Manage this location's inventory categories"}
-                style={locked ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
-              >
-                ⚙ Manage categories
-              </button>
-            )}
-            {canEditCats && selectedLocation && selectedLocation !== 'all' && (
-              <button
-                className={styles.btnMode}
-                onClick={() => setShowZoneManager(true)}
-                disabled={locked}
-                title={locked ? 'Period closed — reopen to edit' : "Manage this location's counting zones"}
-                style={locked ? { opacity: 0.5, cursor: 'not-allowed' } : undefined}
-              >
-                ⚙ Manage zones
-              </button>
-            )}
-            {/* Save / Save & Close moved to the SaveStatusBar (bottom) — single
-                source of truth for both actions. */}
-
-
-            {/* Upload COUNTS (quantities) — green, visually distinct from the
-                amber "Item list" (catalog/definitions) upload. Blocks on a locked
-                period BEFORE opening the file dialog (fail fast). */}
+            {/* Hidden input behind More → Upload a count file and the start
+                strip (openCountUpload). */}
             <input
               type="file"
               accept=".xlsx,.xls,.csv"
@@ -1460,70 +1415,6 @@ export default function Inventory() {
               id="counts-upload"
               onChange={e => { if (e.target.files[0]) { parseCountFile(e.target.files[0]); e.target.value = '' } }}
             />
-
-
-            {/* Item list = item DEFINITIONS (catalog) — the AMBER counterpart to
-                the green "Upload counts" above: amber = definitions, green = counts.
-                directions.js documents it as "the amber Item list button" in five
-                places, so the white styling it had was contradicting the docs users
-                are told to follow. Reuses the same amber token as "Roll over
-                inventory" (#d97706 family) in the shape "Upload counts" uses for
-                green, so the pair reads as a pair.
-
-                It previously used styles.btnIcon, whose fixed 36x36 square (meant
-                for the icon-ONLY buttons — Download/.xlsx/Refresh) forced the text
-                onto two lines and overflowed the box. It sizes to content now, like
-                the text siblings; whiteSpace:nowrap keeps that guarantee even if the
-                toolbar is squeezed (flex items can shrink before the row wraps).
-
-                NOTE: intentionally has NO locked/disabled state. Unlike Upload
-                counts (which has both an `if (locked)` guard and disabled={locked}),
-                uploadCatalog() only guards on !file/!location — so greying this out
-                would render as disabled while still working. Also a <label>, which
-                cannot take `disabled` at all. */}
-            {/* Two opt-in, OFF-by-default checkboxes for the merge upload below.
-                "Also update categories" only ever applies a row's category when
-                the row actually names one (never falls back to inference for an
-                existing item — see resolveRowCategory's comment in
-                catalogImport.js). "Also hide items not in this file" reuses the
-                existing removed mechanism (restorable from the removed-items
-                drawer), never a hard delete. */}
-            <label title="When checked, a matched item's category is updated to what the file says for that row — but only when the row actually names one. Off by default so a hand-corrected category never gets silently reverted by a re-upload."
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: '#92400e', whiteSpace: 'nowrap', cursor: 'pointer' }}>
-              <input type="checkbox" checked={mergeUpdateCategories} onChange={e => setMergeUpdateCategories(e.target.checked)} />
-              Update categories
-            </label>
-            <label title="When checked, an item at this location that ISN'T in the uploaded file is hidden (the same as clicking Remove) instead of just being reported. Hidden items can be restored from ⚙ Manage items → Removed. Off by default."
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: '#92400e', whiteSpace: 'nowrap', cursor: 'pointer' }}>
-              <input type="checkbox" checked={mergeHideNotInFile} onChange={e => setMergeHideNotInFile(e.target.checked)} />
-              Hide missing items
-            </label>
-            <label
-              htmlFor="catalog-upload"
-              style={{
-                padding: '8px 14px', fontSize: 12, fontWeight: 600,
-                background: '#d9770618', color: '#d97706',
-                borderRadius: 8, border: '1px solid #d9770640',
-                cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6,
-                whiteSpace: 'nowrap',
-              }}
-              title="Upload item list (.xlsx, .csv) — MERGES into the existing catalog: updates matched items' pricing/vendor/GL, adds new items, never deletes anything. Does NOT import counts."
-            >
-              <Upload size={14} /> Item list
-            </label>
-            {/* Full replace — deliberately demoted: plain text, not a button-shaped
-                control, so it reads as the exception rather than a peer of "Item
-                list". Its own confirm names exactly what would be lost. */}
-            <label
-              htmlFor={replacingCatalog ? undefined : 'catalog-replace-upload'}
-              style={{
-                fontSize: 11, color: replacingCatalog ? '#cbd5e1' : '#94a3b8', textDecoration: 'underline',
-                cursor: replacingCatalog ? 'not-allowed' : 'pointer', whiteSpace: 'nowrap', alignSelf: 'center',
-              }}
-              title="Delete this location's ENTIRE item catalog and rebuild it from a file — loses par levels, shelf order, and multi-category sheet membership for every item not re-created by the file. A backup is saved first; there is no restore button yet. Use 'Item list' instead unless you specifically mean to start over."
-            >
-              {replacingCatalog ? 'Replacing…' : 'Replace entire catalog'}
-            </label>
           </div>
         </div>
 
@@ -1628,6 +1519,32 @@ export default function Inventory() {
             onRefresh: handleRefresh,
           }}
         />
+
+        {/* Edit sheet mode: the bar above the ArrangeList. */}
+        {arrangeMode && (
+          <EditSheetBar
+            onAddItem={() => { openManageItems(); requestAnimationFrame(() => document.getElementById('manage-add-name')?.focus()) }}
+            onManageItems={openManageItems}
+            canEditCats={canEditCats}
+            locked={locked}
+            onCategories={() => setShowCatManager(true)}
+            onZones={() => setShowZoneManager(true)}
+            onUploadItemList={() => setShowItemListUpload(true)}
+            uploadBusy={replacingCatalog}
+            onDone={exitArrangeMode}
+          />
+        )}
+        {showItemListUpload && (
+          <ItemListUploadDialog
+            onClose={() => setShowItemListUpload(false)}
+            updateCategories={mergeUpdateCategories}
+            onUpdateCategories={setMergeUpdateCategories}
+            hideMissing={mergeHideNotInFile}
+            onHideMissing={setMergeHideNotInFile}
+            onMerge={uploadCatalog}
+            onReplace={replaceCatalog}
+          />
+        )}
 
         {/* Start this count — only until the first item is counted. Roll over
             (carry the prior week's closing forward on a short/stub week) keeps
@@ -1893,7 +1810,7 @@ export default function Inventory() {
                             {!isMobile && <button
                               tabIndex={-1}
                               onClick={() => {
-                                if (window.confirm(`Remove "${item.name}" from this location's count sheet? You can restore it from Manage Items.`)) {
+                                if (window.confirm(`Remove "${item.name}" from this location's count sheet? You can restore it from Edit sheet → Manage items.`)) {
                                   removeItem(item.id)
                                 }
                               }}
@@ -2691,7 +2608,7 @@ export default function Inventory() {
                           </div>
                           <div style={{ fontSize: 12, color: '#64748b', margin: '4px 0 6px' }}>
                             {mergeHideNotInFile
-                              ? 'Restorable from ⚙ Manage items → Removed.'
+                              ? 'Restorable from Edit sheet → Manage items → Removed.'
                               : 'Left untouched. Check "Hide missing items" before uploading if you want these hidden automatically.'}
                           </div>
                           <div style={{ fontSize: 13, color: '#334155', maxHeight: 140, overflowY: 'auto', border: '1px solid #f1f5f9', borderRadius: 6, padding: '6px 8px' }}>
@@ -2818,6 +2735,7 @@ export default function Inventory() {
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
                     <input
                       type="text"
+                      id="manage-add-name"
                       placeholder="Item name *"
                       value={customDraft.name}
                       onChange={e => setCustomDraft(d => ({ ...d, name: e.target.value }))}
