@@ -168,6 +168,19 @@ export function mergeCountsWithDeletions(existing, newCounts, deletions) {
  * the doc data (itemId) so the read matches on the raw id directly.
  */
 /**
+ * An item's barcode for the scanner (BarcodeScanner matches on item.sku): the
+ * first non-blank value, trimmed, else null. Every load path carries it —
+ * before this, none did, so the scanner could never match anything.
+ */
+export function itemSku(...values) {
+  for (const v of values) {
+    const s = v == null ? '' : String(v).trim()
+    if (s) return s
+  }
+  return null
+}
+
+/**
  * Shallow-merge `patches` ({ [itemId]: {field: value} }) into an items array.
  *
  * The reducer behind patchItemFields, extracted so the "an edit-panel write
@@ -801,6 +814,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
               // Shelf-to-sheet ordering (Stage 1). Location-own catalog doc IS
               // the per-location record, so read directly off item.X (no
               // override layer here).
+              sku: itemSku(item.sku),
               catShelfOrder:  item.catShelfOrder  ?? null,
               flatShelfOrder: item.flatShelfOrder ?? null,
               // Per-sheet positions for split items (countSheets.sheetPosition).
@@ -850,6 +864,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
             // catShelfOrder sorts within the category group; flatShelfOrder
             // sorts all items in the location. Same override.X ?? item.X ?? null
             // pattern as the other edit-panel fields so values stick on reload.
+            sku: itemSku(override.sku, item.sku),
             catShelfOrder:  override.catShelfOrder  ?? item.catShelfOrder  ?? null,
             flatShelfOrder: override.flatShelfOrder ?? item.flatShelfOrder ?? null,
             sheetShelfOrder: shelfMap(override.sheetShelfOrder ?? item.sheetShelfOrder),
@@ -884,6 +899,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
             isKey: data.isKey || false,
             // Shelf-to-sheet ordering (Stage 1). Custom items are fully
             // self-contained in the location-items doc, so read off data.X.
+            sku: itemSku(data.sku),
             catShelfOrder:  data.catShelfOrder  ?? null,
             flatShelfOrder: data.flatShelfOrder ?? null,
             sheetShelfOrder: shelfMap(data.sheetShelfOrder),
