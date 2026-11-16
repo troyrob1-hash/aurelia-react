@@ -486,8 +486,8 @@ export default function Inventory() {
 
   const [search, setSearch] = useState('')
   // viewMode lives in useUIStore so the user's A-Z/grouped choice survives
-  // route changes (e.g. clicking over to Sales and back). Resets on full page
-  // reload; cross-login persistence is a planned follow-up (CLAUDE.md).
+  // route changes (e.g. clicking over to Sales and back), and is saved to the
+  // user's profile so it survives reloads and sign-out/sign-in (viewPrefsSync).
   const viewMode = useUIStore(s => s.inventoryViewMode)
   const setViewMode = useUIStore(s => s.setInventoryViewMode)
   // Arrange mode (Stage 2): transient drag-to-reorder editing mode. Local state
@@ -499,7 +499,7 @@ export default function Inventory() {
   const exitArrangeMode = () => setArrangeMode(false)
   const [activeCat, setActiveCat] = useState('all')
   const [collapsed, setCollapsed] = useState({})
-  // View menu toggles — persisted in useUIStore exactly like viewMode.
+  // View menu toggles — in useUIStore and saved per user, exactly like viewMode.
   // Display only: they hide table columns / hints, never the data. _priorQty
   // and _variance are still computed by useInventory and still feed the
   // variance alerts, the Why panel and everything downstream.
