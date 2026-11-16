@@ -6,7 +6,7 @@ import { classifyVariance } from '@/lib/variance'
 import { useCountsListener } from '@/hooks/useCountsListener'
 import { useToast } from '@/components/ui/Toast'
 import { resolveZones } from '@/lib/zoneHelpers'
-import { nextShelfPosition, nextFlatPosition, shelfWriteChunks, seedPatches } from '@/lib/shelfOrder'
+import { nextShelfPosition, nextFlatPosition, shelfWriteChunks, seedPatches, shelfMap, mergeShelfData, planJoinedSheets } from '@/lib/shelfOrder'
 // Phase 1 model layer — the single source of the zone arithmetic and the
 // honesty rule. The write path CALLS these; it never restates them.
 import { hasBucketData, bucketHasEntry, derivedTotalEaches, mergeRemoteBuckets, itemCountQty, itemTotalEaches, storedCountQty, isBucketed, isSplitItem, countCategoryKeys, bucketsFor, catBucketKey, completedBuckets, categoryTotals, rebucketForMembership, displayCents } from '@/lib/buckets'
@@ -174,10 +174,13 @@ export function mergeCountsWithDeletions(existing, newCounts, deletions) {
  * shows up without a reload" guarantee is unit-testable against the SAME code
  * the hook runs — rather than a copy of it in the test that could drift.
  * Untouched ids keep their identity; only patched fields change on patched ids.
+ * sheetShelfOrder (per-sheet positions) merges key by key — the same as the
+ * Firestore merge:true write it mirrors — so moving an item on one sheet keeps
+ * its positions on the others.
  */
 export function applyItemPatches(items, patches) {
   if (!patches || !Object.keys(patches).length) return items
-  return (items || []).map(i => (patches[i.id] ? { ...i, ...patches[i.id] } : i))
+  return (items || []).map(i => (patches[i.id] ? mergeShelfData(i, patches[i.id]) : i))
 }
 
 /** The `zones` part of a count write; omitted (not {}) when no zone is written. */
@@ -800,6 +803,8 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
               // override layer here).
               catShelfOrder:  item.catShelfOrder  ?? null,
               flatShelfOrder: item.flatShelfOrder ?? null,
+              // Per-sheet positions for split items (countSheets.sheetPosition).
+              sheetShelfOrder: shelfMap(item.sheetShelfOrder),
             }
           })
         console.log('Using location-specific catalog:', inventoryItems.length, 'items')
@@ -847,6 +852,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
             // pattern as the other edit-panel fields so values stick on reload.
             catShelfOrder:  override.catShelfOrder  ?? item.catShelfOrder  ?? null,
             flatShelfOrder: override.flatShelfOrder ?? item.flatShelfOrder ?? null,
+            sheetShelfOrder: shelfMap(override.sheetShelfOrder ?? item.sheetShelfOrder),
           }
         })
       }
@@ -880,6 +886,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
             // self-contained in the location-items doc, so read off data.X.
             catShelfOrder:  data.catShelfOrder  ?? null,
             flatShelfOrder: data.flatShelfOrder ?? null,
+            sheetShelfOrder: shelfMap(data.sheetShelfOrder),
             custom: true,
           })
         }
@@ -1432,15 +1439,31 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
    * Its in-progress counts are re-shaped by rebucketForMembership: a flat count
    * moves into the home sheet; a removed sheet merges into home; going back to
    * one category folds the sheets into one count.
+   *
+   * A sheet the item JOINS gets it at the END of that sheet (its own
+   * sheetShelfOrder entry), in the same write as the membership — the same
+   * rule as hand-add (lib/shelfOrder.js), so it never lands at a position left
+   * over from another sheet. Sheets it was already on keep their order.
    */
   const setItemCountCategories = useCallback(async (itemId, nextKeys) => {
     if (blockedByLock()) return
     const item = itemsRef.current.find(i => String(i.id) === String(itemId))
     if (!item) return
     const homeKey = assignCategory(item, categories)
+    const pool = itemsRef.current.map(i => ({ ...i, _cat: assignCategory(i, categories) }))
     const stored = applyMembership(item, nextKeys, homeKey)
-    await setDoc(doc(db, 'tenants', orgId, 'inventory', locId, 'items', String(itemId)),
-      { countCategories: stored }, { merge: true })
+    const { joined, itemMap, seedSets } = planJoinedSheets(pool, { ...item, _cat: homeKey }, stored)
+    const payload = { countCategories: stored, ...(joined.length ? { sheetShelfOrder: itemMap } : {}) }
+    for (const chunk of shelfWriteChunks(seedSets, { id: String(itemId), data: payload })) {
+      const batch = writeBatch(db)
+      for (const { id, data } of chunk) {
+        batch.set(doc(db, 'tenants', orgId, 'inventory', locId, 'items', String(id)), data, { merge: true })
+      }
+      await batch.commit()
+    }
+    if (joined.length) {
+      setItems(prev => applyItemPatches(prev, { ...seedPatches(seedSets), [itemId]: { sheetShelfOrder: itemMap } }))
+    }
   }, [categories, orgId, locId, blockedByLock])
 
   /**

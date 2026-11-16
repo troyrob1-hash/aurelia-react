@@ -11,8 +11,9 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'fs'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
-import { arrayMove, planMoveTo, parsePositionInput, reorderChanges } from '../src/lib/shelfOrder'
-import { byShelf } from '../src/lib/countSheets'
+import { arrayMove, planMoveTo, parsePositionInput, reorderChanges, sheetReorderChanges } from '../src/lib/shelfOrder'
+import { byShelf, byShelfOn } from '../src/lib/countSheets'
+import { applyItemPatches } from '../src/hooks/useInventory'
 import { sheetCategoryKeys } from '../src/lib/buckets'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -134,42 +135,44 @@ describe('the write — persistReorder, unchanged path', () => {
       { id: 'm', pos: 1 }, { id: 'k', pos: 2 }, { id: 'z', pos: 3 }, { id: 'b', pos: 4 },
     ])
   })
-  it('persistReorder computes its writes with reorderChanges — no second diff', () => {
+  it('persistReorder computes its writes with sheetReorderChanges (a sheet) / reorderChanges (flat) — no second diff', () => {
     const src = code('src/routes/Inventory.jsx')
     const body = src.slice(src.indexOf('const persistReorder = useCallback('), src.indexOf('const draftFlushKey'))
-    expect(body).toMatch(/const changes = reorderChanges\(items, field, orderedIds\)/)
+    expect(body).toMatch(/reorderChanges\(items, 'flatShelfOrder', orderedIds\)/)
+    expect(body).toMatch(/: sheetReorderChanges\(items, groupKey, orderedIds\)/)
     expect(body).not.toMatch(/orderedIds\.forEach/)
   })
 })
 
-describe('split items — INTENTIONAL: renumbered like drag, which moves them on their other sheets', () => {
-  // One catShelfOrder serves every sheet a split item is on. Per-sheet
-  // positions are a separate schema change; until then a typed move matches
-  // drag exactly. If this test fails because split items stopped being
-  // written, that's a behavior change to decide on — not a free fix.
+describe('split items — each sheet keeps its own order (per-sheet positions)', () => {
+  // A split item's position on a sheet is its own sheetShelfOrder entry, falling
+  // back to the shared catShelfOrder. A move on one sheet writes only that
+  // sheet's entry, so its other sheets don't change.
   const S = { id: 's', name: 'Watermelon', _cat: 'bev', countCategories: ['bev', 'closet'], catShelfOrder: 2 }
   const items = [
     { id: 'a', name: 'Apple', _cat: 'bev', catShelfOrder: 1 }, S, { id: 'c', name: 'Cola', _cat: 'bev', catShelfOrder: 3 },
     { id: 'q', name: 'Quince', _cat: 'closet', catShelfOrder: 1 }, { id: 'r', name: 'Rye', _cat: 'closet', catShelfOrder: 3 },
   ]
-  const sheet = key => items.filter(i => sheetCategoryKeys(i).includes(key)).sort(byShelf('catShelfOrder')).map(i => i.id)
+  const sheet = (list, key) => list.filter(i => sheetCategoryKeys(i).includes(key)).sort(byShelfOn(key)).map(i => i.id)
 
-  it('moving another item past it on sheet A writes the split item a new position', () => {
-    expect(sheet('bev')).toEqual(['a', 's', 'c'])
-    const next = planMoveTo(sheet('bev'), 'c', 1)
-    const changes = reorderChanges(items, 'catShelfOrder', next)
-    expect(changes).toContainEqual({ id: 's', pos: 3 })
+  it('moving another item past it on sheet A writes the split item\'s position FOR SHEET A only', () => {
+    expect(sheet(items, 'bev')).toEqual(['a', 's', 'c'])
+    const changes = sheetReorderChanges(items, 'bev', planMoveTo(sheet(items, 'bev'), 'c', 1))
+    expect(changes).toContainEqual({ id: 's', pos: 3, data: { sheetShelfOrder: { bev: 3 } } })
+    expect(changes).toContainEqual({ id: 'c', pos: 1, data: { catShelfOrder: 1 } })
   })
-  it('…which moves it on its OTHER sheet too', () => {
-    expect(sheet('closet')).toEqual(['q', 's', 'r'])
-    const changes = reorderChanges(items, 'catShelfOrder', planMoveTo(sheet('bev'), 'c', 1))
-    const after = items.map(i => ({ ...i, ...(changes.find(c => c.id === i.id) ? { catShelfOrder: changes.find(c => c.id === i.id).pos } : {}) }))
-    const closetAfter = after.filter(i => sheetCategoryKeys(i).includes('closet')).sort(byShelf('catShelfOrder')).map(i => i.id)
-    expect(closetAfter).toEqual(['q', 'r', 's'])
+  it('…and its OTHER sheet keeps its order', () => {
+    expect(sheet(items, 'closet')).toEqual(['q', 's', 'r'])
+    const changes = sheetReorderChanges(items, 'bev', planMoveTo(sheet(items, 'bev'), 'c', 1))
+    const after = applyItemPatches(items, Object.fromEntries(changes.map(c => [c.id, c.data])))
+    expect(sheet(after, 'bev')).toEqual(['c', 'a', 's'])
+    expect(sheet(after, 'closet')).toEqual(['q', 's', 'r'])
+    expect(after.find(i => i.id === 's').catShelfOrder).toBe(2)
   })
   it('the arrange banner tells users, and marks split rows', () => {
     const list = code('src/components/inventory/ArrangeList.jsx')
-    expect(list).toMatch(/share one position — moving one here moves it on its other sheets too/)
+    expect(list).toMatch(/Each sheet keeps its own order — moving one here doesn't move it on its other sheets/)
+    expect(list).not.toMatch(/share one position/)
     expect(list).toMatch(/isSplitItem\(item\)/)
   })
 })

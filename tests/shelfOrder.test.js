@@ -90,14 +90,14 @@ describe('planShelfAppend — never disturbs arranged items', () => {
     expect(planShelfAppend([], 'catShelfOrder')).toEqual({ seeds: [], position: 1 })
   })
 
-  it('split members count toward the max but are never seeded (shared position across sheets)', () => {
+  it('every unpositioned member is seeded — membership and the write field are the caller\'s job', () => {
     const r = planShelfAppend([
-      { id: 's', name: 'Split', catShelfOrder: 12, _split: true },
-      { id: 'sn', name: 'Split Null', catShelfOrder: null, _split: true },
+      { id: 's', name: 'Split', catShelfOrder: 12 },
+      { id: 'sn', name: 'Split Null', catShelfOrder: null },
       { id: 'n', name: 'Plain Null', catShelfOrder: null },
     ], 'catShelfOrder')
-    expect(r.seeds).toEqual([{ id: 'n', pos: 13 }])
-    expect(r.position).toBe(14)
+    expect(r.seeds).toEqual([{ id: 'n', pos: 13 }, { id: 'sn', pos: 14 }])
+    expect(r.position).toBe(15)
   })
 })
 
@@ -107,11 +107,20 @@ describe('nextShelfPosition — sheet membership is the screen\'s rule', () => {
     expect(nextShelfPosition(items, 'bibs')).toEqual({ seeds: [], position: 3 })
   })
 
-  it('a split item counted on this sheet raises the max (lands after it) but is not seeded', () => {
+  it('a split item counted on this sheet raises the max by its position ON THIS SHEET', () => {
     const split = it_('s', 'Split', 'coffee', { catShelfOrder: 40, countCategories: ['coffee', 'bibs'] })
     const r = nextShelfPosition([split, it_('b', 'Mine', 'bibs')], 'bibs')
-    expect(r.seeds).toEqual([{ id: 'b', pos: 41 }])
+    expect(r.seeds).toEqual([{ id: 'b', pos: 41, data: { catShelfOrder: 41 } }])
     expect(r.position).toBe(42)
+    const own = it_('s', 'Split', 'coffee', { catShelfOrder: 40, sheetShelfOrder: { bibs: 5 }, countCategories: ['coffee', 'bibs'] })
+    expect(nextShelfPosition([own, it_('b', 'Mine', 'bibs', { catShelfOrder: 2 })], 'bibs').position).toBe(6)
+  })
+
+  it('an unpositioned split item IS seeded now — into its entry for this sheet, never catShelfOrder', () => {
+    const split = it_('s', 'Split', 'coffee', { countCategories: ['coffee', 'bibs'] })
+    const r = nextShelfPosition([split, it_('b', 'Mine', 'bibs', { catShelfOrder: 3 })], 'bibs')
+    expect(r.seeds).toEqual([{ id: 's', pos: 4, data: { sheetShelfOrder: { bibs: 4 } } }])
+    expect(r.position).toBe(5)
   })
 
   it('excludeId: the item being moved is not counted as already on the sheet', () => {
