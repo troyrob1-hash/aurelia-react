@@ -33,12 +33,11 @@ export default function BarcodeScanner({ items, onScan, onClose }) {
     // Try exact match first, then without leading zeros
     let match = skuMap.current[clean]
     if (!match) match = skuMap.current[clean.replace(/^0+/, '')]
-    // Try partial match — some scanners add/remove check digits
-    if (!match) {
-      const keys = Object.keys(skuMap.current)
-      const partial = keys.find(k => k.includes(clean) || clean.includes(k))
-      if (partial) match = skuMap.current[partial]
-    }
+    // Check-digit tolerance — some scanners add or drop the final check digit,
+    // so a stored code and the scan may differ by exactly one trailing digit.
+    // Only for real barcodes (8+ digits): a plain substring match let a short
+    // internal code like "90" match any scan containing "90".
+    if (!match) match = checkDigitMatch(skuMap.current, clean)
 
     if (match) {
       setLastScanned({ code: clean, item: match, found: true })
@@ -236,4 +235,14 @@ export default function BarcodeScanner({ items, onScan, onClose }) {
       </div>
     </>
   )
+}
+
+/** A stored code that equals the scan plus or minus one trailing digit (8+ digits). */
+export function checkDigitMatch(map, code) {
+  if (!/^\d{8,}$/.test(code)) return null
+  for (const k of Object.keys(map)) {
+    if (!/^\d{8,}$/.test(k)) continue
+    if ((k.length === code.length + 1 && k.startsWith(code)) || (code.length === k.length + 1 && code.startsWith(k))) return map[k]
+  }
+  return null
 }
