@@ -26,7 +26,8 @@ import { isSplitItem } from '@/lib/buckets'
 //   groups    — displayGroups (each: {key, label, color, bg, isFlat?, items[]})
 //   viewMode  — 'grouped' | 'flat'; selects which shelf field to display
 //   onReorder — (groupKey, orderedIds) => void|Promise, fired once on drop
-//   filtersActive — search / a non-Full count mode is on (they don't apply here)
+//   filtersActive — search, Key items or a zone is picked (they don't apply here;
+//                   a picked category does — it shows that whole sheet)
 export default function ArrangeList({ groups, viewMode, onReorder, filtersActive = false }) {
   const field = viewMode === 'flat' ? 'flatShelfOrder' : 'catShelfOrder'
   const { groups: liveGroups, getHandleProps, registerRow, draggingId, moveTo } =
@@ -57,7 +58,7 @@ export default function ArrangeList({ groups, viewMode, onReorder, filtersActive
         Order saves automatically.
         {filtersActive && (
           <div style={{ marginTop: 4 }}>
-            Search and the Quick / Section count filters don't apply while arranging — you're ordering {viewMode === 'flat' ? 'the full item list' : 'every item on each sheet'}.
+            Search and the Key items / zone choices don't apply while arranging — you're ordering {viewMode === 'flat' ? 'the full item list' : 'every item on each sheet'}.
           </div>
         )}
         {viewMode !== 'flat' && hasSplit && (

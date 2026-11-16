@@ -8,4 +8,10 @@ export const useUIStore = create((set) => ({
   // Inventory tab: 'grouped' (categories) | 'flat' (A-Z, no categories).
   inventoryViewMode: 'grouped',
   setInventoryViewMode: (mode) => set({ inventoryViewMode: mode }),
+  // Inventory View menu. Last week's counts show by default (the old "Show
+  // prior" / "Blind" toggle, also defaulting to shown); variance on by default.
+  inventoryShowPrior: true,
+  setInventoryShowPrior: (on) => set({ inventoryShowPrior: on }),
+  inventoryShowVariance: true,
+  setInventoryShowVariance: (on) => set({ inventoryShowVariance: on }),
 }))

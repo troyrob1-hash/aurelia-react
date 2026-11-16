@@ -16,11 +16,12 @@ import {
   buildCatalogMerge, catalogLossWarningText, catalogBackupTimestamp, catalogFileError, runCatalogReplace,
 } from '@/lib/catalogImport'
 import { displayCents } from '@/lib/buckets'
-import { Search, Download, RefreshCw, Eye, EyeOff, TrendingUp, TrendingDown, Minus, AlertTriangle , Upload } from 'lucide-react'
+import { Search, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle, Upload } from 'lucide-react'
 import { useToast } from '@/components/ui/Toast'
 import AllLocationsGrid from '@/components/AllLocationsGrid'
 import ErrorBoundary from '@/components/ErrorBoundary'
 import ArrangeList from '@/components/inventory/ArrangeList'
+import InventoryToolbar, { ParPill } from '@/components/inventory/InventoryToolbar'
 import CategoryManagerModal from '@/components/inventory/CategoryManagerModal'
 import ZoneManagerModal from '@/components/inventory/ZoneManagerModal'
 import CountSheetPrintModal from '@/components/inventory/CountSheetPrintModal'
@@ -34,6 +35,7 @@ import { canEditInventoryCategories } from '@/lib/permissions'
 // would print a confident 0 for an item whose on-hand is actually unknown.
 import { countDisplay, pendingBucketsLabel, bucketProgress, closeOutIssues, closeOutWarningText, completedBuckets, isSplitItem, sheetCategoryKeys, catBucketKey, countCategoryKeys, bucketHasEntry, sheetUsage } from '@/lib/buckets'
 import { hasMultipleZones } from '@/lib/zoneHelpers'
+import { sheetOptions, sheetState, sheetValue } from '@/lib/sheetPicker'
 import { resolveCountColumns, buildCatalogIndex, matchCountRow } from '@/lib/countUpload'
 import styles from './Inventory.module.css'
 
@@ -494,8 +496,13 @@ export default function Inventory() {
   const exitArrangeMode = () => setArrangeMode(false)
   const [activeCat, setActiveCat] = useState('all')
   const [collapsed, setCollapsed] = useState({})
-  const [blindMode, setBlindMode] = useState(false)
-  const [showVariance, setShowVariance] = useState(true)
+  // View menu toggles — persisted in useUIStore exactly like viewMode.
+  // "Show last week's counts" off IS the old blind count mode.
+  const showPrior = useUIStore(s => s.inventoryShowPrior)
+  const setShowPrior = useUIStore(s => s.setInventoryShowPrior)
+  const blindMode = !showPrior
+  const showVariance = useUIStore(s => s.inventoryShowVariance)
+  const setShowVariance = useUIStore(s => s.setInventoryShowVariance)
   const [showParPanel, setShowParPanel] = useState(false)
   const [countMode, setCountMode] = useState('full')  // 'quick' | 'section' | 'full'
   const [showManage, setShowManage] = useState(false)
@@ -1212,6 +1219,22 @@ export default function Inventory() {
     toast.info('Refreshing inventory...')
   }, [load, toast])
 
+  // Upload a count file: same fail-fast locked guard the green button had.
+  const openCountUpload = () => {
+    if (locked) { toast.error('Period is closed — a director must reopen it to make changes.'); return }
+    document.getElementById('counts-upload')?.click()
+  }
+
+  const toggleBuddy = () => {
+    if (buddyMode) {
+      setBuddyMode(false)
+      setBuddyNames({ caller: '', marker: '' })
+    } else {
+      setBuddyDraft({ caller: '', marker: '' })
+      setShowBuddySetup(true)
+    }
+  }
+
   // ─── Filtered Items ────────────────────────────────────────────────────────
   const q = search.toLowerCase()
   const displayItems = useMemo(() => items.filter(i => {
@@ -1229,6 +1252,18 @@ export default function Inventory() {
   }), [items, activeCat, q, countMode, activeZone])
 
   const keyItemCount = useMemo(() => items.filter(i => i.isKey).length, [items])
+
+  // Sheet button (lib/sheetPicker): one picker over countMode/activeCat/activeZone.
+  const currentSheet = sheetValue({ countMode, activeCat, activeZone })
+  const sheetList = useMemo(() => sheetOptions({
+    items, categories, catStats, totals, zones, zonesOn, zonesCompleted, hasCount,
+  }), [items, categories, catStats, totals, zones, zonesOn, zonesCompleted])
+  const pickSheet = value => {
+    const next = sheetState(value)
+    setCountMode(next.countMode)
+    setActiveCat(next.activeCat)
+    setActiveZone(next.activeZone)
+  }
 
   // Shelf-to-sheet sort comparators (byName / byShelf) are imported from
   // countSheets.js — the printed count sheets sort with the SAME functions, so
@@ -1345,50 +1380,6 @@ export default function Inventory() {
         </div>
       )}
 
-      {/* Category Chips */}
-      <div className={styles.chipBar}>
-        <button 
-          className={`${styles.chip} ${activeCat === 'all' ? styles.chipActive : ''}`} 
-          onClick={() => setActiveCat('all')}
-        >
-          All Items
-          <span className={styles.chipBadge}>{totals.counted || 0}/{totals.total || 0}</span>
-        </button>
-        {categories.map(cat => {
-          const cc = catStats[cat.key] || { total: 0, counted: 0 }
-          const done = cc.counted === cc.total && cc.total > 0
-          const pct = cc.total > 0 ? cc.counted / cc.total : 0
-          return (
-            <button 
-              key={cat.key}
-              className={`${styles.chip} ${activeCat === cat.key ? styles.chipActive : ''}`}
-              onClick={() => setActiveCat(cat.key)}
-              style={activeCat === cat.key 
-                ? { borderColor: cat.color, color: cat.color, background: cat.bg } 
-                : { borderColor: cat.color + '40', color: cat.color }
-              }
-            >
-              <svg width="14" height="14" viewBox="0 0 14 14" style={{ flexShrink: 0 }}>
-                <circle cx="7" cy="7" r="5" fill="none" stroke={cat.color + '30'} strokeWidth="2" />
-                <circle 
-                  cx="7" cy="7" r="5" fill="none" 
-                  stroke={done ? '#10b981' : cat.color} 
-                  strokeWidth="2"
-                  strokeDasharray={`${pct * 31.4} 31.4`} 
-                  strokeLinecap="round"
-                  transform="rotate(-90 7 7)" 
-                  style={{ transition: 'stroke-dasharray .4s' }} 
-                />
-              </svg>
-              {cat.label}
-              <span className={styles.chipBadge} style={{ background: done ? '#10b981' : cat.color + '99' }}>
-                {cc.counted}/{cc.total}
-              </span>
-            </button>
-          )
-        })}
-      </div>
-
       {/* Upload catalog — MERGE (the default, safe path) */}
       <input
         type="file"
@@ -1423,14 +1414,9 @@ export default function Inventory() {
             </p>
           </div>
           <div className={styles.headerActions}>
-            <button 
-              className={`${styles.btnMode} ${blindMode ? styles.btnModeActive : ''}`} 
-              onClick={() => setBlindMode(v => !v)} 
-              title="Blind count mode"
-            >
-              {blindMode ? <EyeOff size={14} /> : <Eye size={14} />}
-              {blindMode ? 'Blind' : 'Show prior'}
-            </button>
+            {/* "N below par" — only when there is something below par; opens
+                the same par panel the old always-on "Par (N)" button did. */}
+            <ParPill count={totals.belowPar || 0} open={showParPanel} onToggle={() => setShowParPanel(v => !v)} />
             <button
               className={styles.btnMode}
               onClick={() => { setShowManage(true); loadRemovedItems() }}
@@ -1460,39 +1446,6 @@ export default function Inventory() {
                 ⚙ Manage zones
               </button>
             )}
-            {selectedLocation && selectedLocation !== 'all' && (
-              <button
-                className={styles.btnMode}
-                onClick={() => setPrintSheet('__all__')}
-                disabled={items.length === 0}
-                title="Print blank count sheets by category for crew to fill in by hand"
-              >
-                🖨 Count sheets
-              </button>
-            )}
-            <button
-              className={`${styles.btnMode} ${buddyMode ? styles.btnModeActive : ''}`}
-              onClick={() => {
-                if (buddyMode) {
-                  setBuddyMode(false)
-                  setBuddyNames({ caller: '', marker: '' })
-                } else {
-                  setBuddyDraft({ caller: '', marker: '' })
-                  setShowBuddySetup(true)
-                }
-              }}
-              title={buddyMode ? 'Exit buddy mode' : 'Start a team count with two people'}
-            >
-              {buddyMode ? `👥 ${buddyNames.caller || '?'} + ${buddyNames.marker || '?'}` : '👥 Buddy mode'}
-            </button>
-            <button 
-              className={`${styles.btnMode} ${showParPanel ? styles.btnModeActive : ''}`} 
-              onClick={() => setShowParPanel(v => !v)} 
-              title="Par levels"
-            >
-              <AlertTriangle size={14} />
-              Par ({totals.belowPar || 0})
-            </button>
             {/* Save / Save & Close moved to the SaveStatusBar (bottom) — single
                 source of truth for both actions. */}
 
@@ -1514,22 +1467,6 @@ export default function Inventory() {
               id="counts-upload"
               onChange={e => { if (e.target.files[0]) { parseCountFile(e.target.files[0]); e.target.value = '' } }}
             />
-            <button
-              onClick={() => {
-                if (locked) { toast.error('Period is closed — a director must reopen it to make changes.'); return }
-                document.getElementById('counts-upload')?.click()
-              }}
-              disabled={locked}
-              title="Upload counted quantities (.xlsx, .csv) for this period — matched by item name. Previews before writing."
-              style={{
-                padding: '8px 14px', fontSize: 12, fontWeight: 600,
-                background: locked ? '#e2e8f0' : '#1D9E7518', color: locked ? '#94a3b8' : '#1D9E75',
-                borderRadius: 8, border: '1px solid ' + (locked ? '#e2e8f0' : '#1D9E7540'),
-                cursor: locked ? 'not-allowed' : 'pointer', display: 'flex', alignItems: 'center', gap: 6,
-              }}
-            >
-              <Upload size={14} /> Upload counts
-            </button>
 
             {/* Short/stub-week shortcut: carry the prior week's closing count forward as
                 THIS week's count, instead of physically counting a 1-day week. Only shows
@@ -1614,15 +1551,6 @@ export default function Inventory() {
             >
               {replacingCatalog ? 'Replacing…' : 'Replace entire catalog'}
             </label>
-            <button className={styles.btnIcon} onClick={() => exportInventory('csv')} title="Export CSV">
-              <Download size={15} />
-            </button>
-            <button className={styles.btnIcon} onClick={() => exportInventory('xlsx')} title="Export Excel" style={{ fontSize: 10, fontWeight: 600, padding: '4px 8px' }}>
-              .xlsx
-            </button>
-            <button className={styles.btnIcon} onClick={handleRefresh} title="Refresh">
-              <RefreshCw size={15} className={loading ? styles.spin : ''} />
-            </button>
           </div>
         </div>
 
@@ -1694,25 +1622,49 @@ export default function Inventory() {
           </div>
         )}
 
+        {/* Control row: Sheet · Search · View · Edit sheet · More. Every
+            control here is a moved header/toolbar button — see
+            InventoryToolbar for the mapping. */}
+        <InventoryToolbar
+          sheets={sheetList}
+          sheet={currentSheet}
+          onSheetChange={pickSheet}
+          search={search}
+          onSearchChange={setSearch}
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          showPrior={showPrior}
+          onShowPriorChange={setShowPrior}
+          showVariance={showVariance}
+          onShowVarianceChange={setShowVariance}
+          editing={arrangeMode}
+          editDisabled={locked && !arrangeMode}
+          editTitle={locked ? 'Period closed — reopen to edit' : 'Arrange shelf order, add items, manage categories and zones, upload the item list'}
+          onToggleEdit={() => (arrangeMode ? exitArrangeMode() : enterArrangeMode())}
+          more={{
+            onPrint: () => setPrintSheet('__all__'),
+            printDisabled: items.length === 0,
+            onUploadCounts: openCountUpload,
+            uploadCountsDisabled: locked,
+            uploadCountsTitle: locked ? 'Period closed — reopen to edit' : 'Upload counted quantities (.xlsx, .csv) for this period — matched by item name. Previews before writing.',
+            buddyMode,
+            buddyLabel: `${buddyNames.caller || '?'} + ${buddyNames.marker || '?'}`,
+            onBuddy: toggleBuddy,
+            onExport: exportInventory,
+            onRefresh: handleRefresh,
+          }}
+        />
+
         {/* ── Zone picker + sweep (Phase 3/4) ──────────────────────────
             Counting is physically per zone: pick one, count the list into it,
             then mark it swept. Sweeping is the assertion that turns "blank"
             from UNKNOWN into a real zero for every item in that zone — so it
             is deliberately explicit, reversible, and labelled as such. */}
         {zonesOn && countMode === 'zone' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '8px 0' }}>
-            <span style={{ fontSize: 12, color: '#64748b', fontWeight: 600 }}>Counting zone:</span>
-            {zones.map(z => {
-              const active = activeZone === z.key
-              const swept = zonesCompleted.includes(z.key)
-              return (
-                <button key={z.key} onClick={() => setActiveZone(z.key)}
-                  className={`${styles.chip} ${active ? styles.chipActive : ''}`}
-                  title={swept ? 'Swept — blanks in this zone count as zero' : 'Not swept — blanks are unknown'}>
-                  {swept ? '✓ ' : ''}{z.label}
-                </button>
-              )
-            })}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '0 0 8px' }}>
+            <span style={{ fontSize: 12, color: '#64748b', fontWeight: 600 }}>
+              Counting zone: {zones.find(z => z.key === activeZone)?.label || '—'} (pick another from the Sheet list)
+            </span>
             {activeZone !== 'all' && (() => {
               const swept = zonesCompleted.includes(activeZone)
               const label = zones.find(z => z.key === activeZone)?.label || activeZone
@@ -1783,119 +1735,6 @@ export default function Inventory() {
           </div>
         )}
 
-        {/* Toolbar */}
-        <div className={styles.toolbar}>
-          {/* Count mode selector */}
-          <div style={{
-            display: 'inline-flex',
-            background: '#f1f5f9',
-            borderRadius: 8,
-            padding: 3,
-            marginRight: 12,
-            gap: 2,
-          }}>
-            {[
-              { key: 'quick',   label: 'Quick',   sub: keyItemCount > 0 ? `${keyItemCount} key items` : 'key items' },
-              { key: 'section', label: 'Section', sub: 'one category' },
-              // Zone mode only appears for multi-zone locations — counting is
-              // physically per-zone (walk the cooler, count it, mark it swept).
-              ...(zonesOn ? [{ key: 'zone', label: 'Zone', sub: 'one zone' }] : []),
-              { key: 'full',    label: 'Full',    sub: `${items.length} items` },
-            ].map(m => {
-              const active = countMode === m.key
-              return (
-                <button
-                  key={m.key}
-                  onClick={() => setCountMode(m.key)}
-                  style={{
-                    background: active ? '#fff' : 'transparent',
-                    border: 'none',
-                    borderRadius: 6,
-                    padding: '6px 14px',
-                    cursor: 'pointer',
-                    boxShadow: active ? '0 1px 3px rgba(15,23,42,0.08)' : 'none',
-                    fontFamily: 'inherit',
-                    textAlign: 'left',
-                    minWidth: 90,
-                    transition: 'all 0.15s',
-                  }}
-                >
-                  <div style={{
-                    fontSize: 12,
-                    fontWeight: 500,
-                    color: active ? '#0f172a' : '#64748b',
-                    lineHeight: 1.2,
-                  }}>
-                    {m.label}
-                  </div>
-                  <div style={{
-                    fontSize: 9,
-                    color: active ? '#94a3b8' : '#94a3b8',
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.04em',
-                    marginTop: 1,
-                  }}>
-                    {m.sub}
-                  </div>
-                </button>
-              )
-            })}
-          </div>
-          <div className={styles.searchWrap}>
-            <Search size={14} className={styles.searchIcon} />
-            <input 
-              type="text" 
-              value={search} 
-              onChange={e => setSearch(e.target.value)}
-              placeholder="Search items or vendor..." 
-              className={styles.searchInput} 
-            />
-          </div>
-          <div style={{ display: 'inline-flex', border: '1px solid #cbd5e1', borderRadius: 8, overflow: 'hidden' }}>
-            <button
-              onClick={() => setViewMode('grouped')}
-              title="Group items by category"
-              style={{
-                padding: '6px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer', border: 'none',
-                background: viewMode === 'grouped' ? '#0f172a' : '#fff',
-                color: viewMode === 'grouped' ? '#fff' : '#475569',
-              }}
-            >Grouped</button>
-            <button
-              onClick={() => setViewMode('flat')}
-              title="Show all items A-Z, no categories"
-              style={{
-                padding: '6px 14px', fontSize: 13, fontWeight: 600, cursor: 'pointer', border: 'none',
-                borderLeft: '1px solid #cbd5e1',
-                background: viewMode === 'flat' ? '#0f172a' : '#fff',
-                color: viewMode === 'flat' ? '#fff' : '#475569',
-              }}
-            >A–Z</button>
-          </div>
-          {/* Arrange mode toggle (Stage 2): hides counting, shows the drag list.
-              Sort is always shelf-order-by-default, so arranging takes effect
-              immediately in whichever view you're in. */}
-          <button
-            onClick={() => (arrangeMode ? exitArrangeMode() : enterArrangeMode())}
-            disabled={locked && !arrangeMode}
-            title={locked ? 'Period closed — reopen to rearrange' : 'Drag items into physical shelf order'}
-            style={{
-              padding: '6px 14px', fontSize: 13, fontWeight: 600, cursor: (locked && !arrangeMode) ? 'not-allowed' : 'pointer',
-              border: '1px solid #cbd5e1', borderRadius: 8,
-              background: arrangeMode ? '#1D9E75' : '#fff',
-              color: arrangeMode ? '#fff' : '#475569',
-              opacity: (locked && !arrangeMode) ? 0.5 : 1,
-            }}
-          >{arrangeMode ? 'Done arranging' : 'Arrange'}</button>
-          <button
-            className={`${styles.btnVariance} ${showVariance ? styles.btnVarianceActive : ''}`}
-            onClick={() => setShowVariance(v => !v)}
-          >
-            {showVariance ? <TrendingDown size={13} /> : <TrendingUp size={13} />}
-            Variance
-          </button>
-        </div>
-
         {/* Loading State */}
         {loading && <div className={styles.loading}>Loading inventory...</div>}
 
@@ -1931,7 +1770,7 @@ export default function Inventory() {
               >Back to counting</button>
             </div>
           )}>
-            <ArrangeList groups={arrangeGroups} viewMode={viewMode} onReorder={persistReorder} filtersActive={!!q || countMode !== 'full'} />
+            <ArrangeList groups={arrangeGroups} viewMode={viewMode} onReorder={persistReorder} filtersActive={!!q || countMode === 'quick' || countMode === 'zone'} />
           </ErrorBoundary>
         ) : displayGroups.map(cat => (
           <div key={cat.key} className={styles.section}>
