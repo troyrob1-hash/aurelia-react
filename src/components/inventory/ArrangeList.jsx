@@ -63,7 +63,7 @@ export default function ArrangeList({ groups, viewMode, onReorder, filtersActive
         )}
         {viewMode !== 'flat' && hasSplit && (
           <div style={{ marginTop: 4 }}>
-            Items marked ⇄ are counted on more than one sheet and share one position — moving one here moves it on its other sheets too.
+            Items marked ⇄ are counted on more than one sheet. Each sheet keeps its own order — moving one here doesn't move it on its other sheets.
           </div>
         )}
       </div>
@@ -114,7 +114,7 @@ export default function ArrangeList({ groups, viewMode, onReorder, filtersActive
                   }}>
                     {item.name}
                     {!g.isFlat && isSplitItem(item) && (
-                      <span title="Counted on more than one sheet — shares one position across them" style={{ marginLeft: 6, color: '#b45309' }}>⇄</span>
+                      <span title="Counted on more than one sheet — each sheet has its own position" style={{ marginLeft: 6, color: '#b45309' }}>⇄</span>
                     )}
                   </span>
                   {g.isFlat ? (

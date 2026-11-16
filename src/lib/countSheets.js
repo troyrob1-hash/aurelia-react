@@ -27,7 +27,7 @@
 // multi-category plan), they appear on each of those sheets with no change
 // here, and the home category is always included.
 
-import { sheetCategoryKeys } from '@/lib/buckets'
+import { sheetCategoryKeys, isSplitItem } from '@/lib/buckets'
 
 export const UNCATEGORIZED_SHEET_KEY = '__uncategorized__'
 export const UNCATEGORIZED_SHEET_LABEL = 'Not in any category'
@@ -49,6 +49,35 @@ export const byName = (a, b) =>
 export const byShelf = (field) => (a, b) => {
   const av = a[field] ?? Infinity
   const bv = b[field] ?? Infinity
+  if (av !== bv) return av - bv
+  return byName(a, b)
+}
+
+/**
+ * PER-SHEET POSITIONS. An item counted on several category sheets (a split
+ * item) can sit at a different place on each one: its position on sheet K is
+ * `sheetShelfOrder[K]`, and when that sheet has no entry yet it falls back to
+ * the item's one shared `catShelfOrder` — so existing data needs no migration
+ * and every sheet reads exactly as before until someone moves the item on it.
+ * The home sheet is no exception: a move there writes sheetShelfOrder[home],
+ * and catShelfOrder stays untouched as the fallback for the other sheets.
+ *
+ * A one-sheet item ignores sheetShelfOrder entirely (catShelfOrder is its
+ * position), so a stale entry left from when it WAS split can never override
+ * a later move.
+ */
+export function sheetPosition(item, sheetKey) {
+  if (isSplitItem(item)) {
+    const v = item?.sheetShelfOrder?.[sheetKey]
+    if (v != null && Number.isFinite(Number(v))) return Number(v)
+  }
+  return item?.catShelfOrder ?? null
+}
+
+/** byShelf for one category sheet — each item at its position ON THAT SHEET. */
+export const byShelfOn = (sheetKey) => (a, b) => {
+  const av = sheetPosition(a, sheetKey) ?? Infinity
+  const bv = sheetPosition(b, sheetKey) ?? Infinity
   if (av !== bv) return av - bv
   return byName(a, b)
 }
@@ -106,11 +135,11 @@ function toRow(item) {
 export function buildCountSheets(items, categories, opts = {}) {
   const list = Array.isArray(items) ? items.filter(Boolean) : []
   const cats = Array.isArray(categories) ? categories.filter(c => c && c.key) : []
-  const sortRows = arr => [...arr].sort(byShelf('catShelfOrder')).map(toRow)
+  const sortRows = (arr, sheetKey) => [...arr].sort(sheetKey ? byShelfOn(sheetKey) : byShelf('catShelfOrder')).map(toRow)
   const sheetFor = cat => ({
     key: cat.key,
     label: cat.label || cat.key,
-    rows: sortRows(list.filter(i => sheetCategoryKeys(i).includes(cat.key))),
+    rows: sortRows(list.filter(i => sheetCategoryKeys(i).includes(cat.key)), cat.key),
   })
 
   if (opts.only) {

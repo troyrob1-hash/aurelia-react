@@ -54,10 +54,10 @@ describe('order matches the grouped screen', () => {
 
   it('the screen sorts with the SAME comparator (imported, not a local copy)', () => {
     const INV = code('src/routes/Inventory.jsx')
-    expect(INV).toMatch(/import \{ byShelf \} from '@\/lib\/countSheets'/)
+    expect(INV).toMatch(/import \{ byShelf, byShelfOn \} from '@\/lib\/countSheets'/)
     expect(INV).not.toMatch(/const byShelf\s*=/)
     expect(INV).not.toMatch(/const byName\s*=/)
-    expect(INV).toMatch(/\.sort\(byShelf\('catShelfOrder'\)\)/)
+    expect(INV).toMatch(/\.sort\(byShelfOn\(cat\.key\)\)/)
   })
 
   it('a sheet equals the screen\'s grouped order for that category', () => {

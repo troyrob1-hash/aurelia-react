@@ -396,7 +396,7 @@ export function buildCatalogMerge(rows, headers, existingDocs, categories, opts 
           // Category ONLY when explicitly opted in AND the row actually names
           // one — see the file header note. Every other field below this line
           // in a normal item record is DELIBERATELY ABSENT: countCategories,
-          // catShelfOrder, flatShelfOrder, isKey, removed/removedAt/removedBy,
+          // catShelfOrder, flatShelfOrder, sheetShelfOrder, isKey, removed/removedAt/removedBy,
           // custom. Omitted, not set-to-null — merge:true leaves them alone.
           ...(fileCat ? { category: fileCat.label, categoryExplicit: true } : {}),
           importedAt: meta.importedAt ?? new Date().toISOString(),
@@ -464,7 +464,8 @@ export function catalogBackupTimestamp(date = new Date()) {
 export function catalogLossSummary(existingDocs) {
   const docs = (existingDocs || []).filter(d => d && !d.data?.removed)
   const withPar = docs.filter(d => d.data?.parLevel != null || d.data?.reorderPoint != null || d.data?.avgDailyUsage != null).length
-  const withPosition = docs.filter(d => d.data?.catShelfOrder != null || d.data?.flatShelfOrder != null).length
+  const withPosition = docs.filter(d => d.data?.catShelfOrder != null || d.data?.flatShelfOrder != null
+    || Object.keys(d.data?.sheetShelfOrder || {}).length > 0).length
   const withSplit = docs.filter(d => Array.isArray(d.data?.countCategories) && d.data.countCategories.length >= 2).length
   const withKey = docs.filter(d => d.data?.isKey === true).length
   const removedCount = (existingDocs || []).filter(d => d?.data?.removed).length

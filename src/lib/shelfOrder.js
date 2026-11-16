@@ -19,24 +19,23 @@
  * Arrange-mode order is never disturbed. (Arrange mode does the same
  * numbering on its first drop.)
  *
- * Split items are left alone: an item counted on 2+ sheets has ONE
- * catShelfOrder shared by all of them, so numbering it for this sheet would
- * move it on its other sheets too. They count toward the max (so the new item
- * still lands after them) but are never seeded; a split item with no position
- * stays at the bottom A-Z, below the appended item. Per-sheet positions for
- * split items are a separate, larger change.
+ * Split items (counted on 2+ sheets) are numbered like any other, but ON THIS
+ * SHEET only: their write is sheetShelfOrder[sheet], never the shared
+ * catShelfOrder, so seeding them can't move them on their other sheets (see
+ * sheetPosition in countSheets.js — the per-sheet position, falling back to
+ * catShelfOrder).
  *
  * Pure — no Firestore. Callers own the writes (see shelfWriteChunks).
  */
-import { byShelf } from '@/lib/countSheets'
+import { byShelf, sheetPosition } from '@/lib/countSheets'
 import { sheetCategoryKeys, isSplitItem } from '@/lib/buckets'
 
 /**
  * @param members  items ALREADY on the target sheet (not the item being placed):
- *                 { id, name, [field], _split? }
- * @param field    'catShelfOrder' | 'flatShelfOrder'
+ *                 { id, name, [field] }
+ * @param field    the position field on `members` to read
  * @returns {{ seeds: Array<{id, pos}>, position: number }}
- *   seeds    — unpositioned, non-split members to number first (display order)
+ *   seeds    — unpositioned members to number first (display order)
  *   position — the placed item's position: after everything on the sheet
  */
 export function planShelfAppend(members, field) {
@@ -49,7 +48,7 @@ export function planShelfAppend(members, field) {
   const seeds = []
   let next = max
   for (const m of ordered) {
-    if (m[field] != null || m._split) continue
+    if (m[field] != null) continue
     next += 1
     seeds.push({ id: m.id, pos: next })
   }
@@ -62,11 +61,71 @@ export function planShelfAppend(members, field) {
  * the grouped table and printed sheets use.
  */
 export function nextShelfPosition(items, sheetKey, { excludeId } = {}) {
-  const members = (items || [])
+  const onSheet = (items || [])
     .filter(i => i && !i.removed && String(i.id) !== String(excludeId))
     .filter(i => sheetCategoryKeys(i).includes(sheetKey))
-    .map(i => ({ id: i.id, name: i.name, catShelfOrder: i.catShelfOrder ?? null, _split: isSplitItem(i) }))
-  return planShelfAppend(members, 'catShelfOrder')
+  const byId = new Map(onSheet.map(i => [String(i.id), i]))
+  const members = onSheet.map(i => ({ id: i.id, name: i.name, pos: sheetPosition(i, sheetKey) }))
+  const plan = planShelfAppend(members, 'pos')
+  // Each seed carries its own write: catShelfOrder for a one-sheet item,
+  // sheetShelfOrder[sheetKey] for a split one.
+  return {
+    ...plan,
+    seeds: plan.seeds.map(sd => ({ ...sd, data: sheetShelfWrite(byId.get(String(sd.id)), sheetKey, sd.pos) })),
+  }
+}
+
+/**
+ * The write that puts `item` at `pos` on category sheet `sheetKey`: its own
+ * per-sheet entry when it is counted on several sheets (home included —
+ * catShelfOrder is left as the fallback), else catShelfOrder as always.
+ * The same object is the Firestore merge write AND the local patch
+ * (applyItemPatches merges sheetShelfOrder key by key, like merge:true does).
+ */
+export function sheetShelfWrite(item, sheetKey, pos) {
+  return isSplitItem(item) ? { sheetShelfOrder: { [sheetKey]: pos } } : { catShelfOrder: pos }
+}
+
+/**
+ * Positions for the sheets an item JOINS when its membership changes (edit
+ * panel "Counted on sheets", or a split item's new home): each joined sheet
+ * puts it at that sheet's END, numbering that sheet's unpositioned items first
+ * (nextShelfPosition). Sheets it was already on keep their order.
+ *
+ * @param items     the location's items, each with `_cat` (home key)
+ * @param item      the item, as it is now (with `_cat`)
+ * @param nextKeys  its countCategories after the change
+ * @returns {{ joined: string[], itemMap: object, seedSets: Array }}
+ *   itemMap  — { [joinedSheet]: position } for the item's sheetShelfOrder
+ *   seedSets — the other items' seeds, for shelfWriteChunks / seedPatches
+ */
+export function planJoinedSheets(items, item, nextKeys) {
+  const before = sheetCategoryKeys(item)
+  const joined = sheetCategoryKeys({ ...item, countCategories: nextKeys }).filter(k => !before.includes(k))
+  const itemMap = {}
+  const seedSets = []
+  for (const key of joined) {
+    const plan = nextShelfPosition(items, key, { excludeId: item.id })
+    seedSets.push({ field: 'catShelfOrder', seeds: plan.seeds })
+    itemMap[key] = plan.position
+  }
+  return { joined, itemMap, seedSets }
+}
+
+/** A stored sheetShelfOrder → a clean { [sheetKey]: number } (anything else dropped). */
+export function shelfMap(v) {
+  const out = {}
+  if (v && typeof v === 'object' && !Array.isArray(v)) {
+    for (const [k, n] of Object.entries(v)) if (n != null && Number.isFinite(Number(n))) out[k] = Number(n)
+  }
+  return out
+}
+
+/** Merge two partial item writes; sheetShelfOrder merges key by key. */
+export function mergeShelfData(a = {}, b = {}) {
+  const out = { ...a, ...b }
+  if (a.sheetShelfOrder || b.sheetShelfOrder) out.sheetShelfOrder = { ...(a.sheetShelfOrder || {}), ...(b.sheetShelfOrder || {}) }
+  return out
 }
 
 /** End-of-list placement in the FLAT view (one list, no categories, no splits). */
@@ -79,7 +138,9 @@ export function nextFlatPosition(items, { excludeId } = {}) {
 
 /**
  * Turn seed plans (+ the placed item's own write) into Firestore batch chunks.
- * Seeds for the same item from different fields merge into ONE write. The
+ * Seeds for the same item from different fields merge into ONE write. A seed
+ * may carry its own `data` (nextShelfPosition's sheet-aware seeds); otherwise
+ * it writes { [field]: pos }. The
  * placed item goes in the LAST chunk, so it is never written before the
  * seeds that make its position mean "end of sheet".
  *
@@ -90,9 +151,9 @@ export function nextFlatPosition(items, { excludeId } = {}) {
 export function shelfWriteChunks(seedSets, final, size = 450) {
   const byId = new Map()
   for (const { field, seeds } of seedSets || []) {
-    for (const { id, pos } of seeds || []) {
+    for (const { id, pos, data } of seeds || []) {
       const k = String(id)
-      byId.set(k, { ...(byId.get(k) || {}), [field]: pos })
+      byId.set(k, mergeShelfData(byId.get(k), data || { [field]: pos }))
     }
   }
   const entries = [...byId].map(([id, data]) => ({ id, data }))
@@ -106,7 +167,7 @@ export function shelfWriteChunks(seedSets, final, size = 450) {
 export function seedPatches(seedSets) {
   const out = {}
   for (const { field, seeds } of seedSets || []) {
-    for (const { id, pos } of seeds || []) out[id] = { ...(out[id] || {}), [field]: pos }
+    for (const { id, pos, data } of seeds || []) out[id] = mergeShelfData(out[id], data || { [field]: pos })
   }
   return out
 }
@@ -154,16 +215,32 @@ export function planMoveTo(ids, itemId, n) {
  * The writes a reorder needs: the sheet renumbered 1..N in `orderedIds` order,
  * diffed against each item's current `field` — only changed positions are
  * written. Unpositioned items get their displayed place (so a first move
- * numbers the whole sheet, like a first drag). A split item is renumbered like
- * any other: its ONE catShelfOrder is shared by all its sheets, so this moves
- * it on those sheets too — intentional, matching drag (per-sheet positions are
- * a separate schema change).
+ * numbers the whole sheet, like a first drag). Used for the flat list; a
+ * category sheet uses sheetReorderChanges (per-sheet positions).
  */
 export function reorderChanges(items, field, orderedIds) {
   const cur = new Map((items || []).map(i => [String(i.id), i[field]]))
   const changes = []
   ;(orderedIds || []).forEach((id, idx) => {
     if (cur.get(String(id)) !== idx + 1) changes.push({ id, pos: idx + 1 })
+  })
+  return changes
+}
+
+/**
+ * reorderChanges for one CATEGORY sheet: renumber it 1..N in `orderedIds`
+ * order, comparing against each item's position on THIS sheet, and give each
+ * change its write — sheetShelfOrder[sheetKey] for an item counted on several
+ * sheets (so its other sheets keep their order), catShelfOrder otherwise.
+ * @returns Array<{ id, pos, data }>
+ */
+export function sheetReorderChanges(items, sheetKey, orderedIds) {
+  const byId = new Map((items || []).map(i => [String(i.id), i]))
+  const changes = []
+  ;(orderedIds || []).forEach((id, idx) => {
+    const item = byId.get(String(id))
+    if (!item) return
+    if (sheetPosition(item, sheetKey) !== idx + 1) changes.push({ id, pos: idx + 1, data: sheetShelfWrite(item, sheetKey, idx + 1) })
   })
   return changes
 }

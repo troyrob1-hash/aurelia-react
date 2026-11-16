@@ -28,8 +28,8 @@ import CategoryManagerModal from '@/components/inventory/CategoryManagerModal'
 import ZoneManagerModal from '@/components/inventory/ZoneManagerModal'
 import CountSheetPrintModal from '@/components/inventory/CountSheetPrintModal'
 import SplitCountCell from '@/components/inventory/SplitCountCell'
-import { byShelf } from '@/lib/countSheets'
-import { nextShelfPosition, shelfWriteChunks, seedPatches, reorderChanges } from '@/lib/shelfOrder'
+import { byShelf, byShelfOn } from '@/lib/countSheets'
+import { nextShelfPosition, shelfWriteChunks, seedPatches, reorderChanges, sheetReorderChanges } from '@/lib/shelfOrder'
 import { canEditInventoryCategories } from '@/lib/permissions'
 // Zone display layer (Phase 4). countDisplay is the ONLY correct source for
 // what a count cell shows — a zoned item's in-memory top-level is NOT its
@@ -103,12 +103,13 @@ function shelfGroups(list, categories, viewMode, activeCat) {
     return [{ key: '__flat__', label: null, isFlat: true, color: '#0f172a', bg: '#f8fafc', items: sorted }]
   }
   const cats = activeCat === 'all' ? categories : categories.filter(c => c.key === activeCat)
-  // Within-group order by catShelfOrder (null → bottom A-Z).
+  // Within-group order: each item's position ON THIS SHEET (byShelfOn — a
+  // split item's own per-sheet entry, else catShelfOrder; null → bottom A-Z).
   return cats.map(cat => ({
     ...cat,
     items: list
       .filter(i => sheetCategoryKeys(i).includes(cat.key))   // split items appear on each sheet
-      .sort(byShelf('catShelfOrder')),
+      .sort(byShelfOn(cat.key)),
   })).filter(g => g.items.length > 0)
 }
 
@@ -679,7 +680,8 @@ export default function Inventory() {
   // Unpositioned items already on the new sheet are numbered first in their
   // current display order (see lib/shelfOrder.js); positioned ones are never
   // rewritten. Callers use this only for a real change on a NON-split item —
-  // a split item's one catShelfOrder is shared by all its sheets.
+  // a split item instead joins the new sheet via setItemCountCategories, which
+  // places it at that sheet's end the same way.
   const assignCategoryAtEnd = useCallback(async (itemId, catKey, catLabel) => {
     if (!location) throw new Error('Pick a single location before editing items.')
     setEditSavingCount(c => c + 1)
@@ -736,9 +738,10 @@ export default function Inventory() {
   const locked = periodLocked || periodClosed
 
   // Persist a dropped reorder (Stage 2b). Writes clean sequential 1..N shelf
-  // positions for the affected scope — the dragged item's category group
-  // (catShelfOrder, grouped view) or the whole flat list (flatShelfOrder, flat
-  // view). Only items whose position actually CHANGED are written (diff vs
+  // positions for the affected scope — the dragged item's category sheet
+  // (grouped view: catShelfOrder, or sheetShelfOrder[sheet] for an item counted
+  // on several sheets, so its other sheets keep their order) or the whole flat
+  // list (flatShelfOrder, flat view). Only items whose position actually CHANGED are written (diff vs
   // current), so a small move costs a few writes; the worst case (first-ever
   // arrangement of a 453-item flat list, or moving to the far end) approaches N.
   // Batched in chunks of 450 to stay under Firestore's 500-op writeBatch limit.
@@ -746,19 +749,20 @@ export default function Inventory() {
   // override doc yet are created; existing docs keep every other field.
   const persistReorder = useCallback(async (groupKey, orderedIds) => {
     if (!orgId || !location || !orderedIds?.length) return
-    const field = viewMode === 'flat' ? 'flatShelfOrder' : 'catShelfOrder'
     const locKey = sanitizeDocId(location)
-    const changes = reorderChanges(items, field, orderedIds)
+    const changes = viewMode === 'flat'
+      ? reorderChanges(items, 'flatShelfOrder', orderedIds).map(c => ({ ...c, data: { flatShelfOrder: c.pos } }))
+      : sheetReorderChanges(items, groupKey, orderedIds)
     if (!changes.length) return
     try {
       const { writeBatch, doc: fbDoc } = await import('firebase/firestore')
       for (let i = 0; i < changes.length; i += 450) {
         const slice = changes.slice(i, i + 450)
         const batch = writeBatch(db)
-        slice.forEach(({ id, pos }) => {
+        slice.forEach(({ id, data }) => {
           batch.set(
-            fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', id),
-            { [field]: pos },
+            fbDoc(db, 'tenants', orgId, 'inventory', locKey, 'items', String(id)),
+            data,
             { merge: true }
           )
         })
@@ -767,12 +771,12 @@ export default function Inventory() {
       // Only AFTER all batches commit: patch the new positions into the
       // in-memory items so the reorder sticks visually without a reload
       // (re-entering arrange mode or flipping to Shelf sort shows the new
-      // order). Patches ONLY the changed `field` on the changed ids — qty,
+      // order). Patches ONLY the changed position on the changed ids — qty,
       // eaches, counts and every other field are left untouched. If the write
       // failed above, we never reach here: the toast fires and local state
       // stays as-is (consistent with the un-persisted server state).
       const patches = {}
-      changes.forEach(({ id, pos }) => { patches[id] = { [field]: pos } })
+      changes.forEach(({ id, data }) => { patches[id] = data })
       patchItemFields(patches)
     } catch (err) {
       toast.error('Failed to save shelf order: ' + (err.message || ''))
@@ -2259,9 +2263,9 @@ export default function Inventory() {
                                 // and sent back through keyword inference.
                                 // A real move of a non-split item lands at the END of
                                 // the new sheet (assignCategoryAtEnd). Re-picking the same
-                                // category, or a split item, keeps the old write — no
-                                // position (split positioning is out of scope; see
-                                // lib/shelfOrder.js).
+                                // category, or a split item, keeps the old write; a split
+                                // item's new home joins its sheets below, and
+                                // setItemCountCategories puts it at that sheet's end.
                                 if (catKey !== item._cat && !isSplitItem(item)) {
                                   await assignCategoryAtEnd(item.id, catKey, catLabel)
                                 } else {
