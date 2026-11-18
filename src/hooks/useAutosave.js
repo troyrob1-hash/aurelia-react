@@ -134,7 +134,13 @@ export function useAutosave({
   // the OLD localStorage entry on save success).
   useEffect(() => {
     const capturedFlushKey = flushKey
-    return () => { flush(capturedFlushKey) }
+    return () => {
+      // The flush below saves the outgoing context, so its pending debounce
+      // is done with. Left running, it would fire later with saveRef pointing
+      // at the NEW context's save — writing to a location/week nobody edited.
+      if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null }
+      flush(capturedFlushKey)
+    }
   }, [flushKey])
 
   return { autoSaveStatus, lastSavedAt, flushNow: flush }

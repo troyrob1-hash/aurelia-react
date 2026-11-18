@@ -1242,6 +1242,10 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
   useEffect(() => {
     touchedItemsRef.current = new Set()
     touchedZonesRef.current = new Map()
+    // Unsaved edits belong to the context just left (useAutosave's key-change
+    // flush has already taken them); carried over, a pagehide/visibility flush
+    // would save the NEW location before anyone edits it.
+    setDirty(false)
   }, [locationId, periodKey])
 
   const adjust = useCallback((itemId, delta) => {

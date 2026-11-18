@@ -93,6 +93,24 @@ describe('useAutosave', () => {
     expect(save).toHaveBeenCalledTimes(1)
   })
 
+  it('a key change cancels the pending debounced save — it must not fire later against the NEW key', async () => {
+    // The flush on key change already saved the outgoing context. If the old
+    // debounce timer survives, it fires with saveRef pointing at the NEW
+    // context's save (live repro 2026-11-18: an edit at Test Sandbox, switch to
+    // CR_TMC 1.5 s later, and the timer wrote TMC's P&L/snapshot at $0).
+    const saveA = vi.fn(async () => true)
+    const saveB = vi.fn(async () => true)
+    const { rerender } = renderHook(
+      ({ flushKey, save, dirty }) => useAutosave({ dirty, save, flushKey, debounceMs: 2000 }),
+      { initialProps: { flushKey: 'loc-A', save: saveA, dirty: true } }
+    )
+    await vi.advanceTimersByTimeAsync(1500)
+    rerender({ flushKey: 'loc-B', save: saveB, dirty: true })
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(saveA).toHaveBeenCalledTimes(1)   // the flush
+    expect(saveB).not.toHaveBeenCalled()
+  })
+
   it('flush awaits the save call instead of fire-and-forget', async () => {
     // Companion to the flushKey test above. The cleanup path can't tell the
     // difference between `await saveRef.current()` and a bare

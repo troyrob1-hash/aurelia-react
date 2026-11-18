@@ -22,7 +22,9 @@ vi.mock('firebase/firestore', () => {
   const ref = (base, ...segs) => ({ path: [...(base?.path ? [base.path] : []), ...segs].join('/') })
   const gate = async (path) => { for (const h of [...holds]) if (h.match(path)) await h.promise }
   const snapOf = (path) => ({ id: path.split('/').pop(), ref: { path }, exists: () => store.has(path), data: () => store.get(path) })
-  const record = (op, r, data) => {
+  // Writes can be held too ('write:' + path), to model a slow network save.
+  const record = async (op, r, data) => {
+    await gate('write:' + r.path)
     writes.push({ op, path: r.path })
     if (op === 'delete') store.delete(r.path)
     else store.set(r.path, { ...(store.get(r.path) || {}), ...(data || {}) })
@@ -48,7 +50,7 @@ vi.mock('firebase/firestore', () => {
         set: (r, d) => ops.push(['set', r, d]),
         update: (r, d) => ops.push(['update', r, d]),
         delete: (r) => ops.push(['delete', r]),
-        commit: async () => ops.forEach(([op, r, d]) => record(op, r, d)),
+        commit: async () => { for (const [op, r, d] of ops) await record(op, r, d) },
       }
     },
     onSnapshot: () => () => {},
@@ -299,4 +301,59 @@ describe('a save never writes one location onto another', () => {
     expect(writes.map(w => w.path)).toContain(`${T}/inventory/Test_Sandbox/counts/${W3}/items/id_zc`)
     expect(writes.some(w => w.path.includes('Slow_Loc'))).toBe(false)
   })
+
+  it('an edit left pending at the old location is not autosaved onto the next one once its items arrive', async () => {
+    // Live repro on the PR branch: edit at Test Sandbox, switch to CR_TMC
+    // inside the 2 s autosave window; when the timer fired, TMC's own items had
+    // just loaded, so the save wrote TMC's P&L and snapshot at $0 — a phantom
+    // "counted" week for a location the user only opened.
+    const { result, rerender } = renderHook(({ loc }) => {
+      const inv = useInventory('fooda', loc, W3, USER)
+      useAutosave({ dirty: inv.dirty, save: inv.saveCounts, flushKey: `fooda|${loc}|${W3}`, debounceMs: 300 })
+      return inv
+    }, { initialProps: { loc: 'Test Sandbox' } })
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    act(() => result.current.adjust('zc', 5))
+
+    // The switch-time save to Test Sandbox is slow (as on a real network), so
+    // it is still running when the 300 ms autosave timer comes due.
+    const releaseWrites = hold(p => p.startsWith('write:') && p.includes('Test_Sandbox'))
+    // Slow Loc's items arrive quickly but the rest of its load (prior weeks)
+    // is still running when the timer comes due — the browser timeline.
+    const releaseTail = hold(p => p.startsWith(`${T}/inventory/Slow_Loc/counts/`) && !p.includes(W3))
+    rerender({ loc: 'Slow Loc' })
+    await waitFor(() => expect(result.current.items.map(i => i.id)).toEqual(['oj']))
+    await act(() => new Promise(r => setTimeout(r, 600)))
+    releaseTail()
+    releaseWrites()
+    await settle()
+
+    expect(writes.map(w => w.path)).toContain(`${T}/inventory/Test_Sandbox/counts/${W3}/items/id_zc`)
+    expect(writes.filter(w => w.path.includes('Slow_Loc') && !w.path.includes('inventorySessions'))).toEqual([])
+    expect(store.has(`${T}/pnl/Slow_Loc/periods/${W3}`)).toBe(false)
+    expect(result.current.dirty).toBe(false)
+  })
+
+  it('hiding the page right after a switch does not save the next location (no carried-over unsaved flag)', async () => {
+    const { result, rerender } = renderHook(({ loc }) => {
+      const inv = useInventory('fooda', loc, W3, USER)
+      useAutosave({ dirty: inv.dirty, save: inv.saveCounts, flushKey: `fooda|${loc}|${W3}`, debounceMs: 60000 })
+      return inv
+    }, { initialProps: { loc: 'Test Sandbox' } })
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    act(() => result.current.adjust('zc', 5))
+
+    const releaseWrites = hold(p => p.startsWith('write:') && p.includes('Test_Sandbox'))
+    const releaseTail = hold(p => p.startsWith(`${T}/inventory/Slow_Loc/counts/`) && !p.includes(W3))
+    rerender({ loc: 'Slow Loc' })
+    await waitFor(() => expect(result.current.items.map(i => i.id)).toEqual(['oj']))
+    await act(async () => { window.dispatchEvent(new Event('pagehide')) })
+    await settle()
+    releaseTail()
+    releaseWrites()
+    await settle()
+
+    expect(writes.filter(w => w.path.includes('Slow_Loc') && !w.path.includes('inventorySessions'))).toEqual([])
+  })
 })
+
