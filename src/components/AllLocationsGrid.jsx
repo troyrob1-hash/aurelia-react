@@ -1,7 +1,12 @@
 import { useLocations, cleanLocName } from '@/store/LocationContext'
+import { useAuthStore } from '@/store/authStore'
 
 export default function AllLocationsGrid({ title, subtitle, onSelectLocation, statusLabel }) {
   const { visibleLocations, groupedLocations } = useLocations()
+  // The profile (regions + assigned locations) couldn't be read after retries,
+  // so a director/manager has nothing to list. Say so instead of an empty grid.
+  const profileLoadFailed = useAuthStore(s => !!s.user?.profileLoadFailed)
+  const showLoadError = profileLoadFailed && Object.keys(groupedLocations).length === 0
 
   return (
     <div style={{ padding: '1.5rem', maxWidth: 1400, margin: '0 auto' }}>
@@ -9,6 +14,17 @@ export default function AllLocationsGrid({ title, subtitle, onSelectLocation, st
         <h1 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#0f172a', margin: 0 }}>{title}</h1>
         {subtitle && <p style={{ fontSize: 13, color: '#64748b', margin: '4px 0 0' }}>{subtitle}</p>}
       </div>
+      {showLoadError && (
+        <div role="alert" style={{ padding: '14px 16px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 12, color: '#991b1b', fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <span>Couldn't load your locations, reload to try again.</span>
+          <button
+            onClick={() => window.location.reload()}
+            style={{ padding: '6px 14px', background: '#fff', border: '1px solid #fca5a5', borderRadius: 8, color: '#991b1b', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+          >
+            Reload
+          </button>
+        </div>
+      )}
       {Object.entries(groupedLocations).map(([regionName, regionLocs]) => {
         if (regionLocs.length === 0) return null
         return (
