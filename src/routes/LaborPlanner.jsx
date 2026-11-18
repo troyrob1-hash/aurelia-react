@@ -1,5 +1,5 @@
 import SubCafeBar from '@/components/ui/SubCafePrompt'
-import { useState, useMemo, useEffect, Fragment } from 'react'
+import { useState, useMemo, useEffect, useRef, Fragment } from 'react'
 import { useToast } from '@/components/ui/Toast'
 import AllLocationsGrid from '@/components/AllLocationsGrid'
 import { Upload, Download, CheckCircle, Clock, AlertCircle, RefreshCw, Plus, ChevronRight, ChevronDown } from 'lucide-react'
@@ -18,6 +18,7 @@ import {
 } from 'firebase/firestore'
 import styles from './LaborPlanner.module.css'
 import { useAutosave } from '@/hooks/useAutosave'
+import { useDraftRestore, draftKey, mergeLaborDraft } from '@/hooks/useDraftRestore'
 import SaveStatusBar from '@/components/SaveStatusBar'
 
 const PERIOD_OPTS = ['Weekly', 'Monthly', 'Period to date']
@@ -155,13 +156,29 @@ export default function LaborPlanner() {
     }
   }
 
-  // Shared autosave lifecycle: debounce + page-exit flush + location-switch
-  // flush + status badge. saveLabor is the draft-save; enabled while editable.
+  // Shared autosave lifecycle: debounce + page-exit flush + location/week-
+  // switch flush + status badge. saveLabor is the draft-save; enabled while
+  // editable. Keyed by location AND week, so the localStorage draft
+  // (snapshot/hydrate) can only restore into the same location and week.
+  const draftFlushKey = draftKey('labor', orgId, location, periodKey)
+  const [loadedKey, setLoadedKey] = useState(null)
+  const laborLoadSeq = useRef(0)
+  const hydrateDraft = useDraftRestore({
+    flushKey: draftFlushKey,
+    loadedKey,
+    apply: (draft) => {
+      setRows(prev => mergeLaborDraft(prev, draft))
+      setDirty(true)
+      toast.success('Restored unsaved labor entries from before the page closed')
+    },
+  })
   const { autoSaveStatus, lastSavedAt } = useAutosave({
     dirty,
     save: saveLabor,
     enabled: approvalStatus !== 'approved' && !periodClosed,
-    flushKey: location,
+    flushKey: draftFlushKey,
+    snapshot: () => rows,
+    hydrate: hydrateDraft,
   })
   useEffect(() => {
     if (!selectedLocation || selectedLocation === 'all' || !periodKey) return
@@ -295,6 +312,12 @@ export default function LaborPlanner() {
         if (snap.exists()) setConnectedIntegrations(snap.data())
       } catch { /* defaults */ }
     }
+    // Only the latest load may set rows (a slow load for the week/location
+    // just left must not land here), and it marks this key loaded so a held
+    // draft can be applied on top.
+    const seq = ++laborLoadSeq.current
+    const thisKey = draftKey('labor', orgId, location, periodKey)
+    setLoadedKey(null)
     async function loadPendingSubmission() {
       try {
         const q = query(
@@ -303,6 +326,7 @@ export default function LaborPlanner() {
           where('location', '==', location || 'all'),
         )
         const snap = await getDocs(q)
+        if (seq !== laborLoadSeq.current) return
         if (!snap.empty) {
           // Get the most recent submission
           const sorted = snap.docs.sort((a, b) => (b.data().createdAt?.seconds || 0) - (a.data().createdAt?.seconds || 0))
@@ -325,6 +349,8 @@ export default function LaborPlanner() {
           setSubmissionId(null)
           setRejectedReason('')
         }
+        setDirty(false)
+        setLoadedKey(thisKey)
       } catch { /* no existing */ }
     }
     loadOrgConfig()
