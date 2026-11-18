@@ -65,7 +65,13 @@ export const useAuthStore = create((set, get) => ({
     const enriched = await loadProfile(baseUser)
     set({ user: enriched })
     // Inventory View settings follow the user across sign-ins (viewPrefsSync).
-    startViewPrefsSync({ tenantId: enriched.tenantId, uid: enriched.uid, preferences: enriched.preferences })
+    // Not when the profile failed to load: the saved settings are unknown, and
+    // the first toggle would overwrite them with defaults. Display only, so a
+    // throw here must never undo the sign-in (init's catch sets user: null).
+    if (!enriched.profileLoadFailed) {
+      try { startViewPrefsSync({ tenantId: enriched.tenantId, uid: enriched.uid, preferences: enriched.preferences }) }
+      catch (e) { console.warn('[authStore] view settings not applied:', e?.message || e) }
+    }
     return enriched
   },
 
@@ -95,32 +101,54 @@ async function loadProfile(user) {
   }
   const userRef = doc(db, 'orgs', user.tenantId, 'users', uid)
   try { await setDoc(userRef, { lastLoginAt: serverTimestamp() }, { merge: true }) } catch(e) { console.warn('[authStore] lastLoginAt write failed:', e?.message || e) }
+  let snap
   try {
-    const snap = await getDoc(userRef)
-    if (snap.exists()) {
-      const profile = snap.data()
-      // AUTHORITY INVERSION — deliberate, 2026-09-28 cutover.
-      //
-      // Before: Cognito's `custom:role` attribute was authoritative and the
-      // Firestore `roles[]` array was explicitly a non-authoritative display
-      // mirror, not read for permission decisions.
-      //
-      // After: the Firestore user doc is the source of record. The
-      // `custom:role` claim still exists and is still what `firestore.rules`
-      // enforces on — but it is now *seeded from this document* by
-      // `migrations/migrate-cognito-to-firebase-auth.cjs` (and, once ported,
-      // by `updateUserRoles`). Firestore writes the claim; the claim gates the
-      // rules. Same enforcement point, opposite direction of authority.
-      //
-      // `roles[]` is still not read here. `user.role` (singular, now
-      // claim-sourced-from-Firestore) remains the field permissions.js reads,
-      // so the client/rules agreement is unchanged. The consequence to know:
-      // editing the Firestore doc alone no longer changes access — the claim
-      // must be re-set and the user's ID token refreshed for it to take effect.
-      return { ...user, uid, managedRegionIds: profile.managedRegionIds || [], assignedLocations: profile.assignedLocations || [], displayName: profile.displayName || user.name, preferences: profile.preferences || {} }
-    }
-  } catch(e) { console.warn('[authStore] profile read failed:', e?.message || e) }
+    snap = await readWithRetry(() => getDoc(userRef))
+  } catch (e) {
+    // Without the profile a director/manager has no regions or assigned
+    // locations, so every page would be silently empty. Flag it instead;
+    // AllLocationsGrid shows "Couldn't load your locations" with a Reload.
+    console.warn('[authStore] profile read failed:', e?.message || e)
+    return { ...user, uid, profileLoadFailed: true }
+  }
+  if (snap.exists()) {
+    const profile = snap.data()
+    // AUTHORITY INVERSION — deliberate, 2026-09-28 cutover.
+    //
+    // Before: Cognito's `custom:role` attribute was authoritative and the
+    // Firestore `roles[]` array was explicitly a non-authoritative display
+    // mirror, not read for permission decisions.
+    //
+    // After: the Firestore user doc is the source of record. The
+    // `custom:role` claim still exists and is still what `firestore.rules`
+    // enforces on — but it is now *seeded from this document* by
+    // `migrations/migrate-cognito-to-firebase-auth.cjs` (and, once ported,
+    // by `updateUserRoles`). Firestore writes the claim; the claim gates the
+    // rules. Same enforcement point, opposite direction of authority.
+    //
+    // `roles[]` is still not read here. `user.role` (singular, now
+    // claim-sourced-from-Firestore) remains the field permissions.js reads,
+    // so the client/rules agreement is unchanged. The consequence to know:
+    // editing the Firestore doc alone no longer changes access — the claim
+    // must be re-set and the user's ID token refreshed for it to take effect.
+    return { ...user, uid, managedRegionIds: profile.managedRegionIds || [], assignedLocations: profile.assignedLocations || [], displayName: profile.displayName || user.name, preferences: profile.preferences || {} }
+  }
   return { ...user, uid }
+}
+
+// Waits between profile-read attempts: 3 tries over ~1s covers a dropped
+// connection or a cold Firestore channel right after sign-in.
+export const PROFILE_READ_RETRY_DELAYS_MS = [250, 750]
+
+async function readWithRetry(read) {
+  for (let attempt = 0; ; attempt++) {
+    try { return await read() }
+    catch (e) {
+      if (attempt >= PROFILE_READ_RETRY_DELAYS_MS.length) throw e
+      console.warn(`[authStore] profile read attempt ${attempt + 1} failed, retrying:`, e?.message || e)
+      await new Promise(r => setTimeout(r, PROFILE_READ_RETRY_DELAYS_MS[attempt]))
+    }
+  }
 }
 
 /**
