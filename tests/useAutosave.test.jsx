@@ -157,6 +157,18 @@ describe('useAutosave', () => {
     expect(saveB).not.toHaveBeenCalled()
   })
 
+  it("a save that returns false reports 'failed' (not 'idle'); a key change resets it", async () => {
+    const { result, rerender } = renderHook(
+      ({ flushKey }) => useAutosave({ dirty: true, save: async () => false, flushKey, debounceMs: 100 }),
+      { initialProps: { flushKey: 'loc-A' } }
+    )
+    await vi.advanceTimersByTimeAsync(150)
+    expect(result.current.autoSaveStatus).toBe('failed')
+    rerender({ flushKey: 'loc-B' })
+    await Promise.resolve()
+    expect(result.current.autoSaveStatus).toBe('idle')
+  })
+
   it('flush awaits the save call instead of fire-and-forget', async () => {
     // Companion to the flushKey test above. The cleanup path can't tell the
     // difference between `await saveRef.current()` and a bare

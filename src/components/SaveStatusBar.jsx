@@ -16,7 +16,7 @@ function shortPeriod(k) {
  * Pairs with the useAutosave hook: pass its autoSaveStatus + lastSavedAt.
  *
  * Props:
- *   autoSaveStatus  'idle' | 'saving' | 'saved'
+ *   autoSaveStatus  'idle' | 'saving' | 'saved' | 'failed'
  *   lastSavedAt     Date | null
  *   dirty           boolean
  *   metricLabel     e.g. 'Week total' | 'Live COGS'   (optional)
@@ -28,6 +28,7 @@ function shortPeriod(k) {
  *   saveAndCloseLabel  default 'Save & Close Period'
  *   saving          boolean — disables buttons while a save is in flight
  *   hidden          boolean — when true, render nothing (approved/closed)
+ *   failedMessage   why the last save didn't happen (shown with 'failed')
  */
 export default function SaveStatusBar({
   autoSaveStatus,
@@ -45,13 +46,17 @@ export default function SaveStatusBar({
   locked = false,   // period closed/locked → both actions disabled + indicator
   periodKey,        // for the "…closed" indicator
   location,         // raw location name (cleanLocName strips CR_/SO_)
+  failedMessage,
 }) {
   if (hidden) return null
 
   const isSaving = autoSaveStatus === 'saving'
   const unsaved = dirty && !isSaving
-  const dot = isSaving ? '#fbbf24' : unsaved ? '#94a3b8' : '#34d399'
-  const label = isSaving ? 'Saving\u2026' : unsaved ? 'Saving in a moment\u2026' : 'All changes saved'
+  // The last save was refused or failed and the edits are still unsaved: say
+  // so, instead of "Saving in a moment…" (nothing is scheduled to retry).
+  const failed = unsaved && autoSaveStatus === 'failed'
+  const dot = isSaving ? '#fbbf24' : failed ? '#f87171' : unsaved ? '#94a3b8' : '#34d399'
+  const label = isSaving ? 'Saving\u2026' : failed ? 'Not saved' : unsaved ? 'Saving in a moment\u2026' : 'All changes saved'
   const ts = lastSavedAt
     ? lastSavedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
     : null
@@ -86,9 +91,15 @@ export default function SaveStatusBar({
               <span style={{ width: 9, height: 9, borderRadius: '50%', background: dot, flexShrink: 0, boxShadow: isSaving ? 'none' : '0 0 6px ' + dot }} />
               <span style={{ fontSize: 13, fontWeight: 600, color: '#fff' }}>{label}</span>
             </div>
-            <span style={{ fontSize: 11, opacity: 0.65, marginTop: 2 }}>
-              {ts ? 'Saved automatically at ' + ts : (reassurance || 'Changes save automatically')}
-            </span>
+            {failed ? (
+              <span role="alert" style={{ fontSize: 11, color: '#fca5a5', marginTop: 2, maxWidth: 320 }}>
+                {failedMessage || "Your last change didn't save. Press Save to try again."}
+              </span>
+            ) : (
+              <span style={{ fontSize: 11, opacity: 0.65, marginTop: 2 }}>
+                {ts ? 'Saved automatically at ' + ts : (reassurance || 'Changes save automatically')}
+              </span>
+            )}
           </>
         )}
       </div>

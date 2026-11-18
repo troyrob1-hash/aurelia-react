@@ -252,6 +252,9 @@ describe('a save never writes one location onto another', () => {
     expect(saved).toBe(false)
     expect(savedFull).toBe(false)
     expect(writes).toEqual([])
+    // The refusal is reported, for the save bar and the Save toast.
+    expect(result.current.saveBlockedReason).toMatch(/items are still loading/)
+    expect(result.current.getSaveBlockedReason()).toMatch(/items are still loading/)
 
     // Once Slow Loc's own items are in, saving works and lands on Slow Loc only.
     release()
@@ -263,6 +266,8 @@ describe('a save never writes one location onto another', () => {
     expect(saved).toBe(true)
     expect(writes.length).toBeGreaterThan(0)
     expect(writes.every(w => w.path.includes('Slow_Loc'))).toBe(true)
+    expect(result.current.saveBlockedReason).toBeNull()
+    expect(result.current.getSaveBlockedReason()).toBeNull()
   })
 
   it('after a mixed race settles, a save writes only the selected location’s own items', async () => {
