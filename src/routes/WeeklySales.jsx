@@ -20,6 +20,7 @@ import {
 } from 'recharts'
 import styles from './WeeklySales.module.css'
 import { useAutosave } from '@/hooks/useAutosave'
+import { useDraftRestore, draftKey, mergeSalesDraft } from '@/hooks/useDraftRestore'
 import SaveStatusBar from '@/components/SaveStatusBar'
 
 // Weekday names indexed by Date.getDay() (0 = Sunday … 6 = Saturday) so a row's
@@ -331,15 +332,30 @@ export default function WeeklySales() {
   const isAll    = selectedLocation === 'all'
   const isDirector = canApproveSales(user)  // directors, VPs, and admins can approve
 
-  // Autosave lifecycle (debounce + page-exit flush + location-switch flush) is
-  // owned by the shared useAutosave hook so every tab behaves identically.
-  // handleSaveDraft writes the sales doc + P&L without submitting/closing.
-  // flushKey={location} flushes the OUTGOING location before a switch loads.
+  // Autosave lifecycle (debounce + page-exit flush + location/week-switch
+  // flush) is owned by the shared useAutosave hook so every tab behaves
+  // identically. handleSaveDraft writes the sales doc + P&L without
+  // submitting/closing. The key is location AND week: a switch of either
+  // flushes the OUTGOING week, and the localStorage draft (snapshot/hydrate)
+  // can only restore into the same location and week.
+  const draftFlushKey = draftKey('sales', orgId, location, periodKey)
+  const [loadedKey, setLoadedKey] = useState(null)
+  const hydrateDraft = useDraftRestore({
+    flushKey: draftFlushKey,
+    loadedKey,
+    apply: (draft) => {
+      setEntries(prev => mergeSalesDraft(prev, draft))
+      setDirty(true)
+      toast.success('Restored unsaved sales from before the page closed')
+    },
+  })
   const { autoSaveStatus, lastSavedAt } = useAutosave({
     dirty,
     save: handleSaveDraft,
     enabled: approvalStatus !== 'approved' && !periodClosed,
-    flushKey: location,
+    flushKey: draftFlushKey,
+    snapshot: () => entries,
+    hydrate: hydrateDraft,
   })
 
   const week = useMemo(() => {
@@ -428,7 +444,12 @@ export default function WeeklySales() {
     // Bump the request counter and capture this call's ID
     const requestId = ++loadRequestId.current
     const isStale = () => loadRequestId.current !== requestId
+    const thisKey = draftKey('sales', orgId, location, periodKey)
 
+    // Set once THIS key's entries are in; the draft (if any) is applied only
+    // after the final setDirty(false) below, so the reset can't erase it.
+    let entriesLoaded = false
+    setLoadedKey(null)
     setLoading(true)
     // Reset all data state so a failed or empty load doesn't show stale data
     // from a previously-viewed location. Without this, switching locations
@@ -447,6 +468,7 @@ export default function WeeklySales() {
       const sData = snap.exists() ? snap.data() : {}
       const data = sData.entries || {}
       setEntries(data)
+      entriesLoaded = true
       setLastSaved(sData.updatedAt || null)
       setSavedBy(sData.updatedBy || '')
       // Check for event import aggregates
@@ -535,6 +557,7 @@ export default function WeeklySales() {
     if (isStale()) return
     setLoading(false)
     setDirty(false)
+    if (entriesLoaded) setLoadedKey(thisKey)
   }
 
   async function loadHistoryAndForecast(currentEntries) {
