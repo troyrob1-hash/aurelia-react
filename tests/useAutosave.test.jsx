@@ -93,6 +93,70 @@ describe('useAutosave', () => {
     expect(save).toHaveBeenCalledTimes(1)
   })
 
+  it('a key change cancels the pending debounced save — it must not fire later against the NEW key', async () => {
+    // The flush on key change already saved the outgoing context. If the old
+    // debounce timer survives, it fires with saveRef pointing at the NEW
+    // context's save (live repro 2026-11-18: an edit at Test Sandbox, switch to
+    // CR_TMC 1.5 s later, and the timer wrote TMC's P&L/snapshot at $0).
+    const saveA = vi.fn(async () => true)
+    const saveB = vi.fn(async () => true)
+    const { rerender } = renderHook(
+      ({ flushKey, save, dirty }) => useAutosave({ dirty, save, flushKey, debounceMs: 2000 }),
+      { initialProps: { flushKey: 'loc-A', save: saveA, dirty: true } }
+    )
+    await vi.advanceTimersByTimeAsync(1500)
+    rerender({ flushKey: 'loc-B', save: saveB, dirty: true })
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(saveA).toHaveBeenCalledTimes(1)   // the flush
+    expect(saveB).not.toHaveBeenCalled()
+  })
+
+  it('right after a key change, the backstop does not save the OLD data under the NEW key', async () => {
+    // The commit right after a location switch still holds the old location's
+    // items and dirty flag; snapshotting them under the new key planted a draft
+    // that was later "restored" into the new location (live, 2026-11-18).
+    const oldItems = [{ id: 'zebra_cola_12oz', qty: 1 }]
+    const { rerender } = renderHook(
+      ({ flushKey }) => useAutosave({ dirty: true, save: async () => false, flushKey, snapshot: () => oldItems }),
+      { initialProps: { flushKey: 'fooda|Test_Sandbox|W3' } }
+    )
+    expect(JSON.parse(localStorage.getItem('aurelia:autosave:fooda|Test_Sandbox|W3')).key).toBe('fooda|Test_Sandbox|W3')
+    rerender({ flushKey: 'fooda|CR_TMC|W3' })
+    await Promise.resolve()
+    expect(localStorage.getItem('aurelia:autosave:fooda|CR_TMC|W3')).toBeNull()
+  })
+
+  it('a draft is restored only into the key it was written for; keyless (older) drafts are ignored', async () => {
+    const hydrate = vi.fn()
+    localStorage.setItem('aurelia:autosave:fooda|CR_TMC|W3', JSON.stringify({ data: [{ id: 'x', qty: 1 }], ts: 1 }))
+    localStorage.setItem('aurelia:autosave:fooda|Cafe_AZ|W3', JSON.stringify({ key: 'fooda|Test_Sandbox|W3', data: [{ id: 'y' }], ts: 1 }))
+    localStorage.setItem('aurelia:autosave:fooda|HDK|W3', JSON.stringify({ key: 'fooda|HDK|W3', data: [{ id: 'z' }], ts: 7 }))
+    const { rerender } = renderHook(
+      ({ flushKey }) => useAutosave({ dirty: false, save: async () => true, flushKey, hydrate }),
+      { initialProps: { flushKey: 'fooda|CR_TMC|W3' } }
+    )
+    rerender({ flushKey: 'fooda|Cafe_AZ|W3' })
+    expect(hydrate).not.toHaveBeenCalled()
+    rerender({ flushKey: 'fooda|HDK|W3' })
+    expect(hydrate).toHaveBeenCalledTimes(1)
+    expect(hydrate).toHaveBeenCalledWith([{ id: 'z' }], 7)
+  })
+
+  it('a page-exit flush right after a key change does not run the NEW context\'s save with the old edits', async () => {
+    const saveA = vi.fn(async () => true)
+    const saveB = vi.fn(async () => true)
+    const { rerender } = renderHook(
+      ({ flushKey, save }) => useAutosave({ dirty: true, save, flushKey }),
+      { initialProps: { flushKey: 'loc-A', save: saveA } }
+    )
+    rerender({ flushKey: 'loc-B', save: saveB })
+    await Promise.resolve()
+    expect(saveA).toHaveBeenCalledTimes(1)   // the key-change flush
+    window.dispatchEvent(new Event('pagehide'))
+    await Promise.resolve()
+    expect(saveB).not.toHaveBeenCalled()
+  })
+
   it('flush awaits the save call instead of fire-and-forget', async () => {
     // Companion to the flushKey test above. The cleanup path can't tell the
     // difference between `await saveRef.current()` and a bare
