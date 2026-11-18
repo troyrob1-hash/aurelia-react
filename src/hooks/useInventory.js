@@ -697,11 +697,20 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
   const loadSeqRef = useRef(0)
   const loadedKeyRef = useRef(null)
   const dataKey = `${orgId}|${locId}|${periodKey}`
+  // Why the last save was refused, for the save bar and the Save toast; null
+  // once a save is allowed again. Ref mirror so a caller can read it right
+  // after `await save()` (the state is a render behind).
+  const [saveBlockedReason, setSaveBlockedReason] = useState(null)
+  const saveBlockedRef = useRef(null)
   const itemsBelongHere = useCallback(() => {
-    if (loadedKeyRef.current === dataKey) return true
-    console.warn('[useInventory] save skipped: items on screen are not loaded for', dataKey)
-    return false
+    const ok = loadedKeyRef.current === dataKey
+    const reason = ok ? null : "Not saved: this location's items are still loading. Press Save once they appear."
+    if (!ok) console.warn('[useInventory] save skipped: items on screen are not loaded for', dataKey)
+    saveBlockedRef.current = reason
+    setSaveBlockedReason(reason)
+    return ok
   }, [dataKey])
+  const getSaveBlockedReason = useCallback(() => saveBlockedRef.current, [])
 
   const load = useCallback(async () => {
     const seq = ++loadSeqRef.current
@@ -2492,6 +2501,8 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
     periodLocked,
     markPeriodLocked,
     applyUploadedCounts,
+    saveBlockedReason,       // why the last save was refused (null when it wasn't)
+    getSaveBlockedReason,
   }
 }
 

@@ -66,7 +66,9 @@ export function useAutosave({
       setAutoSaveStatus('saving')
       let ok = false
       try { ok = saveRef.current ? await saveRef.current() : false } catch (e) { ok = false }
-      setAutoSaveStatus(ok ? 'saved' : 'idle')
+      // A save that returns false (refused or failed) is reported as 'failed',
+      // not 'idle' — otherwise the bar keeps promising "Saving in a moment…".
+      setAutoSaveStatus(ok ? 'saved' : 'failed')
       if (ok) {
         setLastSavedAt(new Date())
         const k = flushKeyRef.current
@@ -149,6 +151,8 @@ export function useAutosave({
   // the OLD localStorage entry on save success).
   useEffect(() => {
     const capturedFlushKey = flushKey
+    // A failure belongs to the context it happened in; a new key starts clean.
+    setAutoSaveStatus('idle')
     return () => {
       // The flush below saves the outgoing context, so its pending debounce
       // is done with. Left running, it would fire later with saveRef pointing

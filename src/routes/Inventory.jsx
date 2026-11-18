@@ -597,6 +597,8 @@ export default function Inventory() {
     markPeriodLocked,
     applyUploadedCounts,
     rollOverFromPrior,
+    saveBlockedReason,
+    getSaveBlockedReason,
   } = useInventory(orgId, location, periodKey, user, isCurrentPeriod)
 
   // Zone-derived UI state (Phase 4).
@@ -925,13 +927,14 @@ export default function Inventory() {
       const success = await save()
       if (success) toast.success('Saved')
       // On a locked period save() early-returns false AND toasts "Period is
-      // closed" itself, so no generic "Save failed" here for that case.
-      else if (!periodLocked) toast.error('Save failed. Please try again.')
+      // closed" itself, so no generic "Save failed" here for that case. A save
+      // refused because the items on screen aren't this location's says so.
+      else if (!periodLocked) toast.error(getSaveBlockedReason() || 'Save failed. Please try again.')
     } catch (err) {
       console.error('Save error:', err)
       toast.error('Save failed: ' + err.message)
     }
-  }, [save, toast, orgId, periodLocked])
+  }, [save, toast, orgId, periodLocked, getSaveBlockedReason])
 
   // "Save and Close Period" — commit, then LOCK the period via the canonical
   // model (writePeriodClose + lockPeriod). Any counter can close (mgr/dir/vp/
@@ -2040,6 +2043,7 @@ export default function Inventory() {
           lastSavedAt={lastSavedAt}
           dirty={dirty}
           reassurance="Counts save automatically"
+          failedMessage={saveBlockedReason || undefined}
           onSave={handleSaveOnly}
           saveLabel="Save"
           onSaveAndClose={handleSaveAndClose}
