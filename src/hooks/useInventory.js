@@ -683,13 +683,38 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
   const priorKey = getPriorKey(periodKey)
   const locId = sanitizeDocId(locationId)
 
+  // Stale-load guard. Switching location or period starts a new load while the
+  // previous one may still be in flight, and load() sets state at several points
+  // with awaits between them. Without this, a slow load for the location the
+  // user just left could land after the new one and leave the page mixed (one
+  // location's items under another's categories, opening value and session) —
+  // and a save would then write that state to the location now selected.
+  //   loadSeqRef   — each load() takes a number; only the latest may set state.
+  //   loadedKeyRef — the org|location|period the current `items` belong to.
+  //                  Saves refuse to write unless it matches their own (see
+  //                  itemsBelongHere), so nothing is written while the next
+  //                  location's items are still loading.
+  const loadSeqRef = useRef(0)
+  const loadedKeyRef = useRef(null)
+  const dataKey = `${orgId}|${locId}|${periodKey}`
+  const itemsBelongHere = useCallback(() => {
+    if (loadedKeyRef.current === dataKey) return true
+    console.warn('[useInventory] save skipped: items on screen are not loaded for', dataKey)
+    return false
+  }, [dataKey])
+
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current
+    const isStale = () => seq !== loadSeqRef.current
+    const key = `${orgId}|${locId}|${periodKey}`
     if (!locationId || !periodKey || !orgId) {
       setItems([])
       setPriorItems([])
       setPriorFromPeriod(null)
       setOpeningValue(0)
       setPurchases(0)
+      // A superseded in-flight load no longer clears this itself.
+      setLoading(false)
       return
     }
 
@@ -1013,7 +1038,9 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         console.warn('[DEDUPE] collapsed', hydratedItems.length - dedupedItems.length,
                      'duplicate item id(s) on load')
       }
+      if (isStale()) return
       setItems(dedupedItems)
+      loadedKeyRef.current = key
 
       // Load prior period items for the Prior column (variance + copyPrior reference).
       // WALK-BACK: the immediately-prior period may have been skipped (a 1-day stub week the
@@ -1021,6 +1048,8 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       // shrinkage OPENING uses — to reach back (cap 5) to the most recent period that actually
       // has a count. Display-only: the reference may be older than last week, and we surface
       // which period it came from (setPriorFromPeriod) so the counter knows. Best-effort.
+      let priorArr = []
+      let priorFrom = null
       try {
         const WALK_CAP = 5
         const priorCandidates = []
@@ -1033,7 +1062,6 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         const hasCount = (pk) => !!snapItems(pk)
         const { openingPeriod } = resolveOpeningWindow(periodKey, hasCount, WALK_CAP)
 
-        let priorArr = []
         if (openingPeriod) {
           priorArr = snapItems(openingPeriod) || []
         } else if (priorKey) {
@@ -1047,14 +1075,19 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
             if (priorSnap.exists() && Array.isArray(priorSnap.data().items)) priorArr = priorSnap.data().items
           }
         }
-        setPriorItems(priorArr)
         // Label only when Prior came from FURTHER back than the immediate prior.
-        setPriorFromPeriod(openingPeriod && openingPeriod !== priorKey ? openingPeriod : null)
+        priorFrom = openingPeriod && openingPeriod !== priorKey ? openingPeriod : null
       } catch (e) {
         console.warn('Failed to load prior period items:', e)
-        setPriorItems([])
-        setPriorFromPeriod(null)
+        priorArr = []
+        priorFrom = null
       }
+      // Everything below is synchronous until the session write — one check
+      // covers prior items, opening value, purchases, categories, zones and
+      // session (and keeps a superseded load from creating a session doc).
+      if (isStale()) return
+      setPriorItems(priorArr)
+      setPriorFromPeriod(priorFrom)
 
       if (priorPnlSnap?.exists()) {
         setOpeningValue(priorPnlSnap.data().closingValue || 0)
@@ -1123,12 +1156,13 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
         }
       }
 
-      setDirty(false)
+      if (!isStale()) setDirty(false)
     } catch (err) {
+      if (isStale()) return
       console.error('Failed to load inventory:', err)
       setError('Failed to load inventory data')
     } finally {
-      setLoading(false)
+      if (!isStale()) setLoading(false)
     }
   }, [orgId, locationId, locId, periodKey, priorKey, liveSync])   // liveSync: past periods read frozen membership
 
@@ -1868,6 +1902,8 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
   const saveCounts = useCallback(async (opts = {}) => {
     if (!locationId || !periodKey) return false
     if (blockedByLock()) return false   // period closed — no count writes
+    // Never write one location's (or period's) items under another's path.
+    if (!itemsBelongHere()) return false
     // sourceItems lets rollOverFromPrior pass the just-computed rolled-forward array
     // directly, rather than the (still-stale, pre-render) `items` closure — setItems()
     // is async, so a caller that setItems()s then immediately calls saveCounts() would
@@ -2054,7 +2090,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
       setError('Count save failed: ' + (err?.message || 'unknown error'))
       return false
     }
-  }, [items, locationId, locId, periodKey, orgId, openingValue, purchases, user])
+  }, [items, locationId, locId, periodKey, orgId, openingValue, purchases, user, itemsBelongHere])
 
   // Short-week rollover: carry the prior period's counts forward as THIS (stub) week's
   // count doc, so a 1-day week the team skipped doesn't leave the next full week's
@@ -2086,6 +2122,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
   const save = useCallback(async () => {
     if (!locationId || !periodKey) return false
     if (blockedByLock()) return false   // period closed — no count writes
+    if (!itemsBelongHere()) return false   // see saveCounts
 
     setSaving(true)
     setError(null)
@@ -2287,7 +2324,7 @@ export function useInventory(orgId, locationId, periodKey, user, liveSync = fals
     } finally {
       setSaving(false)
     }
-  }, [items, locationId, locId, periodKey, orgId, openingValue, purchases, user, session])
+  }, [items, locationId, locId, periodKey, orgId, openingValue, purchases, user, session, itemsBelongHere])
 
   const itemsWithMeta = useMemo(() => {
     return items.map(item => {
