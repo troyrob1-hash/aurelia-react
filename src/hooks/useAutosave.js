@@ -44,6 +44,14 @@ export function useAutosave({
   const hydrateRef = useRef(hydrate)
   const flushKeyRef = useRef(flushKey)
   useEffect(() => { dirtyRef.current = dirty }, [dirty])
+  // The flushKey the unsaved edits belong to — set when dirty turns on, so it
+  // stays the OLD key across a key change that happens while dirty (the
+  // caller's data is still the old context's until it reloads). The backstop
+  // and the page-exit flush act only when it matches the current key; without
+  // this, the commit right after a location switch saved the OLD location's
+  // draft under the NEW location's key, to be "restored" there later.
+  const dirtyKeyRef = useRef(dirty ? flushKey : null)
+  useEffect(() => { dirtyKeyRef.current = dirty ? flushKey : null }, [dirty])  // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { saveRef.current = save }, [save])
   useEffect(() => { enabledRef.current = enabled }, [enabled])
   useEffect(() => { snapshotRef.current = snapshot }, [snapshot])
@@ -77,13 +85,14 @@ export function useAutosave({
   // This is the only mechanism that survives the async flush being cut off.
   useEffect(() => {
     if (!dirty || !enabled || !flushKey || !snapshotRef.current) return
+    if (dirtyKeyRef.current !== flushKey) return
     try {
       const data = snapshotRef.current()
       if (data == null) return
       if (Array.isArray(data) && data.length === 0) return
       localStorage.setItem(
         LS_PREFIX + flushKey,
-        JSON.stringify({ data, ts: Date.now() })
+        JSON.stringify({ key: flushKey, data, ts: Date.now() })
       )
     } catch (e) { /* quota / serialization — best-effort */ }
   })
@@ -97,6 +106,10 @@ export function useAutosave({
       const raw = localStorage.getItem(LS_PREFIX + flushKey)
       if (!raw) return
       const parsed = JSON.parse(raw)
+      // A draft is restored only into the context it was written for. Drafts
+      // without a key predate that check and may hold another location's
+      // data (see dirtyKeyRef), so they are ignored.
+      if (parsed?.key !== flushKey) return
       if (parsed?.data != null) {
         hydrateRef.current(parsed.data, parsed.ts)
       }
@@ -108,6 +121,8 @@ export function useAutosave({
   // *captured* flushKey on success — callers from cleanup pass the OLD key,
   // not flushKeyRef.current which by then is the NEW key.
   const flush = async (capturedFlushKey) => {
+    const forKey = capturedFlushKey ?? flushKeyRef.current
+    if (dirtyKeyRef.current !== forKey) return   // edits belong to another key
     if (dirtyRef.current && enabledRef.current && saveRef.current) {
       try {
         const ok = await saveRef.current()
