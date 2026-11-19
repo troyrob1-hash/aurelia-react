@@ -164,7 +164,7 @@ describe('wiring — replaceCatalog runs runCatalogReplace (buildCatalogImport +
 
   it('maps rows with buildCatalogImport and writes each record in order', () => {
     expect(fn).toMatch(/runCatalogReplace\(\s*\{ rows, headers, existingDocs, categories,/)
-    expect(run).toMatch(/buildCatalogImport\(rows, headers, categories, meta\)/)
+    expect(run).toMatch(/buildCatalogImport\(rows, headers, categories, meta, \{ sheetList \}\)/)
     expect(fn).toMatch(/for \(const \{ id, data \} of items\)/)
   })
 
