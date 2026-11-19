@@ -138,7 +138,8 @@ export function ItemListUploadDialog({ onClose, updateCategories, onUpdateCatego
 export function CopyFromSiteDialog({ sites, targetLabel, targetLosses, loadSource, onCopy, onClose }) {
   const [site, setSite] = useState('')
   const [source, setSource] = useState(null)
-  const [busy, setBusy] = useState(false)
+  const [busy, setBusy] = useState(false)          // reading the source
+  const [copying, setCopying] = useState(false)    // the copy itself — dialog can't close
   const [error, setError] = useState(null)
 
   async function pick(value) {
@@ -149,17 +150,20 @@ export function CopyFromSiteDialog({ sites, targetLabel, targetLosses, loadSourc
     setBusy(false)
   }
   async function confirm() {
-    setBusy(true); setError(null)
+    setCopying(true); setError(null)
     let result
     try { result = await onCopy(site) } catch (e) { result = { status: 'failed', error: "The copy didn't finish: " + (e?.message || e) } }
-    setBusy(false)
+    setCopying(false)
     if (result?.status !== 'done') setError(result?.error || "The copy didn't finish.")
   }
+  const locked = busy || copying
+  const close = () => { if (!copying) onClose() }
 
   const losses = targetLosses ? catalogLossLines(targetLosses) : []
   const sourceLabel = sites.find(x => x.value === site)?.label
   return (
-    <div className={styles.overlay} onMouseDown={e => { if (e.target === e.currentTarget && !busy) onClose() }}>
+    <div className={styles.overlay} onMouseDown={e => { if (e.target === e.currentTarget && !locked) close() }}
+      onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); close() } }}>
       <div className={styles.dialog} role="dialog" aria-modal="true" aria-labelledby="copy-site-title">
         <h3 id="copy-site-title" className={styles.dialogTitle}>Copy from another site</h3>
         <p className={styles.dialogSub}>
@@ -168,7 +172,7 @@ export function CopyFromSiteDialog({ sites, targetLabel, targetLosses, loadSourc
         </p>
         <label className={styles.field}>
           <span className={styles.fieldLabel}>Copy from</span>
-          <select value={site} onChange={e => pick(e.target.value)} disabled={busy} aria-label="Copy from">
+          <select value={site} onChange={e => pick(e.target.value)} disabled={locked} aria-label="Copy from">
             <option value="">Choose a site…</option>
             {sites.map(x => <option key={x.value} value={x.value}>{x.label}</option>)}
           </select>
@@ -189,11 +193,16 @@ export function CopyFromSiteDialog({ sites, targetLabel, targetLosses, loadSourc
             )}
           </div>
         )}
+        {copying && (
+          <p role="status" aria-live="polite" style={{ fontSize: 13, fontWeight: 600, margin: '8px 0 0' }}>
+            Copying {source?.docs ?? source?.items} items from {sourceLabel}… Keep this open until it finishes.
+          </p>
+        )}
         {error && <p role="alert" style={{ color: '#b91c1c', fontSize: 13, margin: '8px 0 0' }}>{error}</p>}
         <div className={styles.dialogActions}>
-          <button type="button" className={styles.btn} onClick={onClose} disabled={busy}>Cancel</button>
-          <button type="button" className={`${styles.btn} ${styles.btnDanger}`} onClick={confirm} disabled={!source || busy}>
-            {busy && source ? 'Copying…' : 'Copy and replace'}
+          <button type="button" className={styles.btn} onClick={close} disabled={locked}>Cancel</button>
+          <button type="button" className={`${styles.btn} ${styles.btnDanger}`} onClick={confirm} disabled={!source || locked}>
+            {copying ? 'Copying…' : 'Copy and replace'}
           </button>
         </div>
       </div>

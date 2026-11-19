@@ -90,6 +90,44 @@ describe('dialog', () => {
   })
 })
 
+describe('while the copy runs', () => {
+  it('shows "Copying N items…", disables everything, and cannot be closed until it finishes', async () => {
+    let finish
+    const p = await dialog({ loadSource: vi.fn(async () => ({ items: 529, sheets: 20, docs: 798 })), onCopy: vi.fn(() => new Promise(r => { finish = r })) })
+    await choose('TOPS')
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Copy and replace' })) })
+    expect(screen.getByRole('status').textContent).toContain('Copying 798 items from TOPS')
+    expect(screen.getByRole('button', { name: 'Copying…' }).disabled).toBe(true)
+    expect(screen.getByRole('button', { name: 'Cancel' }).disabled).toBe(true)
+    expect(screen.getByLabelText('Copy from').disabled).toBe(true)
+    // Neither a click outside nor Escape closes it.
+    const overlay = screen.getByRole('dialog').parentElement
+    fireEvent.mouseDown(overlay)
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect(p.onClose).not.toHaveBeenCalled()
+    await act(async () => { finish({ status: 'done' }) })
+    expect(screen.queryByRole('status')).toBeNull()
+  })
+  it('a failure ends the copying state: message shown, controls usable again', async () => {
+    let finish
+    await dialog({ onCopy: vi.fn(() => new Promise(r => { finish = r })) })
+    await choose('HDK')
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Copy and replace' })) })
+    await act(async () => { finish({ status: 'failed', error: 'The copy stopped partway (network). A backup … was saved (ts1).' }) })
+    expect(screen.queryByRole('status')).toBeNull()
+    expect(screen.getByRole('alert').textContent).toContain('stopped partway')
+    expect(screen.getByRole('button', { name: 'Cancel' }).disabled).toBe(false)
+    expect(screen.getByRole('button', { name: 'Copy and replace' }).disabled).toBe(false)
+  })
+  it('when not copying, Escape and a click outside close it', async () => {
+    const p = await dialog()
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect(p.onClose).toHaveBeenCalledTimes(1)
+    fireEvent.mouseDown(screen.getByRole('dialog').parentElement)
+    expect(p.onClose).toHaveBeenCalledTimes(2)
+  })
+})
+
 describe('Inventory wiring', () => {
   const src = readFileSync(resolve(process.cwd(), 'src/routes/Inventory.jsx'), 'utf8')
   it('offers the sites this user can see, minus this one, and checks TODAY\'s week', () => {
