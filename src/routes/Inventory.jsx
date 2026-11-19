@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { useAuthStore } from '@/store/authStore'
 import { useUIStore } from '@/store/uiStore'
 import { useLocations, cleanLocName } from '@/store/LocationContext'
-import { usePeriod, isShortWeek } from '@/store/PeriodContext'
+import { usePeriod, isShortWeek, dateToKey } from '@/store/PeriodContext'
 import { readPeriodClose, getPriorKey, writePeriodClose, lockPeriod } from '@/lib/pnl'
 import { db } from '@/lib/firebase'
 import { useInventory, fmt$, sanitizeDocId, hasCount, uploadRejectReason } from '@/hooks/useInventory'
@@ -22,7 +22,8 @@ import AllLocationsGrid from '@/components/AllLocationsGrid'
 import ErrorBoundary from '@/components/ErrorBoundary'
 import ArrangeList from '@/components/inventory/ArrangeList'
 import InventoryToolbar, { ParPill, StartStrip, startStripVisible } from '@/components/inventory/InventoryToolbar'
-import { EditSheetBar, ItemListUploadDialog } from '@/components/inventory/EditSheet'
+import { EditSheetBar, ItemListUploadDialog, CopyFromSiteDialog } from '@/components/inventory/EditSheet'
+import { runCatalogCopy, sourceSummary, firestoreCopyIo, catalogLossSummary as copyLossSummary } from '@/lib/catalogCopy'
 import tb from '@/components/inventory/InventoryToolbar.module.css'
 import CategoryManagerModal from '@/components/inventory/CategoryManagerModal'
 import ZoneManagerModal from '@/components/inventory/ZoneManagerModal'
@@ -120,7 +121,7 @@ export default function Inventory() {
   // FIXED: Consistent orgId pattern
   const orgId = user?.tenantId || null
   
-  const { selectedLocation, setSelectedLocation , isParentLocation , getParentName } = useLocations()
+  const { selectedLocation, setSelectedLocation , isParentLocation , getParentName, visibleLocations } = useLocations()
   const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
   const [dragging, setDragging] = useState(false)
   const [showScanner, setShowScanner] = useState(false)
@@ -277,6 +278,30 @@ export default function Inventory() {
     if (n > 0) await batch.commit()
     console.log(`Backed up ${existingDocs.length} item(s) to catalogBackups/${timestamp}`)
     return timestamp
+  }
+
+  // ── Copy from another site (Edit sheet) ───────────────────────────────────
+  // runCatalogCopy (src/lib/catalogCopy.js) owns the guards, backup, write
+  // order and exact-match check; firestoreCopyIo is its Firestore I/O.
+  const catalogCopyIo = firestoreCopyIo(orgId, user?.email || null)
+  const [copyFromSite, setCopyFromSite] = useState(null)   // null | { losses }
+  async function openCopyFromSite() {
+    try {
+      const current = await catalogCopyIo.readCatalog(sanitizeDocId(location))
+      setCopyFromSite({ losses: copyLossSummary(current.items) })
+    } catch (e) { toast.error("Couldn't read this site's item list: " + (e?.message || e)) }
+  }
+  async function runCopyFromSite(sourceName) {
+    const result = await runCatalogCopy({
+      sourceLoc: sanitizeDocId(sourceName), targetLoc: sanitizeDocId(location),
+      weekKey: dateToKey(new Date()), locked: periodLocked,
+    }, catalogCopyIo)
+    if (result.status === 'done') {
+      setCopyFromSite(null)
+      toast.success(`Copied ${result.written} items from ${cleanLocName(sourceName)}. The previous list was backed up (${result.backupId}).`)
+      await load()
+    }
+    return result
   }
 
   // Upload Excel inventory sheet — MERGE (the safe default). Updates items the
@@ -1543,8 +1568,19 @@ export default function Inventory() {
             onCategories={() => setShowCatManager(true)}
             onZones={() => setShowZoneManager(true)}
             onUploadItemList={() => setShowItemListUpload(true)}
+            onCopyFromSite={openCopyFromSite}
             uploadBusy={replacingCatalog}
             onDone={exitArrangeMode}
+          />
+        )}
+        {copyFromSite && (
+          <CopyFromSiteDialog
+            sites={(visibleLocations || []).filter(l => l.name && l.name !== location).map(l => ({ value: l.name, label: cleanLocName(l.name) }))}
+            targetLabel={cleanLocName(location)}
+            targetLosses={copyFromSite.losses}
+            loadSource={async name => sourceSummary(await catalogCopyIo.readCatalog(sanitizeDocId(name)))}
+            onCopy={runCopyFromSite}
+            onClose={() => setCopyFromSite(null)}
           />
         )}
         {showItemListUpload && (

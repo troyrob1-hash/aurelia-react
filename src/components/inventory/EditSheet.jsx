@@ -1,13 +1,14 @@
 import { useState } from 'react'
-import { Plus, Upload } from 'lucide-react'
+import { Copy, Plus, Upload } from 'lucide-react'
 import styles from './InventoryToolbar.module.css'
+import { catalogLossLines } from '@/lib/catalogImport'
 
 // Edit sheet mode's bar (above the ArrangeList). Replaces the old header's
 // Manage items / Manage categories / Manage zones / Arrange / Item list
 // buttons. Categories and Zones keep their old role gate (canEditCats) and
 // locked gating; everything else is open to every role that could use it
 // before.
-export function EditSheetBar({ onAddItem, onManageItems, canEditCats, locked, onCategories, onZones, onUploadItemList, uploadBusy, onDone }) {
+export function EditSheetBar({ onAddItem, onManageItems, canEditCats, locked, onCategories, onZones, onUploadItemList, uploadBusy, onCopyFromSite, onDone }) {
   const lockedTitle = 'Period closed — reopen to edit'
   return (
     <div className={styles.editBar} role="region" aria-label="Edit sheet">
@@ -28,6 +29,12 @@ export function EditSheetBar({ onAddItem, onManageItems, canEditCats, locked, on
         <button type="button" className={styles.btn} onClick={onZones} disabled={locked}
           title={locked ? lockedTitle : "Manage this location's counting zones"}>
           Zones
+        </button>
+      )}
+      {canEditCats && onCopyFromSite && (
+        <button type="button" className={styles.btn} onClick={onCopyFromSite} disabled={locked}
+          title={locked ? lockedTitle : "Replace this site's items, sheets and zones with another site's"}>
+          <Copy size={14} aria-hidden="true" /> Copy from another site
         </button>
       )}
       <button type="button" className={`${styles.btn} ${styles.btnDefs}`} onClick={onUploadItemList} disabled={uploadBusy}
@@ -113,6 +120,80 @@ export function ItemListUploadDialog({ onClose, updateCategories, onUpdateCatego
           <button type="button" className={`${styles.btn} ${replace ? styles.btnDanger : styles.btnPrimary}`}
             onClick={submit} disabled={!file}>
             {replace ? 'Replace everything…' : 'Upload'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Copy from another site: pick a source, see what it brings and exactly what
+// this site loses (the same named losses as the Replace confirm), then confirm.
+// The parent does the I/O (runCatalogCopy in src/lib/catalogCopy.js).
+//   sites        [{ value, label }] — accessible sites, this one excluded
+//   targetLabel  this site's name
+//   targetLosses catalogLossSummary of this site's current items
+//   loadSource   (value) => Promise<{ items, sheets }>
+//   onCopy       (value) => Promise<{ status, error? }> — 'done' closes via the parent
+export function CopyFromSiteDialog({ sites, targetLabel, targetLosses, loadSource, onCopy, onClose }) {
+  const [site, setSite] = useState('')
+  const [source, setSource] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+
+  async function pick(value) {
+    setSite(value); setSource(null); setError(null)
+    if (!value) return
+    setBusy(true)
+    try { setSource(await loadSource(value)) } catch (e) { setError("Couldn't read that site: " + (e?.message || e)) }
+    setBusy(false)
+  }
+  async function confirm() {
+    setBusy(true); setError(null)
+    let result
+    try { result = await onCopy(site) } catch (e) { result = { status: 'failed', error: "The copy didn't finish: " + (e?.message || e) } }
+    setBusy(false)
+    if (result?.status !== 'done') setError(result?.error || "The copy didn't finish.")
+  }
+
+  const losses = targetLosses ? catalogLossLines(targetLosses) : []
+  const sourceLabel = sites.find(x => x.value === site)?.label
+  return (
+    <div className={styles.overlay} onMouseDown={e => { if (e.target === e.currentTarget && !busy) onClose() }}>
+      <div className={styles.dialog} role="dialog" aria-modal="true" aria-labelledby="copy-site-title">
+        <h3 id="copy-site-title" className={styles.dialogTitle}>Copy from another site</h3>
+        <p className={styles.dialogSub}>
+          Makes {targetLabel}'s items, sheets and zones an exact copy of another site's — sheet membership, positions,
+          key items and par levels included. Counts and past weeks are not touched.
+        </p>
+        <label className={styles.field}>
+          <span className={styles.fieldLabel}>Copy from</span>
+          <select value={site} onChange={e => pick(e.target.value)} disabled={busy} aria-label="Copy from">
+            <option value="">Choose a site…</option>
+            {sites.map(x => <option key={x.value} value={x.value}>{x.label}</option>)}
+          </select>
+        </label>
+        {source && (
+          <div className={styles.field} data-testid="copy-summary">
+            <span className={styles.fieldLabel}>{sourceLabel}</span>
+            <span>{source.items} item{source.items === 1 ? '' : 's'}, {source.sheets} sheet{source.sheets === 1 ? '' : 's'}</span>
+            <span className={styles.fieldLabel} style={{ marginTop: 10 }}>{targetLabel}</span>
+            {targetLosses && (targetLosses.total || targetLosses.removedCount) ? (
+              <div style={{ whiteSpace: 'pre-line' }}>
+                {`This replaces all ${targetLosses.total} current item${targetLosses.total === 1 ? '' : 's'}${losses.length ? ', including:' : '.'}`}
+                {losses.length ? '\n' + losses.join('\n') : ''}
+                {'\nA backup of the current list is saved first.'}
+              </div>
+            ) : (
+              <span>No items here yet, so nothing will be lost.</span>
+            )}
+          </div>
+        )}
+        {error && <p role="alert" style={{ color: '#b91c1c', fontSize: 13, margin: '8px 0 0' }}>{error}</p>}
+        <div className={styles.dialogActions}>
+          <button type="button" className={styles.btn} onClick={onClose} disabled={busy}>Cancel</button>
+          <button type="button" className={`${styles.btn} ${styles.btnDanger}`} onClick={confirm} disabled={!source || busy}>
+            {busy && source ? 'Copying…' : 'Copy and replace'}
           </button>
         </div>
       </div>
