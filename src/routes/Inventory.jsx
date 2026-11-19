@@ -11,7 +11,7 @@ import { useInventory, fmt$, sanitizeDocId, hasCount, uploadRejectReason } from 
 import { useAutosave } from '@/hooks/useAutosave'
 import SaveStatusBar from '@/components/SaveStatusBar'
 import { getTopVarianceIssues, calcParStatus, qtyOf } from '@/lib/variance'
-import { inventoryExportRow, uniqueItems, byCategoryRows } from '@/lib/inventoryExport'
+import { inventoryExportRow, byCategoryRows, exportItemsInSheetOrder, buildExportCsv, buildExportWorkbook } from '@/lib/inventoryExport'
 import {
   buildCatalogMerge, catalogLossWarningText, catalogBackupTimestamp, catalogFileError, runCatalogReplace,
 } from '@/lib/catalogImport'
@@ -23,6 +23,7 @@ import ErrorBoundary from '@/components/ErrorBoundary'
 import ArrangeList from '@/components/inventory/ArrangeList'
 import InventoryToolbar, { ParPill, StartStrip, startStripVisible } from '@/components/inventory/InventoryToolbar'
 import { EditSheetBar, ItemListUploadDialog, CopyFromSiteDialog } from '@/components/inventory/EditSheet'
+import { readCatalogWorkbook } from '@/lib/catalogFile'
 import { runCatalogCopy, sourceSummary, firestoreCopyIo, catalogLossSummary as copyLossSummary } from '@/lib/catalogCopy'
 import tb from '@/components/inventory/InventoryToolbar.module.css'
 import CategoryManagerModal from '@/components/inventory/CategoryManagerModal'
@@ -156,93 +157,23 @@ export default function Inventory() {
   async function parseCatalogFile(file) {
     const XLSX = (await import('xlsx')).default || await import('xlsx')
     const data = await file.arrayBuffer()
-    const workbook = XLSX.read(data)
-    console.log('Sheet names:', JSON.stringify(workbook.SheetNames))
+    // CSV cells stay text (raw) so a code like SKU "0123" keeps its zero.
+    const isCsv = /\.csv$/i.test(file?.name || '')
+    const workbook = XLSX.read(data, isCsv ? { raw: true } : undefined)
+    // Sheet choice, header row and the export's sheet list: catalogFile.js
+    // (shared with the round-trip test, so both read a file the same way).
+    const { bestSheet, rows, headers, sheetList, countCol, error } = readCatalogWorkbook(workbook)
+    console.log('Using sheet:', bestSheet, '· headers:', headers, '· rows:', rows.length, sheetList ? `· sheet list: ${sheetList.length}` : '')
 
-    // Target the right sheet — priority order for Fooda inventory templates.
-    // Managers upload the WHOLE multi-sheet OneDrive workbook; the item data
-    // lives on the "INVItems" tab, which may not be first. Normalize names
-    // (lowercase, strip spaces/underscores) so 'invitems' == 'INV Items' ==
-    // 'INV_Items' == 'InvItems' all match the same target regardless of tab
-    // position. INVItems variants come FIRST, then the legacy priority list.
-    const normSheet = (s) => String(s).toLowerCase().replace(/[\s_]+/g, '')
-    const sheetPriority = ['INVItems', 'INV Items', 'INV_Items', 'InvItems', 'Items', 'Inv_By_Item', 'Inventory_UPC', 'Items_UPC']
-    let bestSheet = null
-    for (const target of sheetPriority) {
-      const hit = workbook.SheetNames.find(s => normSheet(s) === normSheet(target))
-      if (hit) { bestSheet = hit; break }
-    }
-    // Fallback: find any sheet with "item" in the name
-    if (!bestSheet) {
-      bestSheet = workbook.SheetNames.find(s => s.toLowerCase().includes('item')) || workbook.SheetNames[0]
-    }
-
-    const ws = workbook.Sheets[bestSheet]
-    console.log('Using sheet:', bestSheet)
-
-    // Get all rows as arrays to find the header row
-    const allRows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
-
-    // Find the header row — look for a row with "Description" or a row right before data starts
-    let headerRowIdx = 0
-    for (let i = 0; i < Math.min(allRows.length, 20); i++) {
-      const vals = allRows[i].map(v => String(v || '').toLowerCase().trim())
-      // Exact match on key column names
-      if (vals.some(v => v === 'description' || v === 'item name') &&
-          vals.some(v => v.includes('vendor') || v.includes('cost') || v.includes('price') || v.includes('gl'))) {
-        headerRowIdx = i
-        console.log('Header row at', i, ':', allRows[i].filter(v => v))
-        break
-      }
-    }
-
-    // If no header found, look for the first row with a dollar value — header is one row before
-    if (headerRowIdx === 0) {
-      for (let i = 0; i < Math.min(allRows.length, 30); i++) {
-        const hasPrice = allRows[i].some(v => String(v || '').includes('$'))
-        if (hasPrice) {
-          headerRowIdx = Math.max(0, i - 1)
-          console.log('Inferred header at row', headerRowIdx, 'from data at row', i)
-          break
-        }
-      }
-    }
-
-    const rows = XLSX.utils.sheet_to_json(ws, { range: headerRowIdx, defval: '' })
-    if (rows.length === 0) { toast.error('No data found in file'); return null }
-
-    console.log('Headers:', Object.keys(rows[0]))
-    console.log('First row:', JSON.stringify(rows[0]).slice(0, 300))
-    console.log('Total rows:', rows.length)
-
-    const headers = Object.keys(rows[0])
-
-    // Fail-loud on a WRONG SHEET: if the chosen sheet has no name/description
-    // column, we picked a cover page / summary, not the item list. Reject BEFORE
-    // any write below, naming the sheet used and listing the file's tabs so the
-    // user can see what happened. (A silent parse of the wrong sheet is exactly
-    // the failure this guards against.)
-    const NAME_ALIASES = ['description', 'item name', 'item', 'name', 'product']
-    const hasNameCol = headers.some(h => {
-      const hl = String(h).toLowerCase().trim()
-      return NAME_ALIASES.some(a => hl === a || hl.includes(a))
-    })
-    if (!hasNameCol) {
-      toast.error(
-        `Couldn't find item data on sheet "${bestSheet}". Sheets in this file: ${workbook.SheetNames.join(', ')}. ` +
-        `Aurelia looks for a sheet named INVItems (or Items). Expected columns: name/description, pack size, ` +
-        `pack price, vendor, GL code.`
-      )
-      return null
-    }
+    // Fail-loud on a WRONG SHEET (no name/description column → a cover page or
+    // summary, not the item list), before any write.
+    if (error) { toast.error(error); return null }
 
     // Fail-loud: this upload imports item DEFINITIONS only, never counts. If a
     // column looks like counted quantities, warn BEFORE any write so a user
     // doesn't silently lose count data (real incident: counts uploaded here
     // were dropped silently). Anchored ^...$ so "Qty Per Pack" / "Case Qty"
     // (legit pack-size definitions) don't false-positive.
-    const COUNT_COL_RE = /^(qty|quantity|count|counted|on[\s-]?hand|onhand|cases|units)$/i
-    const countCol = headers.find(h => COUNT_COL_RE.test(String(h).trim()))
     if (countCol) {
       const proceed = window.confirm(
         `This file has a "${countCol}" column that looks like counts.\n\n` +
@@ -253,7 +184,7 @@ export default function Inventory() {
       if (!proceed) { toast.info('Upload cancelled — no changes made.'); return null }
     }
 
-    return { bestSheet, rows, headers }
+    return { bestSheet, rows, headers, sheetList }
   }
 
   // Snapshot every current item doc for this location to a dated backup
@@ -321,7 +252,7 @@ export default function Inventory() {
     try {
       const parsed = await parseCatalogFile(file)
       if (!parsed) return
-      const { bestSheet, rows, headers } = parsed
+      const { bestSheet, rows, headers, sheetList } = parsed
 
       // 0-item guard, before the backup or any write: a merge that yields no
       // items would otherwise report "0 added" as success — or, with "hide
@@ -335,7 +266,7 @@ export default function Inventory() {
       const existingDocs = existingSnap.docs.map(d => ({ id: d.id, data: d.data() }))
       await backupLocationCatalog(locKey, existingDocs)
 
-      const { toAdd, toUpdate, toHide, notInFile, newCategories, duplicates } = buildCatalogMerge(
+      const { toAdd, toUpdate, unchanged, toHide, notInFile, newCategories, duplicates } = buildCatalogMerge(
         rows, headers, existingDocs, categories,
         { updateCategories: mergeUpdateCategories, hideNotInFile: mergeHideNotInFile },
         { importedAt: new Date().toISOString(), importedBy: user?.name || user?.email || '' }
@@ -378,7 +309,7 @@ export default function Inventory() {
 
       console.log(`Merge upload: ${toAdd.length} added, ${toUpdate.length} updated, ${toHide.length} hidden, ${notInFile.length} not in file`)
       toast.success(
-        `Merged "${bestSheet}": ${toAdd.length} added, ${toUpdate.length} updated` +
+        `Merged "${bestSheet}": ${toAdd.length} added, ${toUpdate.length} updated, ${unchanged.length} unchanged` +
         (newCategories.length ? ` · created ${newCategories.length} categor${newCategories.length === 1 ? 'y' : 'ies'}: ${newCategories.map(c => c.label).join(', ')}` : '') +
         (toHide.length ? ` · hid ${toHide.length} item${toHide.length === 1 ? '' : 's'} not in the file` : '')
       )
@@ -408,7 +339,7 @@ export default function Inventory() {
     try {
       const parsed = await parseCatalogFile(file)
       if (!parsed) return
-      const { bestSheet, rows, headers } = parsed
+      const { bestSheet, rows, headers, sheetList } = parsed
 
       const { writeBatch, doc: fbDoc, getDocs, collection: col, setDoc } = await import('firebase/firestore')
       const existingSnap = await getDocs(col(db, 'tenants', orgId, 'inventory', locKey, 'items'))
@@ -417,7 +348,7 @@ export default function Inventory() {
       // The order (and the 0-item guard ahead of every destructive step) lives
       // in runCatalogReplace so it's tested; this supplies only the Firestore I/O.
       const result = await runCatalogReplace(
-        { rows, headers, existingDocs, categories, meta: { importedAt: new Date().toISOString(), importedBy: user?.name || user?.email || '' } },
+        { rows, headers, existingDocs, categories, sheetList, meta: { importedAt: new Date().toISOString(), importedBy: user?.name || user?.email || '' } },
         {
           confirm: (summary, incomingCount) => window.confirm(catalogLossWarningText(summary, cleanLocName(location), incomingCount)),
           backup: async (docs) => { toast.info('Replacing ' + (file?.name || 'file') + '...'); await backupLocationCatalog(locKey, docs) },
@@ -1149,19 +1080,17 @@ export default function Inventory() {
     // One detail row per item — see inventoryExportRow (Closing Value = itemValue).
     const toRow = inventoryExportRow
 
-    // Build rows by walking displayGroups -- the SAME structure the screen
-    // renders -- so the export order and grouping ALWAYS match the screen.
-    // Flat view: one group, items A-Z. Grouped view: category order.
-    // Search filter is already applied (displayGroups derives from displayItems).
-    // ONE row per item. displayGroups lists a split item once per sheet it is
-    // on; exporting straight from it would repeat the item and count its value
-    // once per sheet in Total Closing Value. uniqueItems dedupes by id.
-    const exportItems = uniqueItems(displayGroups)
+    // ONE row per item, under its home sheet, in sheet order (the same order
+    // the screen shows each sheet). Always the FULL list — not the search or
+    // flat/grouped view — because this file can be uploaded back as an item
+    // list, and a filtered file fed to "Replace everything" would delete the
+    // items the filter hid. A split item counts once in Total Closing Value.
+    const exportItems = exportItemsInSheetOrder(items, categories)
     // One cent ledger for the export (same rule as the screen): each detail
     // row's Closing Value is the item's slice, so rows, Total Closing Value and
     // the By Category sheet all add up to the cent.
     const exportLedger = displayCents(exportItems, categories)
-    const rows = exportItems.map(i => toRow(i, exportLedger.item(i.id)))
+    const rows = exportItems.map(i => toRow(i, exportLedger.item(i.id), categories))
     if (rows.length === 0) { toast.error('Nothing to export in the current view'); return }
 
     // Summary
@@ -1173,32 +1102,15 @@ export default function Inventory() {
       .filter(i => !countDisplay(i, zones, bucketsDone).incomplete).length
     const needsReorder = rows.filter(r => r['Reorder'] === 'Yes').length
 
+    const fileArgs = {
+      locationLabel: cleanLocName(location), periodKey, exportedAt: new Date().toLocaleString(),
+      totals: { totalItems, itemsCounted, totalClosingValue, needsReorder }, rows, categories,
+    }
+
     if (format === 'csv') {
-      const headers = Object.keys(rows[0])
-      const csvRows = [
-        ['Inventory Count Report'],
-        ['Location: ' + cleanLocName(location)],
-        ['Period: ' + periodKey],
-        ['Exported: ' + new Date().toLocaleString()],
-        [''],
-        ['Summary'],
-        ['Total Items,' + totalItems],
-        ['Items Counted,' + itemsCounted],
-        ['Total Closing Value,$' + totalClosingValue.toFixed(2)],
-        ['Items Needing Reorder,' + needsReorder],
-        [''],
-        headers,
-        ...rows.map(r => headers.map(h => {
-          const v = String(r[h])
-          return v.includes(',') ? '"' + v + '"' : v
-        })),
-        [''],
-        // Totals row placed by header NAME — the old fixed positions had drifted
-        // a column (the closing total sat under Unit Cost).
-        headers.map((h, k) => h === 'Closing Value' ? totalClosingValue.toFixed(2)
-          : headers[k + 1] === 'Closing Value' ? 'Total:' : ''),
-      ]
-      const csv = csvRows.map(r => Array.isArray(r) ? r.join(',') : r).join('\n')
+      // Report lines, the sheet list, detail rows and the totals row:
+      // buildExportCsv (src/lib/inventoryExport.js).
+      const csv = buildExportCsv(fileArgs)
       const blob = new Blob([csv], { type: 'text/csv' })
       const url = URL.createObjectURL(blob)
       Object.assign(document.createElement('a'), { href: url, download: fileName + '.csv' }).click()
@@ -1209,44 +1121,13 @@ export default function Inventory() {
     if (format === 'xlsx') {
       try {
         const XLSX = await import('xlsx')
-        const wb = XLSX.utils.book_new()
-
-        // Summary sheet
-        const summaryData = [
-          ['Inventory Count Report'],
-          [''],
-          ['Location', cleanLocName(location)],
-          ['Period', periodKey],
-          ['Exported', new Date().toLocaleString()],
-          [''],
-          ['Summary'],
-          ['Total Items', totalItems],
-          ['Items Counted', itemsCounted],
-          ['Total Closing Value', totalClosingValue],
-          ['Items Needing Reorder', needsReorder],
-        ]
-        const summarySheet = XLSX.utils.aoa_to_sheet(summaryData)
-        XLSX.utils.book_append_sheet(wb, summarySheet, 'Summary')
-
-        // Detail sheet
-        const detailSheet = XLSX.utils.json_to_sheet(rows)
-        // Set column widths
-        // Item, Category, GL Code, SKU, Unit, Closing, Unit Cost, Closing Value, Par Level, Reorder
-        detailSheet['!cols'] = [
-          { wch: 30 }, { wch: 15 }, { wch: 12 }, { wch: 8 }, { wch: 8 },
-          { wch: 10 }, { wch: 10 }, { wch: 14 }, { wch: 10 }, { wch: 8 },
-        ]
-        XLSX.utils.book_append_sheet(wb, detailSheet, 'Inventory Count')
-
         // By Category: one row per item-CATEGORY with that category's share of
         // the item's value (byCategoryRows → allocateItemValue, the same rule
         // as the on-screen totals). Cent-exact: its TOTAL equals Total Closing
         // Value above — a split item counts once, divided across its sheets.
         const { rows: catRows } = byCategoryRows(exportItems, categories)
-        const catSheet = XLSX.utils.json_to_sheet(catRows)
-        catSheet['!cols'] = [{ wch: 26 }, { wch: 30 }, { wch: 12 }, { wch: 14 }]
-        XLSX.utils.book_append_sheet(wb, catSheet, 'By Category')
-
+        // Summary, Inventory Count, Sheets, By Category: buildExportWorkbook.
+        const wb = buildExportWorkbook(XLSX, { ...fileArgs, catRows })
         XLSX.writeFile(wb, fileName + '.xlsx')
         toast.success('Inventory exported as Excel')
       } catch (err) {

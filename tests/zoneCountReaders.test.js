@@ -132,24 +132,32 @@ describe('Excel export — closing value matches the app', () => {
     expect(inventoryExportRow({ ...legacy })['Closing']).toBe(3)             // un-enriched fallback
   })
   it('columns: Opening / Purchased / Usage / Usage Value are gone (never populated)', () => {
+    // The count-report columns, then the item-list columns that make the file
+    // uploadable back (see tests/exportRoundTrip.test.js).
     expect(Object.keys(inventoryExportRow({ ...legacy, _value: 17 }))).toEqual(
-      ['Item', 'Category', 'GL Code', 'SKU', 'Unit', 'Closing', 'Unit Cost', 'Closing Value', 'Par Level', 'Reorder'])
+      ['Item', 'Category', 'GL Code', 'SKU', 'Unit', 'Closing', 'Unit Cost', 'Closing Value', 'Par Level', 'Reorder',
+        'Vendor', 'Pack Size', 'Items per Pack', 'Pack Price', 'Selling Price', 'COGS %', 'Item Type',
+        'Position', 'Flat Position', 'Also counted on', 'Item ID'])
     const INV = code('src/routes/Inventory.jsx')
     expect(INV).not.toMatch(/Usage Value|totalUsageValue/)
   })
 
   it('the CSV totals row is placed by header name, under Closing Value', () => {
-    const INV = code('src/routes/Inventory.jsx')
-    expect(INV).toMatch(/headers\.map\(\(h, k\) => h === 'Closing Value' \? totalClosingValue\.toFixed\(2\)/)
-    expect(INV).not.toMatch(/\['','','','','','','Total:'/)
+    // The CSV is built in src/lib/inventoryExport.js (buildExportCsv) now.
+    const LIB = code('src/lib/inventoryExport.js')
+    expect(LIB).toMatch(/headers\.map\(\(h, k\) => h === 'Closing Value' \? totals\.totalClosingValue\.toFixed\(2\)/)
+    expect(code('src/routes/Inventory.jsx')).toMatch(/const csv = buildExportCsv\(fileArgs\)/)
+    expect(LIB).not.toMatch(/\['','','','','','','Total:'/)
   })
 
   it('one row per item, built by the shared function; "Items Counted" uses the count-cell rule', () => {
     const INV = code('src/routes/Inventory.jsx')
     expect(INV).toMatch(/const toRow = inventoryExportRow/)
-    // Deduped: a split item appears in several groups but gets ONE row.
-    expect(INV).toMatch(/const exportItems = uniqueItems\(displayGroups\)/)
-    expect(INV).toMatch(/const rows = exportItems\.map\(i => toRow\(i, exportLedger\.item\(i\.id\)\)\)/)
+    // ONE row per item (a split item is on several sheets but gets one row),
+    // the full list in sheet order — exportItemsInSheetOrder (tested in
+    // tests/exportRoundTrip.test.js).
+    expect(INV).toMatch(/const exportItems = exportItemsInSheetOrder\(items, categories\)/)
+    expect(INV).toMatch(/const rows = exportItems\.map\(i => toRow\(i, exportLedger\.item\(i\.id\), categories\)\)/)
     expect(INV).not.toMatch(/displayGroups\.flatMap\(g => g\.items\.map\(toRow\)\)/)
     expect(INV).toMatch(/exportItems\s*\.filter\(i => !countDisplay\(i, zones, bucketsDone\)\.incomplete\)\.length/)
   })

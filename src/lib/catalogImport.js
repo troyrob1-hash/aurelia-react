@@ -169,38 +169,44 @@ export function resolveFileCategory(value, categories) {
  *   categoryHeader: string|null,
  * }}
  */
-export function buildCatalogImport(rows, headers, categories, meta = {}) {
+export function buildCatalogImport(rows, headers, categories, meta = {}, opts = {}) {
   const hdrs = headers || []
-  const col = (row, aliases) => findCol(row, hdrs, aliases)
   const categoryHeader = findCategoryHeader(hdrs)
-  const known = [...(Array.isArray(categories) ? categories : [])]
+  const exportFile = isAureliaExport(hdrs)
+  // Aurelia's export carries its own category list: a replace rebuilds the
+  // location's sheets from it exactly (keys, order, colors), instead of
+  // appending to whatever the location had.
+  const sheetCats = exportFile && opts.sheetList ? categoriesFromSheetList(opts.sheetList) : null
+  const known = sheetCats ? [...sheetCats] : [...(Array.isArray(categories) ? categories : [])]
   const newCategories = []
   const items = []
   const duplicates = []
   const seen = new Set()
 
   for (const row of rows || []) {
-    const parsed = parseCatalogRow(row, hdrs)
+    const parsed = parseCatalogRow(row, hdrs, exportFile)
     if (!parsed) continue
     const { nameStr } = parsed
 
-    const itemId = catalogItemId(nameStr)
+    const itemId = (exportFile && exportItemId(row)) || catalogItemId(nameStr)
     if (!itemId) continue
     if (seen.has(itemId)) { duplicates.push({ id: itemId, name: nameStr }); continue }   // first row wins
     seen.add(itemId)
 
-    const { category, categoryExplicit } = resolveRowCategory(row, categoryHeader, parsed, known, newCategories)
-
     const position = items.length + 1   // among WRITTEN rows → no gaps
+    const placement = exportFile
+      // The export's own category, sheets and stored positions.
+      ? { ...exportMembership(row, known, newCategories), ...exportPositions(row) }
+      : (() => {
+          const { category, categoryExplicit } = resolveRowCategory(row, categoryHeader, parsed, known, newCategories)
+          // File row order — the same fields drag-to-reorder writes (byShelf).
+          return { category, ...(categoryExplicit ? { categoryExplicit: true } : {}), catShelfOrder: position, flatShelfOrder: position }
+        })()
     items.push({
       id: itemId,
       data: {
         ...parsedRowToItemFields(parsed),
-        category,
-        ...(categoryExplicit ? { categoryExplicit: true } : {}),
-        // File row order — the same fields drag-to-reorder writes (byShelf).
-        catShelfOrder: position,
-        flatShelfOrder: position,
+        ...placement,
         isCatalogItem: true,
         qty: null,
         active: true,
@@ -209,7 +215,130 @@ export function buildCatalogImport(rows, headers, categories, meta = {}) {
       },
     })
   }
-  return { items, newCategories, duplicates, categoryHeader }
+  return { items, newCategories, duplicates, categoryHeader, categories: sheetCats ? [...known] : null }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Aurelia's own export (Inventory → Export) as an item list
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The export's detail sheet carries every definition field at full precision
+// plus the item's placement, so exporting a site and uploading the file
+// reproduces it: Category = the item's home SHEET label (stored as an explicit
+// category, so it lands on exactly that sheet), Position / Flat Position = its
+// stored shelf positions, "Also counted on" = its other sheets with their
+// per-sheet positions ("Coke Closet @13; Pepsi Closet"; a leading "only:" means
+// it is NOT counted on its home sheet), Item ID = its doc id. The export's
+// category list (key/label/colors/keywords, in order) comes separately — see
+// catalogFile.readCatalogWorkbook → sheetList.
+
+export const EXPORT_MARKER = 'Also counted on'
+export function isAureliaExport(headers) {
+  return (headers || []).some(h => String(h).trim() === EXPORT_MARKER)
+}
+
+/** "Coke Closet @13; Pepsi Closet" ⇄ { only, sheets: [{ label, pos }] } */
+export function parseAlsoOn(cell) {
+  let text = String(cell ?? '').trim()
+  const only = /^only:/i.test(text)
+  if (only) text = text.replace(/^only:\s*/i, '')
+  const sheets = text.split(';').map(s => s.trim()).filter(Boolean).map(part => {
+    const m = part.match(/^(.*?)(?:\s+@(-?\d+(?:\.\d+)?))?$/)
+    return { label: m[1].trim(), pos: m[2] != null ? Number(m[2]) : null }
+  })
+  return { only, sheets }
+}
+export function formatAlsoOn({ only = false, sheets = [] }) {
+  if (!sheets.length) return ''
+  return (only ? 'only: ' : '') + sheets.map(s => (s.pos != null ? `${s.label} @${s.pos}` : s.label)).join('; ')
+}
+
+const cell = (row, h) => (row[h] === undefined || row[h] === null ? '' : row[h])
+const numOrNull = (v) => (v === '' || v == null || Number.isNaN(Number(v)) ? null : Number(v))
+
+/** One export row → the same raw fields parseCatalogRow returns. Exact columns, no skipping by cost/name. */
+function parseExportRow(row) {
+  const nameStr = String(cell(row, 'Item')).trim()
+  if (!nameStr) return null
+  const packPrice = parsePrice(cell(row, 'Pack Price'))
+  const unitCost = parsePrice(cell(row, 'Unit Cost'))
+  const rawQty = Number(cell(row, 'Items per Pack'))
+  const rawGl = String(cell(row, 'GL Code')).trim()
+  return {
+    nameStr,
+    sku: cell(row, 'SKU'),
+    packSize: String(cell(row, 'Pack Size')).trim() || 'case',
+    packPrice, unitCost,
+    qtyPerPack: rawQty > 0 ? rawQty : (packPrice > 0 && unitCost > 0 ? Math.round(packPrice / unitCost) : 1),
+    vendor: cell(row, 'Vendor'),
+    rawGl, glCode: parseGlCode(rawGl),
+    sellingPrice: parsePrice(cell(row, 'Selling Price')),
+    cogsRatio: cell(row, 'COGS %'),
+    itemType: cell(row, 'Item Type'),
+  }
+}
+
+/** Doc-id-safe Item ID from an export row, or null. */
+function exportItemId(row) {
+  const id = String(cell(row, 'Item ID')).trim().replace(/\//g, '_')
+  return id || null
+}
+
+/** Category key for a label; with createIfMissing, adds it to known + newCategories. */
+function keyForLabel(label, known, newCategories, createIfMissing) {
+  const hit = known.find(c => String(c.label).toLowerCase() === String(label).toLowerCase())
+  if (hit) return hit.key
+  if (!createIfMissing) return null
+  const { color, bg } = PALETTE[known.length % PALETTE.length]
+  const created = { key: uniqueKey(slugify(label), known.map(c => c.key)), label, color, bg, keywords: [] }
+  known.push(created)
+  newCategories.push(created)
+  return created.key
+}
+
+/**
+ * A NEW item's category + sheet membership from an export row:
+ * { category, categoryExplicit, countCategories?, sheetShelfOrder? }.
+ * Never applied to an existing item (see buildCatalogMerge).
+ */
+function exportMembership(row, known, newCategories) {
+  const home = String(cell(row, 'Category')).trim()
+  const out = {}
+  let homeKey = null
+  if (home) {
+    homeKey = keyForLabel(home, known, newCategories, true)
+    out.category = known.find(c => c.key === homeKey)?.label || home
+    out.categoryExplicit = true
+  }
+  const also = parseAlsoOn(cell(row, EXPORT_MARKER))
+  if (also.sheets.length) {
+    const keys = also.sheets.map(s => keyForLabel(s.label, known, newCategories, true))
+    const cc = also.only || !homeKey ? keys : [homeKey, ...keys.filter(k => k !== homeKey)]
+    out.countCategories = [...new Set(cc)]
+    const sso = {}
+    also.sheets.forEach((s, i) => { if (s.pos != null) sso[keys[i]] = s.pos })
+    if (Object.keys(sso).length) out.sheetShelfOrder = sso
+  }
+  return out
+}
+
+/** Stored positions from an export row; a blank cell means "no position" (sorts A–Z). */
+function exportPositions(row) {
+  const out = {}
+  const cat = numOrNull(cell(row, 'Position'))
+  const flat = numOrNull(cell(row, 'Flat Position'))
+  if (cat != null) out.catShelfOrder = cat
+  if (flat != null) out.flatShelfOrder = flat
+  return out
+}
+
+/** The location's category list rebuilt from an export's sheet list (exact keys, order, colors, keywords). */
+export function categoriesFromSheetList(sheetList) {
+  return (sheetList || []).map(c => ({
+    key: c.key, label: c.label,
+    ...(c.color ? { color: c.color } : {}), ...(c.bg ? { bg: c.bg } : {}),
+    keywords: Array.isArray(c.keywords) ? c.keywords : [],
+  }))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -223,7 +352,8 @@ export function buildCatalogImport(rows, headers, categories, meta = {}) {
  * cost data at all — the same "section header" skip buildCatalogImport always
  * used). Pure extraction only — no id, no category, no position.
  */
-function parseCatalogRow(row, hdrs) {
+function parseCatalogRow(row, hdrs, exportFile = false) {
+  if (exportFile) return parseExportRow(row)
   const col = (aliases) => findCol(row, hdrs, aliases)
   const name = col(['Description', 'Item', 'Item Name', 'Name', 'Product'])
   if (!name || String(name).trim() === '') return null
@@ -246,7 +376,7 @@ function parseCatalogRow(row, hdrs) {
   const packSize = col(['Pack Size', 'Case Size', 'Unit Size']) || 'case'
   const packPrice = parsePrice(col(['Pack Price', 'Pack Cost', 'Case Price', 'Case Cost']))
   const unitCost = rowUnitCost
-  const rawQtyPerPack = parseInt(col(['Qty Per Pack', 'Qty/Pack', 'Case Qty', 'Pack Qty', 'Qty']))
+  const rawQtyPerPack = parseInt(col(['Qty Per Pack', 'Qty/Pack', 'Case Qty', 'Pack Qty', 'Items per Pack', 'Qty']))
   const qtyPerPack = rawQtyPerPack > 0 ? rawQtyPerPack : (packPrice > 0 && unitCost > 0 ? Math.round(packPrice / unitCost) : 1)
   const vendor = col(['Vendor', 'Supplier', 'Distributor', 'Purveyor']) || ''
   const rawGl = col(['GL Code', 'GL', 'Account', 'GL Account']) || ''
@@ -353,9 +483,15 @@ export function buildCatalogMerge(rows, headers, existingDocs, categories, opts 
   // isn't "missing," it's working as intended.
   const matchable = existing.filter(d => !d.data?.custom)
   const index = buildCatalogIndex(matchable.map(d => ({ id: d.id, name: d.data?.name, sku: d.data?.sku })))
+  // Aurelia's export names each row's own doc (Item ID): match on it first,
+  // custom items included — that row DOES claim to be the custom item, so it
+  // must not be re-added; a matched custom item is still never updated.
+  const exportFile = isAureliaExport(hdrs)
+  const byId = new Map(existing.map(d => [d.id, d]))
 
   const toAdd = []
   const toUpdate = []
+  const unchanged = []   // matched rows whose definition already equals the file — nothing written
   const duplicates = []
   const matchedIds = new Set()
   const usedNewIds = new Set()
@@ -372,12 +508,19 @@ export function buildCatalogMerge(rows, headers, existingDocs, categories, opts 
   let nextFlatPos = maxOf('flatShelfOrder')
 
   for (const row of rows || []) {
-    const parsed = parseCatalogRow(row, hdrs)
+    const parsed = parseCatalogRow(row, hdrs, exportFile)
     if (!parsed) continue
     const { nameStr, sku } = parsed
 
+    const rowId = exportFile ? exportItemId(row) : null
+    const idHit = rowId ? byId.get(rowId) : null
+    if (idHit?.data?.custom) {
+      if (matchedIds.has(idHit.id)) duplicates.push({ id: idHit.id, name: nameStr, reason: 'matched-existing' })
+      else { matchedIds.add(idHit.id); unchanged.push({ id: idHit.id, name: nameStr }) }
+      continue
+    }
     const upc = normUpc(sku)
-    const match = (upc && index.bySku[upc]) || index.bySlug[nameSlug(nameStr)] || index.byName[nameStr.toLowerCase().trim()] || null
+    const match = idHit || (upc && index.bySku[upc]) || index.bySlug[nameSlug(nameStr)] || index.byName[nameStr.toLowerCase().trim()] || null
 
     if (match) {
       if (matchedIds.has(match.id)) { duplicates.push({ id: match.id, name: nameStr, reason: 'matched-existing' }); continue }
@@ -388,6 +531,11 @@ export function buildCatalogMerge(rows, headers, existingDocs, categories, opts 
         const created = { key: uniqueKey(slugify(fileCat.label), known.map(c => c.key)), label: fileCat.label, color, bg, keywords: [] }
         known.push(created)
         newCategories.push(created)
+      }
+      // Nothing to change: no write at all (not even importedAt).
+      if (!fileCat && sameDefinition(byId.get(match.id)?.data, parsedRowToItemFields(parsed))) {
+        unchanged.push({ id: match.id, name: nameStr })
+        continue
       }
       toUpdate.push({
         id: match.id,
@@ -412,21 +560,24 @@ export function buildCatalogMerge(rows, headers, existingDocs, categories, opts 
     // doc id no longer slugs from its current name). A collision there must
     // never silently blend this row's fields onto an unrelated item — suffix
     // the new id instead (same uniqueKey scheme the category editor uses).
-    let itemId = catalogItemId(nameStr)
+    let itemId = rowId || catalogItemId(nameStr)
     if (!itemId) continue
     if (usedNewIds.has(itemId)) { duplicates.push({ id: itemId, name: nameStr, reason: 'file-row' }); continue }
     if (existingIds.has(itemId)) itemId = uniqueKey(itemId, [...existingIds, ...usedNewIds])
     usedNewIds.add(itemId)
 
-    const { category, categoryExplicit } = resolveRowCategory(row, categoryHeader, parsed, known, newCategories)
+    // A NEW item takes the export's category and sheet membership; positions
+    // still append after everything already arranged (a merge never reorders).
+    const placement = exportFile
+      ? exportMembership(row, known, newCategories)
+      : (({ category, categoryExplicit }) => ({ category, ...(categoryExplicit ? { categoryExplicit: true } : {}) }))(resolveRowCategory(row, categoryHeader, parsed, known, newCategories))
     nextCatPos += 1
     nextFlatPos += 1
     toAdd.push({
       id: itemId,
       data: {
         ...parsedRowToItemFields(parsed),
-        category,
-        ...(categoryExplicit ? { categoryExplicit: true } : {}),
+        ...placement,
         catShelfOrder: nextCatPos,
         flatShelfOrder: nextFlatPos,
         isCatalogItem: true,
@@ -443,7 +594,21 @@ export function buildCatalogMerge(rows, headers, existingDocs, categories, opts 
     .map(d => ({ id: d.id, name: d.data?.name || d.id }))
   const toHide = opts.hideNotInFile ? notInFile.map(x => ({ ...x })) : []
 
-  return { toAdd, toUpdate, toHide, notInFile, newCategories, duplicates, categoryHeader }
+  return { toAdd, toUpdate, unchanged, toHide, notInFile, newCategories, duplicates, categoryHeader }
+}
+
+/** True when an existing item's definition fields already equal a row's (merge writes nothing for it). */
+export function sameDefinition(existing, f) {
+  if (!existing) return false
+  const str = v => String(v ?? '').trim()
+  const num = (a, b) => Math.abs((Number(a) || 0) - (Number(b) || 0)) < 1e-9
+  return str(existing.name) === f.name && str(existing.sku) === f.sku
+    && (str(existing.packSize) || 'case') === f.packSize && num(existing.qtyPerPack, f.qtyPerPack)
+    && num(existing.packPrice, f.packPrice) && num(existing.unitCost, f.unitCost)
+    && str(existing.vendor) === f.vendor && str(existing.glCode) === f.glCode
+    && str(existing.glCodeFull ?? existing.glCode) === f.glCodeFull
+    && num(existing.sellingPrice, f.sellingPrice) && num(existing.cogsRatio, f.cogsRatio)
+    && str(existing.itemType) === f.itemType
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -520,7 +685,8 @@ const COST_ALIASES = ['pack price', 'pack cost', 'case price', 'case cost', 'pri
 
 /** How many rows of the file parse to an item (same rules both upload paths use). */
 export function countUsableCatalogRows(rows, headers) {
-  return (rows || []).filter(r => parseCatalogRow(r, headers || [])).length
+  const exportFile = isAureliaExport(headers)
+  return (rows || []).filter(r => parseCatalogRow(r, headers || [], exportFile)).length
 }
 
 /** The abort message for a file that produced 0 items — names the likely cause. */
@@ -549,15 +715,17 @@ export function catalogFileError(rows, headers) {
  * @returns { status: 'empty', error } | { status: 'cancelled', summary }
  *        | { status: 'done', items, newCategories, duplicates, summary }
  */
-export async function runCatalogReplace({ rows, headers, existingDocs, categories, meta }, io) {
-  const built = buildCatalogImport(rows, headers, categories, meta)
+export async function runCatalogReplace({ rows, headers, existingDocs, categories, meta, sheetList }, io) {
+  const built = buildCatalogImport(rows, headers, categories, meta, { sheetList })
   if (!built.items.length) return { status: 'empty', error: zeroItemFileMessage(headers) }
 
   const summary = catalogLossSummary(existingDocs)
   if (!(await io.confirm(summary, built.items.length))) return { status: 'cancelled', summary }
 
   await io.backup(existingDocs)
-  if (built.newCategories.length) await io.saveCategories([...(categories || []), ...built.newCategories])
+  // An Aurelia export carries the full category list → the sheets become exactly that.
+  if (built.categories) await io.saveCategories(built.categories)
+  else if (built.newCategories.length) await io.saveCategories([...(categories || []), ...built.newCategories])
   await io.deleteItems(existingDocs)
   await io.writeItems(built.items)
   return { status: 'done', items: built.items, newCategories: built.newCategories, duplicates: built.duplicates, summary }

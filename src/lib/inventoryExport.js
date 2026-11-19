@@ -17,29 +17,90 @@
 // always −Closing, Usage Value meaningless. Dropped rather than shipped empty.
 
 import { qtyOf } from '@/lib/variance'
-import { allocateItemValue, displayCents } from '@/lib/buckets'
+import { allocateItemValue, displayCents, countCategoryKeys, isSplitItem } from '@/lib/buckets'
+import { byShelf, byShelfOn } from '@/lib/countSheets'
+import { formatAlsoOn, EXPORT_MARKER } from '@/lib/catalogImport'
 
 // `cents` — the item's slice of the cent ledger (displayCents). When given,
 // Closing Value is exactly what the screen shows and the rows sum exactly to
 // the export's total; without it, the item's own value rounded (legacy callers).
-export function inventoryExportRow(item, cents) {
+//
+// The columns after Reorder make the file an uploadable item list (Edit sheet →
+// Upload item list reads them back — see catalogImport's "Aurelia's own export"
+// section): every definition field at full precision, the home sheet as
+// Category, stored positions, the other sheets an item is counted on, and its
+// doc id. `categories` (the location's sheets) resolves sheet labels; without
+// it the placement columns are left blank.
+export function inventoryExportRow(item, cents, categories = null) {
   const closing = qtyOf(item) || 0
-  const unitCost = item.unitCost || 0
+  const unitCost = Number(item.unitCost) || 0
   const totalValue = cents != null ? cents / 100 : (item._value || 0)
   const parLevel = item.parLevel || item.minStock || ''
   const needsReorder = parLevel && closing <= parLevel ? 'Yes' : ''
+  const cats = Array.isArray(categories) ? categories : []
+  const labelOf = (k) => cats.find(c => c.key === k)?.label
+  const home = item._cat
+  const sheets = isSplitItem(item) ? countCategoryKeys(item) : []
+  const also = sheets.filter(k => k !== home && labelOf(k))
+    .map(k => ({ label: labelOf(k), pos: item.sheetShelfOrder?.[k] ?? null }))
+  const blank = (v) => (v == null ? '' : v)
   return {
     'Item': item.name || '',
-    'Category': item.category || item.vendor || '',
-    'GL Code': item.glCode || '',
+    'Category': labelOf(home) || item.category || '',
+    'GL Code': item.glCodeFull || item.glCode || '',
     'SKU': item.sku || '',
     'Unit': item.unit || 'ea',
     'Closing': closing,
-    'Unit Cost': unitCost.toFixed(2),
+    'Unit Cost': unitCost,
     'Closing Value': totalValue.toFixed(2),
     'Par Level': parLevel,
     'Reorder': needsReorder,
+    'Vendor': item.vendor || '',
+    'Pack Size': item.packSize || '',
+    'Items per Pack': blank(item.qtyPerPack),
+    'Pack Price': blank(item.packPrice),
+    'Selling Price': blank(item.sellingPrice),
+    'COGS %': item.cogsRatio != null && item.cogsRatio !== '' ? Number((Number(item.cogsRatio) * 100).toPrecision(12)) : '',
+    'Item Type': item.itemType || '',
+    'Position': blank(item.catShelfOrder),
+    'Flat Position': blank(item.flatShelfOrder),
+    [EXPORT_MARKER]: formatAlsoOn({ only: sheets.length > 0 && !sheets.includes(home), sheets: also }),
+    'Item ID': item.id ?? '',
   }
+}
+
+/**
+ * Every item once, in sheet order: each item under its HOME sheet (the sheets
+ * in the location's order), in that sheet's on-screen order; anything without
+ * a home sheet last, in flat order. The full list — never the search-filtered
+ * view — so a file uploaded back with Replace can't silently drop items.
+ */
+export function exportItemsInSheetOrder(items, categories) {
+  const list = Array.isArray(items) ? items : []
+  const out = []
+  const placed = new Set()
+  for (const c of Array.isArray(categories) ? categories : []) {
+    for (const i of list.filter(x => x._cat === c.key).sort(byShelfOn(c.key))) {
+      if (placed.has(i.id)) continue
+      placed.add(i.id); out.push(i)
+    }
+  }
+  out.push(...list.filter(i => !placed.has(i.id)).sort(byShelf('flatShelfOrder')))
+  return out
+}
+
+/** The location's sheets for the export's "Sheets" tab / CSV "Sheet," lines (see catalogFile). */
+export function sheetListRows(categories) {
+  return (Array.isArray(categories) ? categories : []).filter(c => c?.key).map(c => ({
+    'Sheet': c.label || c.key, 'Key': c.key, 'Color': c.color || '', 'Background': c.bg || '',
+    'Keywords': (c.keywords || []).join('|'),
+  }))
+}
+
+/** One CSV cell, quoted when it needs to be. */
+export function csvCell(v) {
+  const s = String(v ?? '')
+  return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
 }
 
 
@@ -112,3 +173,71 @@ export function byCategoryRows(items, categories) {
   rows.push({ 'Category': 'TOTAL', 'Item': '', 'Share of Item': '', 'Closing Value': money(ledger.closingCents) })
   return { rows, totalCents: ledger.closingCents, ledger }
 }
+
+/**
+ * The export's CSV text: report lines, the location's sheets ("Sheet," lines,
+ * read back by Upload item list), the detail header + rows, and a totals row
+ * placed by header NAME (the old fixed positions had drifted a column).
+ */
+export function buildExportCsv({ locationLabel, periodKey, exportedAt, totals, rows, categories }) {
+  const headers = Object.keys(rows[0] || {})
+  const lines = [
+    ['Inventory Count Report'],
+    ['Location: ' + locationLabel],
+    ['Period: ' + periodKey],
+    ['Exported: ' + exportedAt],
+    [''],
+    ['Summary'],
+    ['Total Items', totals.totalItems],
+    ['Items Counted', totals.itemsCounted],
+    ['Total Closing Value', '$' + totals.totalClosingValue.toFixed(2)],
+    ['Items Needing Reorder', totals.needsReorder],
+    [''],
+    ...sheetListRows(categories).map(r => ['Sheet', r['Sheet'], r['Key'], r['Color'], r['Background'], r['Keywords']]),
+    [''],
+    headers,
+    ...rows.map(r => headers.map(h => r[h])),
+    [''],
+    headers.map((h, k) => h === 'Closing Value' ? totals.totalClosingValue.toFixed(2)
+      : headers[k + 1] === 'Closing Value' ? 'Total:' : ''),
+  ]
+  return lines.map(r => r.map(csvCell).join(',')).join('\n')
+}
+
+/** The export's workbook: Summary, Inventory Count (detail), Sheets, By Category. */
+export function buildExportWorkbook(XLSX, { locationLabel, periodKey, exportedAt, totals, rows, categories, catRows }) {
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+    ['Inventory Count Report'],
+    [''],
+    ['Location', locationLabel],
+    ['Period', periodKey],
+    ['Exported', exportedAt],
+    [''],
+    ['Summary'],
+    ['Total Items', totals.totalItems],
+    ['Items Counted', totals.itemsCounted],
+    ['Total Closing Value', totals.totalClosingValue],
+    ['Items Needing Reorder', totals.needsReorder],
+  ]), 'Summary')
+  const detail = XLSX.utils.json_to_sheet(rows)
+  detail['!cols'] = [
+    // Item, Category, GL Code, SKU, Unit, Closing, Unit Cost, Closing Value, Par Level, Reorder
+    { wch: 30 }, { wch: 15 }, { wch: 12 }, { wch: 8 }, { wch: 8 },
+    { wch: 10 }, { wch: 10 }, { wch: 14 }, { wch: 10 }, { wch: 8 },
+    // Vendor, Pack Size, Items per Pack, Pack Price, Selling Price, COGS %,
+    // Item Type, Position, Flat Position, Also counted on, Item ID
+    { wch: 16 }, { wch: 10 }, { wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 8 },
+    { wch: 12 }, { wch: 8 }, { wch: 8 }, { wch: 30 }, { wch: 24 },
+  ]
+  XLSX.utils.book_append_sheet(wb, detail, 'Inventory Count')
+  // The location's sheets, in order — Upload item list rebuilds them from this.
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sheetListRows(categories)), 'Sheets')
+  if (catRows) {
+    const catSheet = XLSX.utils.json_to_sheet(catRows)
+    catSheet['!cols'] = [{ wch: 26 }, { wch: 30 }, { wch: 12 }, { wch: 14 }]
+    XLSX.utils.book_append_sheet(wb, catSheet, 'By Category')
+  }
+  return wb
+}
+
