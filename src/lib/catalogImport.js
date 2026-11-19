@@ -473,6 +473,20 @@ export function catalogLossSummary(existingDocs) {
 }
 
 /**
+ * The named losses (one "• …" line each) — shared by the Replace confirm and
+ * "Copy from another site", so both name exactly the same things.
+ */
+export function catalogLossLines(summary) {
+  const lines = []
+  if (summary.withPosition) lines.push(`• ${summary.withPosition} item${summary.withPosition === 1 ? '' : 's'} with a saved shelf/print order`)
+  if (summary.withPar) lines.push(`• ${summary.withPar} item${summary.withPar === 1 ? '' : 's'} with par/reorder levels set`)
+  if (summary.withSplit) lines.push(`• ${summary.withSplit} item${summary.withSplit === 1 ? '' : 's'} counted on more than one category sheet`)
+  if (summary.withKey) lines.push(`• ${summary.withKey} item${summary.withKey === 1 ? '' : 's'} marked as a quick-count key item`)
+  if (summary.removedCount) lines.push(`• ${summary.removedCount} hidden item${summary.removedCount === 1 ? '' : 's'} and their removal history`)
+  return lines
+}
+
+/**
  * The full-replace confirm text, naming exact counts — never a generic warning.
  * incomingCount (optional) = items the file will write, so the confirm states
  * what replaces the catalog as well as what it loses.
@@ -484,11 +498,7 @@ export function catalogLossWarningText(summary, locationLabel, incomingCount = n
       (incomingCount == null ? '' : ` The file adds ${incomingCount} item${incomingCount === 1 ? '' : 's'}.`)
   }
   const lines = [`Replace the ENTIRE item catalog at ${locationLabel}?`, ...incoming, '', `This deletes all ${summary.total} current item${summary.total === 1 ? '' : 's'}, including:`]
-  if (summary.withPosition) lines.push(`• ${summary.withPosition} item${summary.withPosition === 1 ? '' : 's'} with a saved shelf/print order`)
-  if (summary.withPar) lines.push(`• ${summary.withPar} item${summary.withPar === 1 ? '' : 's'} with par/reorder levels set`)
-  if (summary.withSplit) lines.push(`• ${summary.withSplit} item${summary.withSplit === 1 ? '' : 's'} counted on more than one category sheet`)
-  if (summary.withKey) lines.push(`• ${summary.withKey} item${summary.withKey === 1 ? '' : 's'} marked as a quick-count key item`)
-  if (summary.removedCount) lines.push(`• ${summary.removedCount} hidden item${summary.removedCount === 1 ? '' : 's'} and their removal history`)
+  lines.push(...catalogLossLines(summary))
   lines.push('', 'A backup of the current catalog is saved automatically, but there is no restore button yet —', 'recovering it means a manual Firestore read. Consider "Add and update" (merge) instead unless you', 'specifically mean to start over.', '', 'Continue?')
   return lines.join('\n')
 }
